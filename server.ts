@@ -109,13 +109,23 @@ async function startServer() {
     const apiKey = process.env.NVIDIA_API_KEY;
     if (!apiKey) return res.status(500).json({ error: "NVIDIA_API_KEY not configured" });
     try {
+      const payload = { ...req.body, stream: false };
       const response = await fetch("https://integrate.api.nvidia.com/v1/chat/completions", {
         method: "POST",
         headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
-        body: JSON.stringify(req.body),
+        body: JSON.stringify(payload),
       });
-      const data = await response.json();
-      res.json(data);
+      const text = await response.text();
+      if (!text || !text.trim()) {
+        return res.status(502).json({ error: "Empty response from NVIDIA API" });
+      }
+      try {
+        const data = JSON.parse(text);
+        res.json(data);
+      } catch {
+        console.error("NVIDIA non-JSON response:", text.slice(0, 500));
+        res.status(502).json({ error: "Invalid JSON from NVIDIA API", raw: text.slice(0, 300) });
+      }
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
