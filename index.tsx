@@ -3202,7 +3202,7 @@ Return ONLY valid JSON.
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${process.env.NVIDIA_API_KEY}` },
             body: JSON.stringify({
-              model: "NVIDIABuild-Autogen-66",
+              model: "meta/llama-3.1-8b-instruct",
               messages: [
                 { role: 'system', content: systemInstruction },
                 ...messages.map(m => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.content }))
@@ -3268,8 +3268,9 @@ Return ONLY valid JSON.
       } else {
         setMessages(prev => [...prev, { role: 'assistant', content: response.text || "Synthesizing response...", timestamp: new Date() }]);
       }
-    } catch (e) { 
-      setMessages(prev => [...prev, { role: 'assistant', content: "Protocol error.", timestamp: new Date() }]); 
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setMessages(prev => [...prev, { role: 'assistant', content: `Error: ${msg}`, timestamp: new Date() }]);
     } finally { 
       setIsChatting(false); 
     }
