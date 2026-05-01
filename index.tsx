@@ -924,7 +924,7 @@ const CohortFilterSidebar = ({ theme, targets }: { theme: Theme; targets: Target
         : `${name}: (not in current target list)`;
       const prompt = `You are a drug discovery AI. Compare these two therapeutic targets in a concise, structured way:\n\n${ctx(g1Data, gene1.trim())}\n${ctx(g2Data, gene2.trim())}\n\nProvide: 1) Mechanistic differences, 2) Druggability comparison, 3) Evidence strength, 4) Clinical trial status if known, 5) Your recommendation on which to prioritize and why.\nKeep the response clear, scientific, and under 300 words. Use markdown formatting.`;
       const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
-      const response = await ai.models.generateContent({ model: 'gemini-1.5-flash', contents: prompt });
+      const response = await ai.models.generateContent({ model: 'gemini-2.5-flash-preview-05-20', contents: prompt });
       setCompareResult(response.text ?? 'No response generated.');
     } catch (err) {
       setCompareError('AI comparison failed. Check your API key or network.');
@@ -2095,7 +2095,7 @@ Return ONLY valid JSON.
 }`;
 
         const response = await ai.models.generateContent({
-          model: "gemini-1.5-flash",
+          model: "gemini-2.5-flash-preview-05-20",
           contents: [
             { inlineData: { mimeType: "application/pdf", data: base64 } },
             { text: prompt }
@@ -3195,7 +3195,7 @@ Return ONLY valid JSON.
       const callAI = async (messages: Message[]) => {
         const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
         const response = await ai.models.generateContent({
-          model: 'gemini-1.5-flash',
+          model: 'gemini-2.5-flash-preview-05-20',
           contents: messages.map(m => ({ role: m.role === 'user' ? 'user' : 'model', parts: [{ text: m.content }] })),
           config: { tools: [{ functionDeclarations: tools as any }], systemInstruction }
         });
