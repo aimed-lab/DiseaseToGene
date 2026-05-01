@@ -917,21 +917,19 @@ const CohortFilterSidebar = ({ theme, targets }: { theme: Theme; targets: Target
     setCompareResult('');
     setCompareError('');
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
       const g1Data = targets.find(t => t.symbol.toUpperCase() === gene1.trim().toUpperCase());
       const g2Data = targets.find(t => t.symbol.toUpperCase() === gene2.trim().toUpperCase());
       const ctx = (t: Target | undefined, name: string) => t
         ? `${name}: G=${t.geneticScore.toFixed(3)}, E=${t.expressionScore.toFixed(3)}, T=${t.targetScore.toFixed(3)}, GET=${(t.getScore ?? t.overallScore).toFixed(3)}, WINNER=${(t.winnerScore ?? 0).toFixed(3)}`
         : `${name}: (not in current target list)`;
-      const prompt = `You are a drug discovery AI. Compare these two therapeutic targets in a concise, structured way:
-
-${ctx(g1Data, gene1.trim())}
-${ctx(g2Data, gene2.trim())}
-
-Provide: 1) Mechanistic differences, 2) Druggability comparison, 3) Evidence strength, 4) Clinical trial status if known, 5) Your recommendation on which to prioritize and why.
-Keep the response clear, scientific, and under 300 words. Use markdown formatting.`;
-      const response = await ai.models.generateContent({ model: 'gemini-2.0-flash', contents: prompt });
-      setCompareResult(response.text ?? 'No response generated.');
+      const prompt = `You are a drug discovery AI. Compare these two therapeutic targets in a concise, structured way:\n\n${ctx(g1Data, gene1.trim())}\n${ctx(g2Data, gene2.trim())}\n\nProvide: 1) Mechanistic differences, 2) Druggability comparison, 3) Evidence strength, 4) Clinical trial status if known, 5) Your recommendation on which to prioritize and why.\nKeep the response clear, scientific, and under 300 words. Use markdown formatting.`;
+      const res = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${process.env.NVIDIA_API_KEY}` },
+        body: JSON.stringify({ model: 'NVIDIABuild-Autogen-52', messages: [{ role: 'user', content: prompt }], temperature: 0.5, max_tokens: 512 }),
+      });
+      const data = await res.json();
+      setCompareResult(data?.choices?.[0]?.message?.content ?? 'No response generated.');
     } catch (err) {
       setCompareError('AI comparison failed. Check your API key or network.');
     } finally {
