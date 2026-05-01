@@ -926,7 +926,7 @@ const CohortFilterSidebar = ({ theme, targets }: { theme: Theme; targets: Target
       const res = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${process.env.NVIDIA_API_KEY}` },
-        body: JSON.stringify({ model: 'NVIDIABuild-Autogen-52', messages: [{ role: 'user', content: prompt }], temperature: 0.5, max_tokens: 512 }),
+        body: JSON.stringify({ model: 'meta/llama-3.1-8b-instruct', messages: [{ role: 'user', content: prompt }], temperature: 0.5, max_tokens: 512 }),
       });
       const data = await res.json();
       setCompareResult(data?.choices?.[0]?.message?.content ?? 'No response generated.');
