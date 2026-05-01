@@ -79,7 +79,10 @@ import {
   Save,
   Trash2,
   Home,
-  Zap
+  Zap,
+  Filter,
+  Settings,
+  SlidersHorizontal
 } from 'lucide-react';
 
 import PaperExtractor from './PaperExtractor';
@@ -772,7 +775,212 @@ const TabNavigation = ({
   </nav>
 );
 
-  const Breadcrumbs = ({ 
+// =============================================================================
+// Cohort Filter Sidebar
+// =============================================================================
+
+const FILTER_GROUPS = [
+  {
+    key: 'age',
+    label: 'Age Group',
+    options: ['50–60', '60–70', '70–80', '80+'],
+  },
+  {
+    key: 'stage',
+    label: 'Disease Stage',
+    options: ['Early Stage', 'MCI', 'Moderate', 'Late Stage'],
+  },
+  {
+    key: 'subtype',
+    label: 'Genetic Subtype',
+    options: ['APOE4+', 'APOE4−', 'TREM2 Variant', 'Sporadic'],
+  },
+  {
+    key: 'gender',
+    label: 'Gender',
+    options: ['Male', 'Female', 'Other'],
+  },
+] as const;
+
+type FilterKey = typeof FILTER_GROUPS[number]['key'];
+
+const LEFT_NAV_ITEMS = [
+  { id: 'workspace', icon: Home,              label: 'Workspace' },
+  { id: 'targets',   icon: List,              label: 'Targets'   },
+  { id: 'filters',   icon: Filter,            label: 'Filters'   },
+  { id: 'rankings',  icon: BarChart3,         label: 'Rankings'  },
+  { id: 'compare',   icon: Layers,            label: 'Compare'   },
+  { id: 'reports',   icon: FileText,          label: 'Reports'   },
+  { id: 'settings',  icon: Settings,          label: 'Settings'  },
+] as const;
+
+const CohortFilterSidebar = ({ theme }: { theme: Theme }) => {
+  const [isExpanded, setIsExpanded]   = useState(true);
+  const [activeNav, setActiveNav]     = useState<string>('filters');
+  const [openSections, setOpenSections] = useState<string[]>(['age', 'stage', 'subtype', 'gender']);
+  const [selected, setSelected] = useState<Record<FilterKey, string[]>>({
+    age: [], stage: [], subtype: [], gender: [],
+  });
+
+  const toggleValue = (group: FilterKey, value: string) =>
+    setSelected(prev => ({
+      ...prev,
+      [group]: prev[group].includes(value)
+        ? prev[group].filter(v => v !== value)
+        : [...prev[group], value],
+    }));
+
+  const toggleSection = (key: string) =>
+    setOpenSections(prev =>
+      prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key],
+    );
+
+  const totalActive = Object.values(selected).flat().length;
+  const isDark = theme === 'dark';
+
+  return (
+    <div className={`flex shrink-0 h-full rounded-xl overflow-hidden border shadow-lg shadow-slate-950/5 transition-all duration-300 ${isDark ? 'bg-[#0b111c]/95 border-slate-800/80' : 'bg-white border-slate-200'}`}>
+
+      {/* ── Icon rail ─────────────────────────────────────────── */}
+      <div className={`flex flex-col items-center py-3 gap-0.5 w-[52px] border-r flex-shrink-0 ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
+        {LEFT_NAV_ITEMS.map(item => {
+          const active = activeNav === item.id;
+          const Icon = item.icon;
+          return (
+            <button
+              key={item.id}
+              onClick={() => { setActiveNav(item.id); if (!isExpanded) setIsExpanded(true); }}
+              title={item.label}
+              className={`w-9 h-9 flex flex-col items-center justify-center rounded-lg transition-all gap-0.5 group ${
+                active
+                  ? isDark ? 'bg-blue-600/15 text-blue-400' : 'bg-blue-50 text-blue-600'
+                  : isDark ? 'text-slate-500 hover:text-slate-200 hover:bg-slate-800/60' : 'text-slate-400 hover:text-slate-700 hover:bg-slate-50'
+              }`}
+            >
+              <Icon className="w-3.5 h-3.5" />
+              <span className={`text-[7px] font-bold uppercase tracking-wide leading-none ${
+                active
+                  ? isDark ? 'text-blue-400' : 'text-blue-600'
+                  : isDark ? 'text-slate-600 group-hover:text-slate-400' : 'text-slate-400 group-hover:text-slate-500'
+              }`}>
+                {item.label.slice(0, 4)}
+              </span>
+            </button>
+          );
+        })}
+
+        <div className="flex-1" />
+
+        {/* Collapse toggle */}
+        <button
+          onClick={() => setIsExpanded(p => !p)}
+          title={isExpanded ? 'Collapse panel' : 'Expand panel'}
+          className={`w-9 h-9 flex items-center justify-center rounded-lg transition-all mb-1 ${isDark ? 'text-slate-500 hover:text-slate-200 hover:bg-slate-800/60' : 'text-slate-400 hover:text-slate-700 hover:bg-slate-50'}`}
+        >
+          {isExpanded ? <ChevronLeft className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+        </button>
+      </div>
+
+      {/* ── Expanded filter panel ─────────────────────────────── */}
+      <div className={`flex flex-col overflow-hidden transition-all duration-300 ${isExpanded ? 'w-52' : 'w-0 opacity-0 pointer-events-none'}`}>
+
+        {/* Header */}
+        <div className={`px-4 py-3 border-b flex items-center justify-between flex-shrink-0 ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
+          <div className="flex items-center gap-2">
+            <div className={`p-1.5 rounded-md ${isDark ? 'bg-blue-600/10' : 'bg-blue-50'}`}>
+              <SlidersHorizontal className={`w-3.5 h-3.5 ${isDark ? 'text-blue-400' : 'text-blue-600'}`} />
+            </div>
+            <div>
+              <div className={`text-[9px] font-black uppercase tracking-widest ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Cohort</div>
+              <div className={`text-[12px] font-bold leading-tight ${isDark ? 'text-slate-100' : 'text-slate-900'}`}>Data Filters</div>
+            </div>
+          </div>
+          {totalActive > 0 && (
+            <span className="px-2 py-0.5 rounded-full bg-blue-600 text-white text-[9px] font-black">{totalActive}</span>
+          )}
+        </div>
+
+        {/* Filter groups */}
+        <div className="flex-1 overflow-y-auto p-2.5 space-y-1.5">
+          {FILTER_GROUPS.map(group => {
+            const isOpen = openSections.includes(group.key);
+            const groupCount = selected[group.key].length;
+            return (
+              <div key={group.key} className={`rounded-lg border overflow-hidden ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
+
+                {/* Group header */}
+                <button
+                  onClick={() => toggleSection(group.key)}
+                  className={`w-full px-3 py-2 flex items-center justify-between text-left transition-colors ${isDark ? 'hover:bg-slate-800/50' : 'hover:bg-slate-50'}`}
+                >
+                  <div className="flex items-center gap-1.5">
+                    <span className={`text-[11px] font-bold ${isDark ? 'text-slate-200' : 'text-slate-700'}`}>{group.label}</span>
+                    {groupCount > 0 && (
+                      <span className="w-4 h-4 rounded-full bg-blue-600 text-white text-[8px] font-black flex items-center justify-center leading-none">{groupCount}</span>
+                    )}
+                  </div>
+                  {isOpen
+                    ? <ChevronUp   className="w-3 h-3 text-slate-400 flex-shrink-0" />
+                    : <ChevronDown className="w-3 h-3 text-slate-400 flex-shrink-0" />
+                  }
+                </button>
+
+                {/* Options */}
+                {isOpen && (
+                  <div className={`px-3 pb-2.5 pt-1 space-y-1.5 border-t ${isDark ? 'border-slate-800 bg-slate-900/20' : 'border-slate-100 bg-slate-50/40'}`}>
+                    {group.options.map(option => {
+                      const checked = selected[group.key].includes(option);
+                      return (
+                        <label
+                          key={option}
+                          onClick={() => toggleValue(group.key as FilterKey, option)}
+                          className="flex items-center gap-2.5 cursor-pointer group"
+                        >
+                          <div className={`w-4 h-4 rounded flex items-center justify-center border transition-all flex-shrink-0 ${
+                            checked
+                              ? 'bg-blue-600 border-blue-600'
+                              : isDark ? 'border-slate-600 hover:border-blue-500' : 'border-slate-300 hover:border-blue-400'
+                          }`}>
+                            {checked && (
+                              <svg className="w-2.5 h-2.5 text-white" viewBox="0 0 10 10" fill="none">
+                                <path d="M1.5 5L4 7.5L8.5 2.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                              </svg>
+                            )}
+                          </div>
+                          <span className={`text-[11px] font-medium transition-colors select-none ${
+                            checked
+                              ? isDark ? 'text-blue-400' : 'text-blue-600'
+                              : isDark ? 'text-slate-400 group-hover:text-slate-200' : 'text-slate-600 group-hover:text-slate-800'
+                          }`}>
+                            {option}
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Clear all */}
+        {totalActive > 0 && (
+          <div className={`p-2.5 border-t flex-shrink-0 ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
+            <button
+              onClick={() => setSelected({ age: [], stage: [], subtype: [], gender: [] })}
+              className={`w-full py-2 rounded-lg text-[11px] font-bold transition-colors ${isDark ? 'bg-slate-800 text-slate-300 hover:bg-slate-700 hover:text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200 hover:text-slate-900'}`}
+            >
+              Clear All ({totalActive})
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+  const Breadcrumbs = ({
   activeDisease, 
   focusSymbol, 
   focusSubPage,
@@ -2885,6 +3093,7 @@ Return ONLY valid JSON.
              </div>
            </form>
         </aside>
+        <CohortFilterSidebar theme={theme} />
         {!isLeftSidebarOpen && (<button onClick={() => setIsLeftSidebarOpen(true)} className="absolute right-4 bottom-4 z-20 p-2.5 rounded-full bg-blue-600 text-white shadow-xl hover:scale-110 transition-transform"><MessageSquare className="w-5 h-5" /></button>)}
         <section className="order-1 flex-1 flex flex-col overflow-hidden relative min-w-0">
            <Breadcrumbs 
