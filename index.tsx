@@ -923,9 +923,9 @@ const CohortFilterSidebar = ({ theme, targets }: { theme: Theme; targets: Target
         ? `${name}: G=${t.geneticScore.toFixed(3)}, E=${t.expressionScore.toFixed(3)}, T=${t.targetScore.toFixed(3)}, GET=${(t.getScore ?? t.overallScore).toFixed(3)}, WINNER=${(t.winnerScore ?? 0).toFixed(3)}`
         : `${name}: (not in current target list)`;
       const prompt = `You are a drug discovery AI. Compare these two therapeutic targets in a concise, structured way:\n\n${ctx(g1Data, gene1.trim())}\n${ctx(g2Data, gene2.trim())}\n\nProvide: 1) Mechanistic differences, 2) Druggability comparison, 3) Evidence strength, 4) Clinical trial status if known, 5) Your recommendation on which to prioritize and why.\nKeep the response clear, scientific, and under 300 words. Use markdown formatting.`;
-      const res = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
+      const res = await fetch('/api/ai/chat', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${process.env.NVIDIA_API_KEY}` },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model: 'meta/llama-3.1-8b-instruct', messages: [{ role: 'user', content: prompt }], temperature: 0.5, max_tokens: 512 }),
       });
       const data = await res.json();
@@ -3197,10 +3197,10 @@ Return ONLY valid JSON.
       - Always work in the context of the current Target List and its active filters.`;
 
       const callAI = async (messages: Message[]) => {
-        if (process.env.NVIDIA_API_KEY) {
-          const res = await fetch("https://integrate.api.nvidia.com/v1/chat/completions", {
+        {
+          const res = await fetch("/api/ai/chat", {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${process.env.NVIDIA_API_KEY}` },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               model: "meta/llama-3.1-8b-instruct",
               messages: [
@@ -3220,14 +3220,6 @@ Return ONLY valid JSON.
               args: JSON.parse(tc.function.arguments) 
             }))
           };
-        } else {
-          const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
-          const response = await ai.models.generateContent({
-            model: 'gemini-3-flash-preview',
-            contents: messages.map(m => ({ role: m.role === 'user' ? 'user' : 'model', parts: [{ text: m.content }] })),
-            config: { tools: [{ functionDeclarations: tools as any }], systemInstruction }
-          });
-          return { text: response.text, functionCalls: response.functionCalls };
         }
       };
 

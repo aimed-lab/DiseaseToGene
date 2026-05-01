@@ -104,6 +104,23 @@ async function startServer() {
     }
   });
 
+  // NVIDIA AI Proxy — avoids browser CORS restrictions
+  app.post("/api/ai/chat", async (req, res) => {
+    const apiKey = process.env.NVIDIA_API_KEY;
+    if (!apiKey) return res.status(500).json({ error: "NVIDIA_API_KEY not configured" });
+    try {
+      const response = await fetch("https://integrate.api.nvidia.com/v1/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
+        body: JSON.stringify(req.body),
+      });
+      const data = await response.json();
+      res.json(data);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // PubTator Shared Fetch Helper
   const fetchPubTator = async (url: string, retries = 3, backoff = 1000): Promise<any> => {
     try {
