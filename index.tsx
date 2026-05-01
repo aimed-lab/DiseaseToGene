@@ -779,69 +779,210 @@ const TabNavigation = ({
 // Cohort Filter Sidebar
 // =============================================================================
 
-const FILTER_GROUPS = [
-  {
-    key: 'age',
-    label: 'Age Group',
-    options: ['50–60', '60–70', '70–80', '80+'],
-  },
-  {
-    key: 'stage',
-    label: 'Disease Stage',
-    options: ['Early Stage', 'MCI', 'Moderate', 'Late Stage'],
-  },
-  {
-    key: 'subtype',
-    label: 'Genetic Subtype',
-    options: ['APOE4+', 'APOE4−', 'TREM2 Variant', 'Sporadic'],
-  },
-  {
-    key: 'gender',
-    label: 'Gender',
-    options: ['Male', 'Female', 'Other'],
-  },
+const COHORT_FILTER_GROUPS = [
+  { key: 'age',     label: 'Age Group',       options: ['50–60', '60–70', '70–80', '80+']               },
+  { key: 'stage',   label: 'Disease Stage',   options: ['Early Stage', 'MCI', 'Moderate', 'Late Stage'] },
+  { key: 'subtype', label: 'Genetic Subtype', options: ['APOE4+', 'APOE4−', 'TREM2 Variant', 'Sporadic']},
+  { key: 'gender',  label: 'Gender',          options: ['Male', 'Female', 'Other']                       },
 ] as const;
 
-type FilterKey = typeof FILTER_GROUPS[number]['key'];
+type CohortFilterKey = typeof COHORT_FILTER_GROUPS[number]['key'];
+
+const SCORE_SLIDERS = [
+  { key: 'geneticScore',    label: 'G Score',    accent: '#3b82f6' },
+  { key: 'expressionScore', label: 'E Score',    accent: '#10b981' },
+  { key: 'targetScore',     label: 'T Score',    accent: '#f59e0b' },
+  { key: 'getScore',        label: 'GET Score',  accent: '#8b5cf6' },
+  { key: 'overallScore',    label: 'Overall',    accent: '#6366f1' },
+  { key: 'literatureScore', label: 'Literature', accent: '#ec4899' },
+  { key: 'winnerScore',     label: 'WINNER',     accent: '#06b6d4' },
+] as const;
+
+const RANKING_SLIDERS = [
+  { key: 'rwr',    label: 'RWR Score',    accent: '#8b5cf6' },
+  { key: 'winner', label: 'WINNER Score', accent: '#06b6d4' },
+] as const;
 
 const LEFT_NAV_ITEMS = [
-  { id: 'workspace', icon: Home,              label: 'Workspace' },
-  { id: 'targets',   icon: List,              label: 'Targets'   },
-  { id: 'filters',   icon: Filter,            label: 'Filters'   },
-  { id: 'rankings',  icon: BarChart3,         label: 'Rankings'  },
-  { id: 'compare',   icon: Layers,            label: 'Compare'   },
-  { id: 'reports',   icon: FileText,          label: 'Reports'   },
-  { id: 'settings',  icon: Settings,          label: 'Settings'  },
+  { id: 'workspace', icon: Home,     label: 'Workspace' },
+  { id: 'targets',   icon: List,     label: 'Targets'   },
+  { id: 'filters',   icon: Filter,   label: 'Filters'   },
+  { id: 'rankings',  icon: BarChart3,label: 'Rankings'  },
+  { id: 'compare',   icon: Layers,   label: 'Compare'   },
+  { id: 'settings',  icon: Settings, label: 'Settings'  },
 ] as const;
 
-const CohortFilterSidebar = ({ theme }: { theme: Theme }) => {
-  const [isExpanded, setIsExpanded]   = useState(true);
-  const [activeNav, setActiveNav]     = useState<string>('filters');
+// ── Dual-handle range slider ─────────────────────────────────────────────────
+const DualSlider = ({
+  label, values, onChange, accent, isDark,
+}: {
+  label: string;
+  values: [number, number];
+  onChange: (v: [number, number]) => void;
+  accent: string;
+  isDark: boolean;
+}) => {
+  const [min, max] = values;
+  const pct = (v: number) => `${(v * 100).toFixed(0)}%`;
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center justify-between">
+        <span className={`text-[10px] font-bold ${isDark ? 'text-slate-300' : 'text-slate-700'}`}>{label}</span>
+        <span className={`text-[9px] font-mono ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
+          {min.toFixed(2)} – {max.toFixed(2)}
+        </span>
+      </div>
+      <div className="relative h-4 flex items-center">
+        {/* Track */}
+        <div className={`absolute w-full h-1 rounded-full ${isDark ? 'bg-slate-700' : 'bg-slate-200'}`}>
+          <div
+            className="absolute h-full rounded-full opacity-80"
+            style={{ background: accent, left: pct(min), right: `${100 - max * 100}%` }}
+          />
+        </div>
+        {/* Min thumb */}
+        <input
+          type="range" min={0} max={1} step={0.01} value={min}
+          onChange={e => onChange([Math.min(+e.target.value, max - 0.05), max])}
+          className="absolute w-full h-4 appearance-none bg-transparent cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-white [&::-webkit-slider-thumb]:shadow-md"
+          style={{ '--thumb-bg': accent } as React.CSSProperties}
+        />
+        {/* Max thumb — rendered on top */}
+        <input
+          type="range" min={0} max={1} step={0.01} value={max}
+          onChange={e => onChange([min, Math.max(+e.target.value, min + 0.05)])}
+          className="absolute w-full h-4 appearance-none bg-transparent cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-white [&::-webkit-slider-thumb]:shadow-md"
+          style={{ '--thumb-bg': accent } as React.CSSProperties}
+        />
+      </div>
+    </div>
+  );
+};
+
+const CohortFilterSidebar = ({ theme, targets }: { theme: Theme; targets: Target[] }) => {
+  const isDark = theme === 'dark';
+
+  // ── nav state ────────────────────────────────────────────────────────────
+  const [isExpanded, setIsExpanded] = useState(true);
+  const [activeNav, setActiveNav]   = useState<string>('filters');
+
+  // ── filters panel ────────────────────────────────────────────────────────
   const [openSections, setOpenSections] = useState<string[]>(['age', 'stage', 'subtype', 'gender']);
-  const [selected, setSelected] = useState<Record<FilterKey, string[]>>({
+  const [selected, setSelected] = useState<Record<CohortFilterKey, string[]>>({
     age: [], stage: [], subtype: [], gender: [],
   });
+  const [scoreRanges, setScoreRanges] = useState<Record<string, [number, number]>>(
+    Object.fromEntries(SCORE_SLIDERS.map(s => [s.key, [0, 1]])) as Record<string, [number, number]>
+  );
 
-  const toggleValue = (group: FilterKey, value: string) =>
+  // ── rankings panel ───────────────────────────────────────────────────────
+  const [rankRanges, setRankRanges] = useState<Record<string, [number, number]>>({
+    rwr: [0, 1], winner: [0, 1],
+  });
+
+  // ── compare panel ────────────────────────────────────────────────────────
+  const [gene1, setGene1]         = useState('');
+  const [gene2, setGene2]         = useState('');
+  const [comparing, setComparing] = useState(false);
+  const [compareResult, setCompareResult] = useState<string>('');
+  const [compareError, setCompareError]   = useState('');
+
+  // ── settings panel ───────────────────────────────────────────────────────
+  const [profile, setProfile] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('dtt_profile') || '{}'); } catch { return {}; }
+  });
+  const [openDocSections, setOpenDocSections] = useState<string[]>(['about']);
+
+  // ── helpers ──────────────────────────────────────────────────────────────
+  const toggleCheckbox = (group: CohortFilterKey, value: string) =>
     setSelected(prev => ({
       ...prev,
-      [group]: prev[group].includes(value)
-        ? prev[group].filter(v => v !== value)
-        : [...prev[group], value],
+      [group]: prev[group].includes(value) ? prev[group].filter(v => v !== value) : [...prev[group], value],
     }));
 
   const toggleSection = (key: string) =>
-    setOpenSections(prev =>
-      prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key],
-    );
+    setOpenSections(prev => prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key]);
 
   const totalActive = Object.values(selected).flat().length;
-  const isDark = theme === 'dark';
+
+  const saveProfile = (field: string, value: string) => {
+    const updated = { ...profile, [field]: value };
+    setProfile(updated);
+    localStorage.setItem('dtt_profile', JSON.stringify(updated));
+  };
+
+  const handleCompare = async () => {
+    if (!gene1.trim() || !gene2.trim()) return;
+    setComparing(true);
+    setCompareResult('');
+    setCompareError('');
+    try {
+      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
+      const g1Data = targets.find(t => t.symbol.toUpperCase() === gene1.trim().toUpperCase());
+      const g2Data = targets.find(t => t.symbol.toUpperCase() === gene2.trim().toUpperCase());
+      const ctx = (t: Target | undefined, name: string) => t
+        ? `${name}: G=${t.geneticScore.toFixed(3)}, E=${t.expressionScore.toFixed(3)}, T=${t.targetScore.toFixed(3)}, GET=${(t.getScore ?? t.overallScore).toFixed(3)}, WINNER=${(t.winnerScore ?? 0).toFixed(3)}`
+        : `${name}: (not in current target list)`;
+      const prompt = `You are a drug discovery AI. Compare these two therapeutic targets in a concise, structured way:
+
+${ctx(g1Data, gene1.trim())}
+${ctx(g2Data, gene2.trim())}
+
+Provide: 1) Mechanistic differences, 2) Druggability comparison, 3) Evidence strength, 4) Clinical trial status if known, 5) Your recommendation on which to prioritize and why.
+Keep the response clear, scientific, and under 300 words. Use markdown formatting.`;
+      const response = await ai.models.generateContent({ model: 'gemini-2.0-flash', contents: prompt });
+      setCompareResult(response.text ?? 'No response generated.');
+    } catch (err) {
+      setCompareError('AI comparison failed. Check your API key or network.');
+    } finally {
+      setComparing(false);
+    }
+  };
+
+  // ── panel content ────────────────────────────────────────────────────────
+  const panelConfig: Record<string, { icon: React.ElementType; title: string; sub: string }> = {
+    workspace: { icon: Home,             title: 'Workspace',  sub: 'Overview'       },
+    targets:   { icon: List,             title: 'Targets',    sub: 'Gene list'      },
+    filters:   { icon: SlidersHorizontal,title: 'Filters',    sub: 'Cohort data'    },
+    rankings:  { icon: BarChart3,         title: 'Rankings',   sub: 'Score ranges'   },
+    compare:   { icon: Layers,           title: 'Compare',    sub: 'AI gene compare'},
+    settings:  { icon: Settings,         title: 'Settings',   sub: 'Profile & docs' },
+  };
+  const pc = panelConfig[activeNav] ?? panelConfig['filters'];
+  const PanelIcon = pc.icon;
+
+  const DOC_SECTIONS = [
+    {
+      key: 'about',
+      title: 'About DiseaseToTarget',
+      content: `DiseaseToTarget (DTT) is an AI-powered therapeutic target discovery platform. It retrieves disease-associated genes from Open Targets, scores them using a multi-factor GET formula, and ranks them by druggability evidence.`,
+    },
+    {
+      key: 'get',
+      title: 'How GET Score Works',
+      content: `GET = G × 0.45 + E × 0.25 + T × 0.30\n\n• **G** — Genetic score (Open Targets association evidence)\n• **E** — Expression score (tissue expression selectivity)\n• **T** — Target score (tractability + clinical trial signal)\n\nA velocity bonus (×0.15) rewards fast-rising literature genes.`,
+    },
+    {
+      key: 'csv',
+      title: 'Cohort CSV Format',
+      content: `Upload a patient cohort CSV to replace the generic E score with your own expression data.\n\n**Required format:**\n\`\`\`\ngene_symbol,early_stage,late_stage,APOE4_pos\nAPOE,12.4,8.2,15.6\nTREM2,3.2,9.8,4.1\nBACE1,8.7,6.1,9.2\n\`\`\`\n\n• Column 1 must be **gene_symbol** (approved symbols, e.g. APOE not ENSG IDs)\n• Remaining columns = cohort names with numeric expression values (TPM/FPKM)\n• UTF-8 encoding • Max 10 MB • .csv only\n\nUpload via the **terminal chat** by typing: *upload cohort CSV*`,
+    },
+    {
+      key: 'scores',
+      title: 'Score Reference',
+      content: `| Score | Range | Meaning |\n|---|---|---|\n| G Score | 0–1 | Genetic association strength |\n| E Score | 0–1 | Expression selectivity |\n| T Score | 0–1 | Target tractability |\n| GET | 0–1 | Combined priority score |\n| RWR | 0–1 | Network propagation rank |\n| WINNER | 0–1 | Network-based prioritization |\n| Literature | 0–1 | Publication evidence |\n| Overall | 0–1 | Aggregate rank |`,
+    },
+    {
+      key: 'sources',
+      title: 'Data Sources',
+      content: `• **Open Targets** — Gene-disease associations, expression, tractability\n• **PubTator / PubMed** — Literature mining\n• **STRING DB** — Protein interaction networks\n• **ClinicalTrials.gov** — Trial signal scoring\n• **Enrichr** — Pathway enrichment`,
+    },
+  ];
 
   return (
     <div className={`flex shrink-0 h-full rounded-xl overflow-hidden border shadow-lg shadow-slate-950/5 transition-all duration-300 ${isDark ? 'bg-[#0b111c]/95 border-slate-800/80' : 'bg-white border-slate-200'}`}>
 
-      {/* ── Icon rail ─────────────────────────────────────────── */}
+      {/* ── Icon rail ─────────────────────────────────────────────────────── */}
       <div className={`flex flex-col items-center py-3 gap-0.5 w-[52px] border-r flex-shrink-0 ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
         {LEFT_NAV_ITEMS.map(item => {
           const active = activeNav === item.id;
@@ -858,121 +999,279 @@ const CohortFilterSidebar = ({ theme }: { theme: Theme }) => {
               }`}
             >
               <Icon className="w-3.5 h-3.5" />
-              <span className={`text-[7px] font-bold uppercase tracking-wide leading-none ${
-                active
-                  ? isDark ? 'text-blue-400' : 'text-blue-600'
-                  : isDark ? 'text-slate-600 group-hover:text-slate-400' : 'text-slate-400 group-hover:text-slate-500'
-              }`}>
+              <span className={`text-[7px] font-bold uppercase tracking-wide leading-none ${active ? (isDark ? 'text-blue-400' : 'text-blue-600') : (isDark ? 'text-slate-600 group-hover:text-slate-400' : 'text-slate-400 group-hover:text-slate-500')}`}>
                 {item.label.slice(0, 4)}
               </span>
             </button>
           );
         })}
-
         <div className="flex-1" />
-
-        {/* Collapse toggle */}
         <button
           onClick={() => setIsExpanded(p => !p)}
-          title={isExpanded ? 'Collapse panel' : 'Expand panel'}
+          title={isExpanded ? 'Collapse' : 'Expand'}
           className={`w-9 h-9 flex items-center justify-center rounded-lg transition-all mb-1 ${isDark ? 'text-slate-500 hover:text-slate-200 hover:bg-slate-800/60' : 'text-slate-400 hover:text-slate-700 hover:bg-slate-50'}`}
         >
           {isExpanded ? <ChevronLeft className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
         </button>
       </div>
 
-      {/* ── Expanded filter panel ─────────────────────────────── */}
-      <div className={`flex flex-col overflow-hidden transition-all duration-300 ${isExpanded ? 'w-52' : 'w-0 opacity-0 pointer-events-none'}`}>
+      {/* ── Expanded panel ────────────────────────────────────────────────── */}
+      <div className={`flex flex-col overflow-hidden transition-all duration-300 ${isExpanded ? 'w-56' : 'w-0 opacity-0 pointer-events-none'}`}>
 
-        {/* Header */}
-        <div className={`px-4 py-3 border-b flex items-center justify-between flex-shrink-0 ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
+        {/* Panel header */}
+        <div className={`px-3 py-2.5 border-b flex items-center justify-between flex-shrink-0 ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
           <div className="flex items-center gap-2">
             <div className={`p-1.5 rounded-md ${isDark ? 'bg-blue-600/10' : 'bg-blue-50'}`}>
-              <SlidersHorizontal className={`w-3.5 h-3.5 ${isDark ? 'text-blue-400' : 'text-blue-600'}`} />
+              <PanelIcon className={`w-3.5 h-3.5 ${isDark ? 'text-blue-400' : 'text-blue-600'}`} />
             </div>
             <div>
-              <div className={`text-[9px] font-black uppercase tracking-widest ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Cohort</div>
-              <div className={`text-[12px] font-bold leading-tight ${isDark ? 'text-slate-100' : 'text-slate-900'}`}>Data Filters</div>
+              <div className={`text-[9px] font-black uppercase tracking-widest leading-none ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>{pc.sub}</div>
+              <div className={`text-[12px] font-bold leading-tight ${isDark ? 'text-slate-100' : 'text-slate-900'}`}>{pc.title}</div>
             </div>
           </div>
-          {totalActive > 0 && (
-            <span className="px-2 py-0.5 rounded-full bg-blue-600 text-white text-[9px] font-black">{totalActive}</span>
+          {activeNav === 'filters' && totalActive > 0 && (
+            <span className="px-1.5 py-0.5 rounded-full bg-blue-600 text-white text-[9px] font-black">{totalActive}</span>
           )}
         </div>
 
-        {/* Filter groups */}
-        <div className="flex-1 overflow-y-auto p-2.5 space-y-1.5">
-          {FILTER_GROUPS.map(group => {
-            const isOpen = openSections.includes(group.key);
-            const groupCount = selected[group.key].length;
-            return (
-              <div key={group.key} className={`rounded-lg border overflow-hidden ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
-
-                {/* Group header */}
-                <button
-                  onClick={() => toggleSection(group.key)}
-                  className={`w-full px-3 py-2 flex items-center justify-between text-left transition-colors ${isDark ? 'hover:bg-slate-800/50' : 'hover:bg-slate-50'}`}
-                >
-                  <div className="flex items-center gap-1.5">
-                    <span className={`text-[11px] font-bold ${isDark ? 'text-slate-200' : 'text-slate-700'}`}>{group.label}</span>
-                    {groupCount > 0 && (
-                      <span className="w-4 h-4 rounded-full bg-blue-600 text-white text-[8px] font-black flex items-center justify-center leading-none">{groupCount}</span>
+        {/* ── FILTERS panel ─────────────────────────────────────────────── */}
+        {activeNav === 'filters' && (
+          <>
+            <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
+              {/* Cohort checkbox filters */}
+              {COHORT_FILTER_GROUPS.map(group => {
+                const isOpen = openSections.includes(group.key);
+                const count  = selected[group.key].length;
+                return (
+                  <div key={group.key} className={`rounded-lg border overflow-hidden ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
+                    <button
+                      onClick={() => toggleSection(group.key)}
+                      className={`w-full px-3 py-2 flex items-center justify-between text-left transition-colors ${isDark ? 'hover:bg-slate-800/50' : 'hover:bg-slate-50'}`}
+                    >
+                      <div className="flex items-center gap-1.5">
+                        <span className={`text-[11px] font-bold ${isDark ? 'text-slate-200' : 'text-slate-700'}`}>{group.label}</span>
+                        {count > 0 && <span className="w-4 h-4 rounded-full bg-blue-600 text-white text-[8px] font-black flex items-center justify-center">{count}</span>}
+                      </div>
+                      {isOpen ? <ChevronUp className="w-3 h-3 text-slate-400" /> : <ChevronDown className="w-3 h-3 text-slate-400" />}
+                    </button>
+                    {isOpen && (
+                      <div className={`px-3 pb-2 pt-1 space-y-1.5 border-t ${isDark ? 'border-slate-800 bg-slate-900/20' : 'border-slate-100 bg-slate-50/40'}`}>
+                        {group.options.map(opt => {
+                          const checked = selected[group.key].includes(opt);
+                          return (
+                            <label key={opt} onClick={() => toggleCheckbox(group.key as CohortFilterKey, opt)} className="flex items-center gap-2 cursor-pointer group">
+                              <div className={`w-4 h-4 rounded flex items-center justify-center border transition-all flex-shrink-0 ${checked ? 'bg-blue-600 border-blue-600' : isDark ? 'border-slate-600 hover:border-blue-500' : 'border-slate-300 hover:border-blue-400'}`}>
+                                {checked && <svg className="w-2.5 h-2.5 text-white" viewBox="0 0 10 10" fill="none"><path d="M1.5 5L4 7.5L8.5 2.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                              </div>
+                              <span className={`text-[11px] font-medium select-none transition-colors ${checked ? (isDark ? 'text-blue-400' : 'text-blue-600') : (isDark ? 'text-slate-400 group-hover:text-slate-200' : 'text-slate-600 group-hover:text-slate-800')}`}>{opt}</span>
+                            </label>
+                          );
+                        })}
+                      </div>
                     )}
                   </div>
-                  {isOpen
-                    ? <ChevronUp   className="w-3 h-3 text-slate-400 flex-shrink-0" />
-                    : <ChevronDown className="w-3 h-3 text-slate-400 flex-shrink-0" />
-                  }
-                </button>
+                );
+              })}
 
-                {/* Options */}
-                {isOpen && (
-                  <div className={`px-3 pb-2.5 pt-1 space-y-1.5 border-t ${isDark ? 'border-slate-800 bg-slate-900/20' : 'border-slate-100 bg-slate-50/40'}`}>
-                    {group.options.map(option => {
-                      const checked = selected[group.key].includes(option);
-                      return (
-                        <label
-                          key={option}
-                          onClick={() => toggleValue(group.key as FilterKey, option)}
-                          className="flex items-center gap-2.5 cursor-pointer group"
-                        >
-                          <div className={`w-4 h-4 rounded flex items-center justify-center border transition-all flex-shrink-0 ${
-                            checked
-                              ? 'bg-blue-600 border-blue-600'
-                              : isDark ? 'border-slate-600 hover:border-blue-500' : 'border-slate-300 hover:border-blue-400'
-                          }`}>
-                            {checked && (
-                              <svg className="w-2.5 h-2.5 text-white" viewBox="0 0 10 10" fill="none">
-                                <path d="M1.5 5L4 7.5L8.5 2.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                              </svg>
-                            )}
-                          </div>
-                          <span className={`text-[11px] font-medium transition-colors select-none ${
-                            checked
-                              ? isDark ? 'text-blue-400' : 'text-blue-600'
-                              : isDark ? 'text-slate-400 group-hover:text-slate-200' : 'text-slate-600 group-hover:text-slate-800'
-                          }`}>
-                            {option}
-                          </span>
-                        </label>
-                      );
-                    })}
-                  </div>
-                )}
+              {/* Score range sliders */}
+              <div className={`rounded-lg border overflow-hidden ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
+                <div className={`px-3 py-2 flex items-center justify-between ${isDark ? 'bg-slate-900/40' : 'bg-slate-50'}`}>
+                  <span className={`text-[11px] font-bold ${isDark ? 'text-slate-200' : 'text-slate-700'}`}>Score Ranges</span>
+                  <span className={`text-[9px] font-bold uppercase tracking-wider ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>0 – 1</span>
+                </div>
+                <div className={`px-3 py-2 space-y-3 border-t ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
+                  {SCORE_SLIDERS.map(s => (
+                    <DualSlider
+                      key={s.key}
+                      label={s.label}
+                      values={scoreRanges[s.key] as [number, number]}
+                      onChange={v => setScoreRanges(prev => ({ ...prev, [s.key]: v }))}
+                      accent={s.accent}
+                      isDark={isDark}
+                    />
+                  ))}
+                </div>
               </div>
-            );
-          })}
-        </div>
+            </div>
 
-        {/* Clear all */}
-        {totalActive > 0 && (
-          <div className={`p-2.5 border-t flex-shrink-0 ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
+            {totalActive > 0 && (
+              <div className={`p-2 border-t flex-shrink-0 ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
+                <button
+                  onClick={() => setSelected({ age: [], stage: [], subtype: [], gender: [] })}
+                  className={`w-full py-1.5 rounded-lg text-[10px] font-bold transition-colors ${isDark ? 'bg-slate-800 text-slate-300 hover:bg-slate-700 hover:text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
+                >
+                  Clear All ({totalActive})
+                </button>
+              </div>
+            )}
+          </>
+        )}
+
+        {/* ── RANKINGS panel ────────────────────────────────────────────── */}
+        {activeNav === 'rankings' && (
+          <div className="flex-1 overflow-y-auto p-3 space-y-4">
+            <p className={`text-[10px] leading-relaxed ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
+              Filter the gene list by network-based ranking scores. Drag both handles to set a min–max range.
+            </p>
+
+            {/* RWR */}
+            <div className={`p-3 rounded-xl border space-y-2 ${isDark ? 'border-slate-800 bg-slate-900/30' : 'border-slate-200 bg-slate-50'}`}>
+              <div className="flex items-center gap-2 mb-1">
+                <div className="w-2 h-2 rounded-full bg-violet-500" />
+                <span className={`text-[11px] font-bold uppercase tracking-wide ${isDark ? 'text-slate-200' : 'text-slate-700'}`}>RWR Score</span>
+              </div>
+              <p className={`text-[9px] leading-relaxed ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
+                Random Walk with Restart — measures proximity to seed genes in the protein interaction network.
+              </p>
+              <DualSlider label="RWR Score" values={rankRanges.rwr as [number, number]} onChange={v => setRankRanges(p => ({ ...p, rwr: v }))} accent="#8b5cf6" isDark={isDark} />
+            </div>
+
+            {/* WINNER */}
+            <div className={`p-3 rounded-xl border space-y-2 ${isDark ? 'border-slate-800 bg-slate-900/30' : 'border-slate-200 bg-slate-50'}`}>
+              <div className="flex items-center gap-2 mb-1">
+                <div className="w-2 h-2 rounded-full bg-cyan-500" />
+                <span className={`text-[11px] font-bold uppercase tracking-wide ${isDark ? 'text-slate-200' : 'text-slate-700'}`}>WINNER Score</span>
+              </div>
+              <p className={`text-[9px] leading-relaxed ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
+                Network-based prioritization (Nguyen et al. 2022). Combines network topology with disease seed strength.
+              </p>
+              <DualSlider label="WINNER Score" values={rankRanges.winner as [number, number]} onChange={v => setRankRanges(p => ({ ...p, winner: v }))} accent="#06b6d4" isDark={isDark} />
+            </div>
+
             <button
-              onClick={() => setSelected({ age: [], stage: [], subtype: [], gender: [] })}
-              className={`w-full py-2 rounded-lg text-[11px] font-bold transition-colors ${isDark ? 'bg-slate-800 text-slate-300 hover:bg-slate-700 hover:text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200 hover:text-slate-900'}`}
+              onClick={() => setRankRanges({ rwr: [0, 1], winner: [0, 1] })}
+              className={`w-full py-1.5 rounded-lg text-[10px] font-bold transition-colors ${isDark ? 'bg-slate-800 text-slate-400 hover:text-white hover:bg-slate-700' : 'bg-slate-100 text-slate-500 hover:bg-slate-200 hover:text-slate-800'}`}
             >
-              Clear All ({totalActive})
+              Reset Ranges
             </button>
+          </div>
+        )}
+
+        {/* ── COMPARE panel ─────────────────────────────────────────────── */}
+        {activeNav === 'compare' && (
+          <div className="flex flex-col flex-1 overflow-hidden">
+            <div className="p-3 space-y-2.5 flex-shrink-0">
+              <p className={`text-[10px] leading-relaxed ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
+                Enter two gene symbols from your target list to get an AI-powered side-by-side comparison.
+              </p>
+              {/* Gene inputs */}
+              {[{ val: gene1, set: setGene1, ph: 'Gene 1  e.g. APOE' }, { val: gene2, set: setGene2, ph: 'Gene 2  e.g. TREM2' }].map((inp, i) => (
+                <div key={i} className="relative">
+                  <input
+                    value={inp.val}
+                    onChange={e => inp.set(e.target.value.toUpperCase())}
+                    placeholder={inp.ph}
+                    list={`gene-list-${i}`}
+                    className={`w-full px-3 py-2 rounded-lg border text-[11px] font-mono font-bold outline-none transition-colors ${isDark ? 'bg-slate-900 border-slate-700 text-white placeholder-slate-600 focus:border-blue-500' : 'bg-white border-slate-300 text-slate-900 placeholder-slate-400 focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20'}`}
+                  />
+                  <datalist id={`gene-list-${i}`}>
+                    {targets.slice(0, 100).map(t => <option key={t.symbol} value={t.symbol} />)}
+                  </datalist>
+                </div>
+              ))}
+              <button
+                onClick={handleCompare}
+                disabled={comparing || !gene1.trim() || !gene2.trim()}
+                className={`w-full py-2 rounded-lg text-[11px] font-bold flex items-center justify-center gap-2 transition-all ${
+                  comparing || !gene1.trim() || !gene2.trim()
+                    ? 'opacity-40 cursor-not-allowed bg-blue-600 text-white'
+                    : 'bg-blue-600 text-white hover:bg-blue-700 shadow-md shadow-blue-600/20'
+                }`}
+              >
+                {comparing ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Comparing…</> : <><Sparkles className="w-3.5 h-3.5" /> Compare with AI</>}
+              </button>
+              {compareError && <p className="text-[10px] text-rose-500 font-medium">{compareError}</p>}
+            </div>
+
+            {/* AI result */}
+            {compareResult && (
+              <div className={`flex-1 overflow-y-auto mx-3 mb-3 p-3 rounded-xl border text-[11px] leading-relaxed ${isDark ? 'border-slate-800 bg-slate-900/40 text-slate-300' : 'border-slate-200 bg-slate-50 text-slate-700'}`}>
+                <div className="flex items-center gap-1.5 mb-2 pb-2 border-b border-slate-200 dark:border-slate-700">
+                  <Sparkles className="w-3 h-3 text-blue-500" />
+                  <span className={`text-[9px] font-black uppercase tracking-widest ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>AI Analysis — {gene1} vs {gene2}</span>
+                </div>
+                <div className="markdown-body prose prose-sm prose-neutral dark:prose-invert max-w-none">
+                  <Markdown>{compareResult}</Markdown>
+                </div>
+              </div>
+            )}
+            {!compareResult && !comparing && (
+              <div className={`flex-1 flex flex-col items-center justify-center px-4 pb-6 text-center ${isDark ? 'text-slate-600' : 'text-slate-300'}`}>
+                <Layers className="w-10 h-10 mb-3 opacity-30" />
+                <p className={`text-[10px] font-semibold ${isDark ? 'text-slate-600' : 'text-slate-400'}`}>Select two genes above and click Compare</p>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── WORKSPACE / TARGETS placeholder panels ────────────────────── */}
+        {(activeNav === 'workspace' || activeNav === 'targets') && (
+          <div className="flex-1 flex flex-col items-center justify-center px-4 text-center">
+            <div className={`p-4 rounded-full mb-3 ${isDark ? 'bg-slate-800' : 'bg-slate-100'}`}>
+              <PanelIcon className={`w-8 h-8 opacity-30 ${isDark ? 'text-slate-400' : 'text-slate-500'}`} />
+            </div>
+            <p className={`text-[11px] font-bold ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>{pc.title}</p>
+            <p className={`text-[10px] mt-1 ${isDark ? 'text-slate-600' : 'text-slate-400'}`}>Use the main panel →</p>
+          </div>
+        )}
+
+        {/* ── SETTINGS panel ────────────────────────────────────────────── */}
+        {activeNav === 'settings' && (
+          <div className="flex-1 overflow-y-auto p-2.5 space-y-2">
+            {/* User profile */}
+            <div className={`rounded-xl border overflow-hidden ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
+              <div className={`px-3 py-2 flex items-center gap-2 ${isDark ? 'bg-slate-900/40' : 'bg-slate-50'}`}>
+                <Users className={`w-3.5 h-3.5 ${isDark ? 'text-slate-400' : 'text-slate-500'}`} />
+                <span className={`text-[11px] font-bold ${isDark ? 'text-slate-200' : 'text-slate-700'}`}>User Profile</span>
+              </div>
+              <div className={`p-3 space-y-2 border-t ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
+                {[
+                  { field: 'name',        label: 'Name',        ph: 'Full name'        },
+                  { field: 'email',       label: 'Email',       ph: 'you@institution.edu' },
+                  { field: 'institution', label: 'Institution', ph: 'e.g. UAB SPARC'   },
+                  { field: 'role',        label: 'Role',        ph: 'e.g. Researcher'  },
+                ].map(f => (
+                  <div key={f.field}>
+                    <label className={`text-[9px] font-bold uppercase tracking-wider block mb-0.5 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>{f.label}</label>
+                    <input
+                      value={profile[f.field] || ''}
+                      onChange={e => saveProfile(f.field, e.target.value)}
+                      placeholder={f.ph}
+                      className={`w-full px-2.5 py-1.5 rounded-md border text-[11px] outline-none transition-colors ${isDark ? 'bg-slate-900 border-slate-700 text-white placeholder-slate-600 focus:border-blue-500' : 'bg-white border-slate-300 text-slate-800 placeholder-slate-400 focus:border-blue-500 focus:ring-1 focus:ring-blue-500/10'}`}
+                    />
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Documentation */}
+            <div className={`rounded-xl border overflow-hidden ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
+              <div className={`px-3 py-2 flex items-center gap-2 ${isDark ? 'bg-slate-900/40' : 'bg-slate-50'}`}>
+                <BookOpen className={`w-3.5 h-3.5 ${isDark ? 'text-slate-400' : 'text-slate-500'}`} />
+                <span className={`text-[11px] font-bold ${isDark ? 'text-slate-200' : 'text-slate-700'}`}>Documentation</span>
+              </div>
+              <div className={`divide-y ${isDark ? 'divide-slate-800' : 'divide-slate-100'}`}>
+                {DOC_SECTIONS.map(sec => {
+                  const open = openDocSections.includes(sec.key);
+                  return (
+                    <div key={sec.key}>
+                      <button
+                        onClick={() => setOpenDocSections(p => open ? p.filter(k => k !== sec.key) : [...p, sec.key])}
+                        className={`w-full px-3 py-2 flex items-center justify-between text-left transition-colors ${isDark ? 'hover:bg-slate-800/40' : 'hover:bg-slate-50'}`}
+                      >
+                        <span className={`text-[10px] font-bold ${isDark ? 'text-slate-300' : 'text-slate-600'}`}>{sec.title}</span>
+                        {open ? <ChevronUp className="w-3 h-3 text-slate-400" /> : <ChevronDown className="w-3 h-3 text-slate-400" />}
+                      </button>
+                      {open && (
+                        <div className={`px-3 pb-3 pt-1 text-[10px] leading-relaxed whitespace-pre-line ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+                          <Markdown>{sec.content}</Markdown>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
           </div>
         )}
       </div>
@@ -3093,7 +3392,7 @@ Return ONLY valid JSON.
              </div>
            </form>
         </aside>
-        <CohortFilterSidebar theme={theme} />
+        <CohortFilterSidebar theme={theme} targets={researchState.targets} />
         {!isLeftSidebarOpen && (<button onClick={() => setIsLeftSidebarOpen(true)} className="absolute right-4 bottom-4 z-20 p-2.5 rounded-full bg-blue-600 text-white shadow-xl hover:scale-110 transition-transform"><MessageSquare className="w-5 h-5" /></button>)}
         <section className="order-1 flex-1 flex flex-col overflow-hidden relative min-w-0">
            <Breadcrumbs 
