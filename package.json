@@ -1,0 +1,40 @@
+{
+  "name": "diseasetotarget",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx server.ts",
+    "build": "vite build",
+    "preview": "vite preview",
+    "lint": "tsc --noEmit",
+    "start": "node server.ts"
+  },
+  "dependencies": {
+    "@google/genai": "1.32.0",
+    "@notionhq/client": "^5.9.0",
+    "@tailwindcss/typography": "^0.5.19",
+    "@tailwindcss/vite": "^4.2.2",
+    "@types/express": "^5.0.6",
+    "cookie-parser": "^1.4.7",
+    "d3": "7.9.0",
+    "docx": "^9.6.0",
+    "express": "^5.2.1",
+    "file-saver": "^2.0.5",
+    "googleapis": "^171.4.0",
+    "lucide-react": "0.460.0",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "react-markdown": "^10.1.0",
+    "recharts": "^3.8.0",
+    "tailwindcss": "^4.2.2",
+    "tsx": "^4.21.0"
+  },
+  "devDependencies": {
+    "@netlify/functions": "^5.2.0",
+    "@types/node": "^22.14.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "typescript": "~5.8.2",
+    "vite": "^6.2.0"
+  }
+}
