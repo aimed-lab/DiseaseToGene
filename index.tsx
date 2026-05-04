@@ -881,14 +881,14 @@ const CohortFilterSidebar = ({ theme, targets, activeDisease, onScoreRangesChang
     Object.fromEntries(SCORE_SLIDERS.map(s => [s.key, [0, 1]])) as Record<string, [number, number]>
   );
 
-  // notify parent whenever score/rank ranges change so displayTargets can filter
-  useEffect(() => { onScoreRangesChange?.(scoreRanges); }, [scoreRanges]);
-  useEffect(() => { onRankRangesChange?.(rankRanges); }, [rankRanges]);
-
   // ── rankings panel ───────────────────────────────────────────────────────
   const [rankRanges, setRankRanges] = useState<Record<string, [number, number]>>({
     rwr: [0, 1], winner: [0, 1],
   });
+
+  // notify parent whenever score/rank ranges change so displayTargets can filter
+  useEffect(() => { onScoreRangesChange?.(scoreRanges); }, [scoreRanges]);
+  useEffect(() => { onRankRangesChange?.(rankRanges); }, [rankRanges]);
 
   // ── CSV cohort upload ────────────────────────────────────────────────────
   const csvInputRef = useRef<HTMLInputElement>(null);
