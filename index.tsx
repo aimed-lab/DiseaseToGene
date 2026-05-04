@@ -792,9 +792,9 @@ const SCORE_SLIDERS = [
   { key: 'geneticScore',    label: 'G Score',    accent: '#3b82f6' },
   { key: 'expressionScore', label: 'E Score',    accent: '#10b981' },
   { key: 'targetScore',     label: 'T Score',    accent: '#f59e0b' },
+  { key: 'literatureScore', label: 'L Score',    accent: '#ec4899' },
   { key: 'getScore',        label: 'GET Score',  accent: '#8b5cf6' },
-  { key: 'overallScore',    label: 'Overall',    accent: '#6366f1' },
-  { key: 'literatureScore', label: 'Literature', accent: '#ec4899' },
+  { key: 'rpScore',         label: 'RP Score',   accent: '#6366f1' },
   { key: 'winnerScore',     label: 'WINNER',     accent: '#06b6d4' },
 ] as const;
 
@@ -859,7 +859,11 @@ const DualSlider = ({
   );
 };
 
-const CohortFilterSidebar = ({ theme, targets }: { theme: Theme; targets: Target[] }) => {
+const CohortFilterSidebar = ({ theme, targets, onScoreRangesChange }: {
+  theme: Theme;
+  targets: Target[];
+  onScoreRangesChange?: (ranges: Record<string, [number, number]>) => void;
+}) => {
   const isDark = theme === 'dark';
 
   // ── nav state ────────────────────────────────────────────────────────────
@@ -875,6 +879,11 @@ const CohortFilterSidebar = ({ theme, targets }: { theme: Theme; targets: Target
     Object.fromEntries(SCORE_SLIDERS.map(s => [s.key, [0, 1]])) as Record<string, [number, number]>
   );
 
+  // notify parent whenever score ranges change so displayTargets can filter
+  useEffect(() => {
+    onScoreRangesChange?.(scoreRanges);
+  }, [scoreRanges]);
+
   // ── rankings panel ───────────────────────────────────────────────────────
   const [rankRanges, setRankRanges] = useState<Record<string, [number, number]>>({
     rwr: [0, 1], winner: [0, 1],
@@ -883,6 +892,10 @@ const CohortFilterSidebar = ({ theme, targets }: { theme: Theme; targets: Target
   // ── compare panel ────────────────────────────────────────────────────────
   const [gene1, setGene1]         = useState('');
   const [gene2, setGene2]         = useState('');
+  const [gene1Query, setGene1Query] = useState('');
+  const [gene2Query, setGene2Query] = useState('');
+  const [showDrop1, setShowDrop1] = useState(false);
+  const [showDrop2, setShowDrop2] = useState(false);
   const [comparing, setComparing] = useState(false);
   const [compareResult, setCompareResult] = useState<string>('');
   const [compareError, setCompareError]   = useState('');
@@ -919,10 +932,35 @@ const CohortFilterSidebar = ({ theme, targets }: { theme: Theme; targets: Target
     try {
       const g1Data = targets.find(t => t.symbol.toUpperCase() === gene1.trim().toUpperCase());
       const g2Data = targets.find(t => t.symbol.toUpperCase() === gene2.trim().toUpperCase());
-      const ctx = (t: Target | undefined, name: string) => t
-        ? `${name}: G=${t.geneticScore.toFixed(3)}, E=${t.expressionScore.toFixed(3)}, T=${t.targetScore.toFixed(3)}, GET=${(t.getScore ?? t.overallScore).toFixed(3)}, WINNER=${(t.winnerScore ?? 0).toFixed(3)}`
-        : `${name}: (not in current target list)`;
-      const prompt = `You are a drug discovery AI. Compare these two therapeutic targets in a concise, structured way:\n\n${ctx(g1Data, gene1.trim())}\n${ctx(g2Data, gene2.trim())}\n\nProvide: 1) Mechanistic differences, 2) Druggability comparison, 3) Evidence strength, 4) Clinical trial status if known, 5) Your recommendation on which to prioritize and why.\nKeep the response clear, scientific, and under 300 words. Use markdown formatting.`;
+      const fmt = (v: number | undefined) => v !== undefined ? v.toFixed(3) : 'N/A';
+      const ctx = (t: Target | undefined, name: string) => t ? `
+**${name}** (${t.name || name})
+- G Score (genetic association): ${fmt(t.geneticScore)}
+- E Score (expression selectivity): ${fmt(t.expressionScore)}
+- T Score (tractability): ${fmt(t.targetScore)}
+- L Score (literature): ${fmt(t.literatureScore)}
+- GET Score (combined priority): ${fmt(t.getScore ?? t.overallScore)}
+- RP Score (network propagation): ${fmt(t.rpScore)}
+- WINNER Score (network prioritization): ${fmt(t.winnerScore)}
+- Overall Score: ${fmt(t.overallScore)}
+- Pathways: ${t.pathways?.slice(0,3).map(p=>p.label).join(', ') || 'N/A'}` : `**${name}**: not found in current target list`;
+      const prompt = `You are a drug discovery AI assistant analyzing therapeutic targets for disease research.
+
+Compare these two genes as drug targets based on all their loaded metrics:
+${ctx(g1Data, gene1.trim())}
+${ctx(g2Data, gene2.trim())}
+
+Score legend: G=genetic evidence (0-1), E=expression selectivity (0-1), T=druggability/tractability (0-1), L=literature evidence (0-1), GET=combined priority score, RP=network propagation rank, WINNER=network-based prioritization.
+
+Provide a structured comparison covering:
+1. **Score Summary** — which gene leads on each metric and what that means
+2. **Mechanistic Differences** — known biology and disease relevance
+3. **Druggability** — which is more actionable as a drug target and why
+4. **Evidence Strength** — genetic, expression, and literature support
+5. **Clinical Landscape** — known drugs, trials, or compounds targeting each
+6. **Recommendation** — which to prioritize and the key reason
+
+Be concise, scientific, and use markdown. Max 350 words.`;
       const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
       const response = await ai.models.generateContent({ model: 'gemini-flash-latest', contents: prompt });
       setCompareResult(response.text ?? 'No response generated.');
@@ -1149,20 +1187,48 @@ const CohortFilterSidebar = ({ theme, targets }: { theme: Theme; targets: Target
                 Enter two gene symbols from your target list to get an AI-powered side-by-side comparison.
               </p>
               {/* Gene inputs */}
-              {[{ val: gene1, set: setGene1, ph: 'Gene 1  e.g. APOE' }, { val: gene2, set: setGene2, ph: 'Gene 2  e.g. TREM2' }].map((inp, i) => (
-                <div key={i} className="relative">
-                  <input
-                    value={inp.val}
-                    onChange={e => inp.set(e.target.value.toUpperCase())}
-                    placeholder={inp.ph}
-                    list={`gene-list-${i}`}
-                    className={`w-full px-3 py-2 rounded-lg border text-[11px] font-mono font-bold outline-none transition-colors ${isDark ? 'bg-slate-900 border-slate-700 text-white placeholder-slate-600 focus:border-blue-500' : 'bg-white border-slate-300 text-slate-900 placeholder-slate-400 focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20'}`}
-                  />
-                  <datalist id={`gene-list-${i}`}>
-                    {targets.slice(0, 100).map(t => <option key={t.symbol} value={t.symbol} />)}
-                  </datalist>
-                </div>
-              ))}
+              {([
+                { val: gene1, set: setGene1, query: gene1Query, setQuery: setGene1Query, show: showDrop1, setShow: setShowDrop1, ph: 'Search gene 1  e.g. APOE' },
+                { val: gene2, set: setGene2, query: gene2Query, setQuery: setGene2Query, show: showDrop2, setShow: setShowDrop2, ph: 'Search gene 2  e.g. TREM2' },
+              ] as const).map((inp, i) => {
+                const q = inp.query.toUpperCase();
+                const matches = q.length >= 1
+                  ? targets.filter(t => t.symbol.toUpperCase().includes(q) || t.name?.toUpperCase().includes(q)).slice(0, 8)
+                  : [];
+                return (
+                  <div key={i} className="relative">
+                    <input
+                      value={inp.query || inp.val}
+                      onChange={e => { inp.setQuery(e.target.value); inp.set(''); inp.setShow(true); }}
+                      onFocus={() => inp.setShow(true)}
+                      onBlur={() => setTimeout(() => inp.setShow(false), 150)}
+                      placeholder={inp.ph}
+                      className={`w-full px-3 py-2 rounded-lg border text-[11px] font-mono font-bold outline-none transition-colors ${
+                        inp.val
+                          ? isDark ? 'bg-blue-900/20 border-blue-500 text-blue-300' : 'bg-blue-50 border-blue-400 text-blue-700'
+                          : isDark ? 'bg-slate-900 border-slate-700 text-white placeholder-slate-600 focus:border-blue-500' : 'bg-white border-slate-300 text-slate-900 placeholder-slate-400 focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20'
+                      }`}
+                    />
+                    {inp.val && (
+                      <div className={`absolute right-2 top-2 text-[9px] font-black px-1.5 py-0.5 rounded ${isDark ? 'bg-blue-600/20 text-blue-400' : 'bg-blue-100 text-blue-600'}`}>✓</div>
+                    )}
+                    {inp.show && matches.length > 0 && (
+                      <div className={`absolute z-50 top-full mt-1 left-0 right-0 rounded-lg border shadow-xl overflow-hidden ${isDark ? 'bg-slate-900 border-slate-700' : 'bg-white border-slate-200'}`}>
+                        {matches.map(t => (
+                          <button
+                            key={t.symbol}
+                            onMouseDown={() => { inp.set(t.symbol); inp.setQuery(t.symbol); inp.setShow(false); }}
+                            className={`w-full px-3 py-2 text-left flex items-center justify-between gap-2 transition-colors ${isDark ? 'hover:bg-slate-800' : 'hover:bg-blue-50'}`}
+                          >
+                            <span className={`text-[11px] font-bold font-mono ${isDark ? 'text-blue-400' : 'text-blue-600'}`}>{t.symbol}</span>
+                            <span className={`text-[9px] truncate max-w-[100px] ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>{t.name}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
               <button
                 onClick={handleCompare}
                 disabled={comparing || !gene1.trim() || !gene2.trim()}
@@ -1946,6 +2012,7 @@ const App = () => {
   const [chatInput, setChatInput] = useState("");
   const [isChatting, setIsChatting] = useState(false);
   const [isLeftSidebarOpen, setIsLeftSidebarOpen] = useState(true);
+  const [scoreRangeFilter, setScoreRangeFilter] = useState<Record<string, [number, number]>>({});
   const [isExportDropdownOpen, setIsExportDropdownOpen] = useState(false);
   const [activeScoreInfo, setActiveScoreInfo] = useState<'genetic' | 'expression' | 'target' | 'overall' | 'literature' | 'get_score' | 'priority' | 'rp_score' | 'winner_score' | null>(null);
   const [activeTooltip, setActiveTooltip] = useState<string | null>(null);
@@ -2461,8 +2528,17 @@ Return ONLY valid JSON.
       return b.overallScore - a.overallScore;
     });
 
+    // Apply sidebar score range filters
+    result = result.filter(t =>
+      Object.entries(scoreRangeFilter).every(([key, [min, max]]) => {
+        if (min === 0 && max === 1) return true;
+        const val: number = (t as any)[key] ?? -1;
+        return val >= min && val <= max;
+      })
+    );
+
     return result;
-  }, [researchState.targets, researchState.filters, researchState.sorts]);
+  }, [researchState.targets, researchState.filters, researchState.sorts, scoreRangeFilter]);
 
   useEffect(() => {
     if (viewMode === 'pubtator' && researchState.activeDisease && !researchState.pubtatorResults && !researchState.isFetchingPubTator) {
@@ -3362,7 +3438,7 @@ Return ONLY valid JSON.
              </div>
            </form>
         </aside>
-        <CohortFilterSidebar theme={theme} targets={researchState.targets} />
+        <CohortFilterSidebar theme={theme} targets={researchState.targets} onScoreRangesChange={setScoreRangeFilter} />
         {!isLeftSidebarOpen && (<button onClick={() => setIsLeftSidebarOpen(true)} className="absolute right-4 bottom-4 z-20 p-2.5 rounded-full bg-blue-600 text-white shadow-xl hover:scale-110 transition-transform"><MessageSquare className="w-5 h-5" /></button>)}
         <section className="order-1 flex-1 flex flex-col overflow-hidden relative min-w-0">
            <Breadcrumbs 
