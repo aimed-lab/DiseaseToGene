@@ -859,10 +859,12 @@ const DualSlider = ({
   );
 };
 
-const CohortFilterSidebar = ({ theme, targets, onScoreRangesChange }: {
+const CohortFilterSidebar = ({ theme, targets, activeDisease, onScoreRangesChange, onRankRangesChange }: {
   theme: Theme;
   targets: Target[];
+  activeDisease?: { id: string; name: string } | null;
   onScoreRangesChange?: (ranges: Record<string, [number, number]>) => void;
+  onRankRangesChange?: (ranges: Record<string, [number, number]>) => void;
 }) => {
   const isDark = theme === 'dark';
 
@@ -879,15 +881,57 @@ const CohortFilterSidebar = ({ theme, targets, onScoreRangesChange }: {
     Object.fromEntries(SCORE_SLIDERS.map(s => [s.key, [0, 1]])) as Record<string, [number, number]>
   );
 
-  // notify parent whenever score ranges change so displayTargets can filter
-  useEffect(() => {
-    onScoreRangesChange?.(scoreRanges);
-  }, [scoreRanges]);
+  // notify parent whenever score/rank ranges change so displayTargets can filter
+  useEffect(() => { onScoreRangesChange?.(scoreRanges); }, [scoreRanges]);
+  useEffect(() => { onRankRangesChange?.(rankRanges); }, [rankRanges]);
 
   // ── rankings panel ───────────────────────────────────────────────────────
   const [rankRanges, setRankRanges] = useState<Record<string, [number, number]>>({
     rwr: [0, 1], winner: [0, 1],
   });
+
+  // ── CSV cohort upload ────────────────────────────────────────────────────
+  const csvInputRef = useRef<HTMLInputElement>(null);
+  const [csvFileName, setCsvFileName]       = useState('');
+  const [csvColumns, setCsvColumns]         = useState<string[]>([]);
+  const [csvGeneData, setCsvGeneData]       = useState<Record<string, Record<string, number>>>({});
+  const [selectedCohortCol, setSelectedCohortCol] = useState('');
+  const [csvError, setCsvError]             = useState('');
+
+  const handleCsvUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setCsvError('');
+    if (!file.name.endsWith('.csv')) { setCsvError('Please upload a .csv file'); return; }
+    if (file.size > 10 * 1024 * 1024) { setCsvError('File too large. Max 10 MB'); return; }
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const text = ev.target?.result as string;
+      const lines = text.trim().split(/\r?\n/).filter(l => l.trim());
+      if (lines.length < 2) { setCsvError('CSV must have a header and at least one data row'); return; }
+      const headers = lines[0].split(',').map(h => h.trim());
+      if (headers[0].toLowerCase() !== 'gene_symbol') { setCsvError('First column must be named gene_symbol'); return; }
+      const cohortCols = headers.slice(1);
+      if (cohortCols.length === 0) { setCsvError('CSV must have at least one cohort column'); return; }
+      const geneData: Record<string, Record<string, number>> = {};
+      for (let i = 1; i < lines.length; i++) {
+        const cells = lines[i].split(',').map(c => c.trim());
+        const gene = cells[0]?.toUpperCase();
+        if (!gene) continue;
+        geneData[gene] = {};
+        cohortCols.forEach((col, idx) => {
+          const val = parseFloat(cells[idx + 1]);
+          geneData[gene][col] = isNaN(val) ? 0 : val;
+        });
+      }
+      setCsvFileName(file.name);
+      setCsvColumns(cohortCols);
+      setCsvGeneData(geneData);
+      setSelectedCohortCol(cohortCols[0]);
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  };
 
   // ── compare panel ────────────────────────────────────────────────────────
   const [gene1, setGene1]         = useState('');
@@ -1105,6 +1149,39 @@ Be concise, scientific, and use markdown. Max 350 words.`;
                 );
               })}
 
+              {/* CSV cohort upload */}
+              <div className={`rounded-lg border overflow-hidden ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
+                <div className={`px-3 py-2 flex items-center justify-between ${isDark ? 'bg-slate-900/40' : 'bg-slate-50'}`}>
+                  <span className={`text-[11px] font-bold ${isDark ? 'text-slate-200' : 'text-slate-700'}`}>Cohort CSV</span>
+                  {csvFileName && <span className={`text-[8px] truncate max-w-[80px] ${isDark ? 'text-emerald-400' : 'text-emerald-600'}`}>{csvFileName}</span>}
+                </div>
+                <div className={`px-3 py-2.5 space-y-2 border-t ${isDark ? 'border-slate-800' : 'border-slate-100'}`}>
+                  <input ref={csvInputRef} type="file" accept=".csv" className="hidden" onChange={handleCsvUpload} />
+                  <button
+                    onClick={() => csvInputRef.current?.click()}
+                    className={`w-full py-1.5 rounded-md text-[10px] font-bold flex items-center justify-center gap-1.5 border transition-colors ${isDark ? 'border-slate-700 text-slate-300 hover:bg-slate-800 hover:text-white' : 'border-slate-300 text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}
+                  >
+                    <FileText className="w-3 h-3" /> {csvFileName ? 'Replace CSV' : 'Upload CSV'}
+                  </button>
+                  {csvError && <p className="text-[9px] text-rose-500 font-medium">{csvError}</p>}
+                  {csvColumns.length > 0 && (
+                    <div>
+                      <label className={`text-[9px] font-bold uppercase tracking-wider block mb-1 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Active Cohort</label>
+                      <select
+                        value={selectedCohortCol}
+                        onChange={e => setSelectedCohortCol(e.target.value)}
+                        className={`w-full px-2 py-1.5 rounded-md border text-[10px] font-bold outline-none ${isDark ? 'bg-slate-900 border-slate-700 text-white' : 'bg-white border-slate-300 text-slate-800'}`}
+                      >
+                        {csvColumns.map(col => <option key={col} value={col}>{col}</option>)}
+                      </select>
+                      <p className={`text-[9px] mt-1 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
+                        {Object.keys(csvGeneData).length} genes loaded · {csvColumns.length} cohorts
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </div>
+
               {/* Score range sliders */}
               <div className={`rounded-lg border overflow-hidden ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
                 <div className={`px-3 py-2 flex items-center justify-between ${isDark ? 'bg-slate-900/40' : 'bg-slate-50'}`}>
@@ -1264,14 +1341,101 @@ Be concise, scientific, and use markdown. Max 350 words.`;
           </div>
         )}
 
-        {/* ── WORKSPACE / TARGETS placeholder panels ────────────────────── */}
-        {(activeNav === 'workspace' || activeNav === 'targets') && (
-          <div className="flex-1 flex flex-col items-center justify-center px-4 text-center">
-            <div className={`p-4 rounded-full mb-3 ${isDark ? 'bg-slate-800' : 'bg-slate-100'}`}>
-              <PanelIcon className={`w-8 h-8 opacity-30 ${isDark ? 'text-slate-400' : 'text-slate-500'}`} />
+        {/* ── WORKSPACE panel ───────────────────────────────────────────── */}
+        {activeNav === 'workspace' && (
+          <div className="flex-1 overflow-y-auto p-3 space-y-3">
+            {/* Active disease */}
+            <div className={`rounded-xl border p-3 ${isDark ? 'border-slate-800 bg-slate-900/30' : 'border-slate-200 bg-slate-50'}`}>
+              <p className={`text-[9px] uppercase tracking-widest font-bold mb-1 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Active Disease</p>
+              {activeDisease ? (
+                <p className={`text-[11px] font-bold leading-snug ${isDark ? 'text-blue-400' : 'text-blue-600'}`}>{activeDisease.name}</p>
+              ) : (
+                <p className={`text-[10px] italic ${isDark ? 'text-slate-600' : 'text-slate-400'}`}>No disease selected</p>
+              )}
             </div>
-            <p className={`text-[11px] font-bold ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>{pc.title}</p>
-            <p className={`text-[10px] mt-1 ${isDark ? 'text-slate-600' : 'text-slate-400'}`}>Use the main panel →</p>
+
+            {/* Session stats */}
+            {targets.length > 0 && (() => {
+              const avg = (arr: number[]) => arr.length ? +(arr.reduce((a, b) => a + b, 0) / arr.length).toFixed(2) : 0;
+              const gs  = avg(targets.map(t => t.geneticScore   ?? 0));
+              const es  = avg(targets.map(t => t.combinedExpression ?? 0));
+              const ts  = avg(targets.map(t => t.targetScore    ?? 0));
+              const gets = avg(targets.map(t => t.overallScore  ?? 0));
+              const withWinner = targets.filter(t => (t as any).winnerScore > 0).length;
+              const rows = [
+                { label: 'Genes loaded',    value: targets.length, color: 'text-emerald-500' },
+                { label: 'Avg G score',     value: gs,             color: 'text-blue-500'    },
+                { label: 'Avg E score',     value: es,             color: 'text-purple-500'  },
+                { label: 'Avg T score',     value: ts,             color: 'text-orange-500'  },
+                { label: 'Avg GET score',   value: gets,           color: 'text-rose-500'    },
+                { label: 'With WINNER',     value: withWinner,     color: 'text-cyan-500'    },
+              ];
+              return (
+                <div className={`rounded-xl border overflow-hidden ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
+                  <div className={`px-3 py-1.5 ${isDark ? 'bg-slate-900/40' : 'bg-slate-50'}`}>
+                    <p className={`text-[9px] uppercase tracking-widest font-bold ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Session Stats</p>
+                  </div>
+                  <div className={`divide-y ${isDark ? 'divide-slate-800' : 'divide-slate-100'}`}>
+                    {rows.map(r => (
+                      <div key={r.label} className="flex items-center justify-between px-3 py-1.5">
+                        <span className={`text-[10px] ${isDark ? 'text-slate-400' : 'text-slate-600'}`}>{r.label}</span>
+                        <span className={`text-[11px] font-bold tabular-nums ${r.color}`}>{r.value}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
+
+            {targets.length === 0 && (
+              <p className={`text-[10px] text-center italic mt-6 ${isDark ? 'text-slate-600' : 'text-slate-400'}`}>
+                Search for a disease to populate workspace stats.
+              </p>
+            )}
+          </div>
+        )}
+
+        {/* ── TARGETS panel ─────────────────────────────────────────────── */}
+        {activeNav === 'targets' && (
+          <div className="flex-1 overflow-y-auto p-3 space-y-2">
+            <p className={`text-[9px] uppercase tracking-widest font-bold ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
+              Top Targets by GET Score
+            </p>
+            {targets.length === 0 && (
+              <p className={`text-[10px] italic text-center mt-6 ${isDark ? 'text-slate-600' : 'text-slate-400'}`}>
+                No targets loaded yet. Run a disease search first.
+              </p>
+            )}
+            {[...targets]
+              .sort((a, b) => (b.overallScore ?? 0) - (a.overallScore ?? 0))
+              .slice(0, 15)
+              .map((t, i) => {
+                const score = +(t.overallScore ?? 0).toFixed(2);
+                const pct   = Math.round(score * 100);
+                return (
+                  <div key={t.id} className={`rounded-lg border p-2 ${isDark ? 'border-slate-800 bg-slate-900/30' : 'border-slate-100 bg-white'}`}>
+                    <div className="flex items-center gap-1.5 mb-1">
+                      <span className={`text-[9px] font-bold w-4 text-right ${isDark ? 'text-slate-600' : 'text-slate-400'}`}>{i + 1}</span>
+                      <span className={`text-[11px] font-bold ${isDark ? 'text-slate-100' : 'text-slate-800'}`}>{t.symbol}</span>
+                      <span className={`ml-auto text-[10px] font-bold tabular-nums ${isDark ? 'text-rose-400' : 'text-rose-600'}`}>{score}</span>
+                    </div>
+                    <div className={`h-1 rounded-full overflow-hidden ${isDark ? 'bg-slate-800' : 'bg-slate-100'}`}>
+                      <div className="h-full rounded-full bg-gradient-to-r from-blue-500 to-rose-500" style={{ width: `${pct}%` }} />
+                    </div>
+                    <div className="flex gap-1 mt-1">
+                      {[
+                        { label: 'G', val: t.geneticScore,        color: 'bg-blue-500'   },
+                        { label: 'E', val: t.combinedExpression,  color: 'bg-purple-500' },
+                        { label: 'T', val: t.targetScore,         color: 'bg-orange-500' },
+                      ].map(b => (
+                        <span key={b.label} className={`inline-flex items-center gap-0.5 px-1 py-0.5 rounded text-[8px] font-bold text-white ${b.color}`}>
+                          {b.label} {+(b.val ?? 0).toFixed(1)}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
           </div>
         )}
 
@@ -2013,6 +2177,7 @@ const App = () => {
   const [isChatting, setIsChatting] = useState(false);
   const [isLeftSidebarOpen, setIsLeftSidebarOpen] = useState(true);
   const [scoreRangeFilter, setScoreRangeFilter] = useState<Record<string, [number, number]>>({});
+  const [rankRangeFilter, setRankRangeFilter]   = useState<Record<string, [number, number]>>({});
   const [isExportDropdownOpen, setIsExportDropdownOpen] = useState(false);
   const [activeScoreInfo, setActiveScoreInfo] = useState<'genetic' | 'expression' | 'target' | 'overall' | 'literature' | 'get_score' | 'priority' | 'rp_score' | 'winner_score' | null>(null);
   const [activeTooltip, setActiveTooltip] = useState<string | null>(null);
@@ -2537,8 +2702,19 @@ Return ONLY valid JSON.
       })
     );
 
+    // Apply sidebar ranking range filters (rwr → rpScore, winner → winnerScore)
+    const rankKeyMap: Record<string, string> = { rwr: 'rpScore', winner: 'winnerScore' };
+    result = result.filter(t =>
+      Object.entries(rankRangeFilter).every(([key, [min, max]]) => {
+        if (min === 0 && max === 1) return true;
+        const field = rankKeyMap[key] ?? key;
+        const val: number = (t as any)[field] ?? -1;
+        return val >= min && val <= max;
+      })
+    );
+
     return result;
-  }, [researchState.targets, researchState.filters, researchState.sorts, scoreRangeFilter]);
+  }, [researchState.targets, researchState.filters, researchState.sorts, scoreRangeFilter, rankRangeFilter]);
 
   useEffect(() => {
     if (viewMode === 'pubtator' && researchState.activeDisease && !researchState.pubtatorResults && !researchState.isFetchingPubTator) {
@@ -3334,7 +3510,7 @@ Return ONLY valid JSON.
           </div>
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <h1 className="text-base md:text-lg font-black tracking-tight">DiseaseTo<span className="text-blue-600 dark:text-blue-400">Target</span></h1>
+              <h1 className="text-base md:text-lg font-black tracking-tight">Disease<span className="text-blue-600 dark:text-blue-400">2</span>Target</h1>
               <span className="hidden sm:inline-flex items-center gap-1 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-emerald-600 dark:text-emerald-400">
                 <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
                 AI native
@@ -3438,7 +3614,7 @@ Return ONLY valid JSON.
              </div>
            </form>
         </aside>
-        <CohortFilterSidebar theme={theme} targets={researchState.targets} onScoreRangesChange={setScoreRangeFilter} />
+        <CohortFilterSidebar theme={theme} targets={researchState.targets} activeDisease={researchState.activeDisease} onScoreRangesChange={setScoreRangeFilter} onRankRangesChange={setRankRangeFilter} />
         {!isLeftSidebarOpen && (<button onClick={() => setIsLeftSidebarOpen(true)} className="absolute right-4 bottom-4 z-20 p-2.5 rounded-full bg-blue-600 text-white shadow-xl hover:scale-110 transition-transform"><MessageSquare className="w-5 h-5" /></button>)}
         <section className="order-1 flex-1 flex flex-col overflow-hidden relative min-w-0">
            <Breadcrumbs 
@@ -4237,7 +4413,7 @@ const SignInPage = ({ theme, toggleTheme, onSignIn }: { theme: Theme, toggleThem
             <FlaskConical className="w-10 h-10 text-white" />
           </div>
           <div>
-            <h1 className={`text-3xl font-black tracking-tight ${theme === 'light' ? 'text-neutral-900' : 'text-white'}`}>DiseaseTo<span className="text-blue-600">Target</span></h1>
+            <h1 className={`text-3xl font-black tracking-tight ${theme === 'light' ? 'text-neutral-900' : 'text-white'}`}>Disease<span className="text-blue-600">2</span>Target</h1>
             <p className="text-[10px] font-bold uppercase tracking-[0.3em] text-neutral-400 dark:text-neutral-500 mt-2">Discovery Portal</p>
           </div>
         </div>

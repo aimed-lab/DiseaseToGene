@@ -131,6 +131,32 @@ async function startServer() {
     }
   });
 
+  // Generic external API proxy — used for ClinicalTrials, EuropePMC, PubMed
+  // Only allows the specific domains used by the app
+  const ALLOWED_PROXY_HOSTS = [
+    'clinicaltrials.gov',
+    'www.ebi.ac.uk',
+    'eutils.ncbi.nlm.nih.gov',
+  ];
+  app.get("/api/proxy", async (req, res) => {
+    const target = req.query.url as string;
+    if (!target) return res.status(400).json({ error: "Missing url param" });
+    let parsed: URL;
+    try { parsed = new URL(target); } catch { return res.status(400).json({ error: "Invalid url" }); }
+    if (!ALLOWED_PROXY_HOSTS.some(h => parsed.hostname === h)) {
+      return res.status(403).json({ error: "Host not allowed" });
+    }
+    try {
+      const upstream = await fetch(target, {
+        headers: { 'Accept': 'application/json', 'User-Agent': 'DiseaseToTarget/2.0' }
+      });
+      const text = await upstream.text();
+      res.status(upstream.status).set('Content-Type', 'application/json').send(text);
+    } catch (err: any) {
+      res.status(502).json({ error: err.message });
+    }
+  });
+
   // PubTator Shared Fetch Helper
   const fetchPubTator = async (url: string, retries = 3, backoff = 1000): Promise<any> => {
     try {

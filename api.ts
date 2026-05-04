@@ -5,6 +5,9 @@ const OPEN_TARGETS_API = 'https://api.platform.opentargets.org/api/v4/graphql';
 const ENRICHR_API = 'https://maayanlab.cloud/Enrichr';
 const PUBMED_API = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils';
 
+// Routes external calls through the Express proxy to avoid browser CORS/rate-limit issues
+const proxyFetch = (url: string) => fetchWithRetry(`/api/proxy?url=${encodeURIComponent(url)}`);
+
 const fetchWithRetry = async (url: string, options: RequestInit = {}, retries: number = 3, backoff: number = 1000): Promise<Response> => {
   try {
     const res = await fetch(url, options);
@@ -255,9 +258,9 @@ export const api = {
 
     try {
       const [totalData, recentData] = await Promise.all([
-        fetchWithRetry(`${PUBMED_API}/esearch.fcgi?db=pubmed&term=${encodeURIComponent(baseQuery)}&retmode=json${apiKeyParam}`)
+        proxyFetch(`${PUBMED_API}/esearch.fcgi?db=pubmed&term=${encodeURIComponent(baseQuery)}&retmode=json${apiKeyParam}`)
           .then(r => r.json()),
-        fetchWithRetry(`${PUBMED_API}/esearch.fcgi?db=pubmed&term=${encodeURIComponent(recentQuery)}&retmode=json${apiKeyParam}`)
+        proxyFetch(`${PUBMED_API}/esearch.fcgi?db=pubmed&term=${encodeURIComponent(recentQuery)}&retmode=json${apiKeyParam}`)
           .then(r => r.json())
       ]);
 
@@ -267,7 +270,7 @@ export const api = {
 
       let topPapers: { title: string; id: string }[] = [];
       if (recentIds) {
-        const summaryData = await fetchWithRetry(
+        const summaryData = await proxyFetch(
           `${PUBMED_API}/esummary.fcgi?db=pubmed&id=${recentIds}&retmode=json${apiKeyParam}`
         ).then(r => r.json());
 
@@ -316,8 +319,8 @@ export const api = {
         const globalCtUrl = `https://clinicaltrials.gov/api/v2/studies?query.term=${encodeURIComponent(symbol)}&pageSize=0&countTotal=true`;
 
         const [ctRes, globalCtRes] = await Promise.all([
-          fetchWithRetry(ctUrl),
-          fetchWithRetry(globalCtUrl)
+          proxyFetch(ctUrl),
+          proxyFetch(globalCtUrl)
         ]);
 
         let ctData = ctRes.ok ? await ctRes.json() : { studies: [], totalCount: 0 };
@@ -325,7 +328,7 @@ export const api = {
         if (ctData.totalCount === 0 || !ctData.studies || ctData.studies.length === 0) {
           // Fallback: search by term only (broader)
           const fallbackUrl = `https://clinicaltrials.gov/api/v2/studies?query.term=${encodeURIComponent(symbol)}+${encodeURIComponent(diseaseName)}&pageSize=100&countTotal=true&fields=${fields}`;
-          const fallbackRes = await fetchWithRetry(fallbackUrl);
+          const fallbackRes = await proxyFetch(fallbackUrl);
           if (fallbackRes.ok) {
             const fallbackData = await fallbackRes.json();
             if (fallbackData.totalCount > 0) {
@@ -412,8 +415,8 @@ export const api = {
         const epRecentQuery = `${symbol} AND "${cleanDisease}" AND FIRST_PDATE:[${threeYearsAgo}-01-01 TO ${currentYear}-12-31]`;
         
         const [epTotalRes, epRecentRes] = await Promise.all([
-          fetchWithRetry(`https://www.ebi.ac.uk/europepmc/webservices/rest/search?query=${encodeURIComponent(epQuery)}&format=json&pageSize=1&sort_date:y`),
-          fetchWithRetry(`https://www.ebi.ac.uk/europepmc/webservices/rest/search?query=${encodeURIComponent(epRecentQuery)}&format=json&pageSize=1`)
+          proxyFetch(`https://www.ebi.ac.uk/europepmc/webservices/rest/search?query=${encodeURIComponent(epQuery)}&format=json&pageSize=1&sort_date:y`),
+          proxyFetch(`https://www.ebi.ac.uk/europepmc/webservices/rest/search?query=${encodeURIComponent(epRecentQuery)}&format=json&pageSize=1`)
         ]);
 
         if (epTotalRes.ok) {
@@ -456,8 +459,8 @@ export const api = {
         const recentQuery = `${baseQuery} AND ("${prevYear}"[Date - Publication] : "${currentYear}"[Date - Publication])`;
 
         const [totalRes, recentRes] = await Promise.all([
-          fetchWithRetry(`${PUBMED_API}/esearch.fcgi?db=pubmed&term=${encodeURIComponent(baseQuery)}&retmode=json${apiKeyParam}${toolEmail}`),
-          fetchWithRetry(`${PUBMED_API}/esearch.fcgi?db=pubmed&term=${encodeURIComponent(recentQuery)}&retmode=json${apiKeyParam}${toolEmail}`)
+          proxyFetch(`${PUBMED_API}/esearch.fcgi?db=pubmed&term=${encodeURIComponent(baseQuery)}&retmode=json${apiKeyParam}${toolEmail}`),
+          proxyFetch(`${PUBMED_API}/esearch.fcgi?db=pubmed&term=${encodeURIComponent(recentQuery)}&retmode=json${apiKeyParam}${toolEmail}`)
         ]);
 
         const totalData = totalRes.ok ? await totalRes.json() : null;
@@ -475,7 +478,7 @@ export const api = {
             drillDown.signal_velocity = total > 0 ? ((recent / total) * 100).toFixed(1) + '%' : '0%';
 
             if (recentIds) {
-              const summaryRes = await fetchWithRetry(
+              const summaryRes = await proxyFetch(
                 `${PUBMED_API}/esummary.fcgi?db=pubmed&id=${recentIds}&retmode=json${apiKeyParam}${toolEmail}`
               );
               if (summaryRes.ok) {
