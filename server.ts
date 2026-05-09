@@ -137,6 +137,7 @@ async function startServer() {
     'clinicaltrials.gov',
     'www.ebi.ac.uk',
     'eutils.ncbi.nlm.nih.gov',
+    'www.proteinatlas.org',
   ];
   app.get("/api/proxy", async (req, res) => {
     const target = req.query.url as string;

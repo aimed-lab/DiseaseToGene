@@ -64,6 +64,8 @@ export interface Target {
   rpScore?: number;
   winnerScore?: number;
   winnerRawScore?: number;
+  tauTissue?: number;
+  tauSingleCell?: number;
   finalScore?: number;
   baselineExpression?: number; 
   combinedExpression?: number; 

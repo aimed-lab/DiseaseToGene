@@ -207,6 +207,31 @@ export const api = {
       // Sort by GET Score
       uniqueTargets.sort((a, b) => (b.getScore ?? 0) - (a.getScore ?? 0));
 
+      // ── Protein Atlas TAU scores (tissue specificity) ─────────────────────
+      // Fetched in batches of 5 to avoid rate-limiting
+      const PA_COLS = 'g,eg,t_RNA__tau,sc_RNA__tau';
+      const tauBatchSize = 5;
+      for (let i = 0; i < uniqueTargets.length; i += tauBatchSize) {
+        const batch = uniqueTargets.slice(i, i + tauBatchSize);
+        await Promise.all(batch.map(async (target) => {
+          try {
+            const paUrl = `https://www.proteinatlas.org/api/search_download.php?search=${target.id}&format=json&columns=${PA_COLS}&compress=no`;
+            const res = await proxyFetch(paUrl);
+            if (res.ok) {
+              const data = await res.json();
+              if (Array.isArray(data) && data.length > 0) {
+                const row = data[0];
+                target.tauTissue     = parseFloat(row['TAU score - Tissue']           ?? row['t_RNA__tau']   ?? '0') || 0;
+                target.tauSingleCell = parseFloat(row['TAU score - Single Cell Type'] ?? row['sc_RNA__tau']  ?? '0') || 0;
+              }
+            }
+          } catch (_) { /* TAU scores are optional — silent fail */ }
+        }));
+        if (i + tauBatchSize < uniqueTargets.length) {
+          await new Promise(r => setTimeout(r, 120));
+        }
+      }
+
       return uniqueTargets;
     } catch (err) { return []; }
   },

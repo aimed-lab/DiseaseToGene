@@ -789,13 +789,15 @@ const COHORT_FILTER_GROUPS = [
 type CohortFilterKey = typeof COHORT_FILTER_GROUPS[number]['key'];
 
 const SCORE_SLIDERS = [
-  { key: 'geneticScore',    label: 'G Score',    accent: '#3b82f6' },
-  { key: 'expressionScore', label: 'E Score',    accent: '#10b981' },
-  { key: 'targetScore',     label: 'T Score',    accent: '#f59e0b' },
-  { key: 'literatureScore', label: 'L Score',    accent: '#ec4899' },
-  { key: 'getScore',        label: 'GET Score',  accent: '#8b5cf6' },
-  { key: 'rpScore',         label: 'RP Score',   accent: '#6366f1' },
-  { key: 'winnerScore',     label: 'WINNER',     accent: '#06b6d4' },
+  { key: 'geneticScore',    label: 'G Score',      accent: '#3b82f6' },
+  { key: 'expressionScore', label: 'E Score',      accent: '#10b981' },
+  { key: 'targetScore',     label: 'T Score',      accent: '#f59e0b' },
+  { key: 'literatureScore', label: 'L Score',      accent: '#ec4899' },
+  { key: 'getScore',        label: 'GET Score',    accent: '#8b5cf6' },
+  { key: 'rpScore',         label: 'RP Score',     accent: '#6366f1' },
+  { key: 'winnerScore',     label: 'WINNER',       accent: '#06b6d4' },
+  { key: 'tauTissue',       label: 'TAU Tissue',   accent: '#f97316' },
+  { key: 'tauSingleCell',   label: 'TAU Cell',     accent: '#ef4444' },
 ] as const;
 
 const RANKING_SLIDERS = [
