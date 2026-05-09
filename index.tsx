@@ -805,6 +805,21 @@ const RANKING_SLIDERS = [
   { key: 'winner', label: 'WINNER Score', accent: '#06b6d4' },
 ] as const;
 
+// All optional table columns — key must match Target field name
+const TABLE_COLUMNS = [
+  { key: 'geneticScore',       label: 'Genetic',     accent: '#3b82f6', defaultOn: true  },
+  { key: 'combinedExpression', label: 'Expression',  accent: '#10b981', defaultOn: true  },
+  { key: 'targetScore',        label: 'Target',      accent: '#f59e0b', defaultOn: true  },
+  { key: 'literatureScore',    label: 'Literature',  accent: '#ec4899', defaultOn: false },
+  { key: 'getScore',           label: 'GET Score',   accent: '#8b5cf6', defaultOn: true  },
+  { key: 'rpScore',            label: 'RP Score',    accent: '#6366f1', defaultOn: false },
+  { key: 'winnerScore',        label: 'WINNER',      accent: '#06b6d4', defaultOn: false },
+  { key: 'tauTissue',          label: 'TAU Tissue',  accent: '#f97316', defaultOn: false },
+  { key: 'tauSingleCell',      label: 'TAU Cell',    accent: '#ef4444', defaultOn: false },
+  { key: 'finalScore',         label: 'Final Score', accent: '#2563eb', defaultOn: false },
+] as const;
+type TableColKey = typeof TABLE_COLUMNS[number]['key'];
+
 const LEFT_NAV_ITEMS = [
   { id: 'workspace', icon: Home,     label: 'Workspace' },
   { id: 'targets',   icon: List,     label: 'Targets'   },
@@ -861,12 +876,14 @@ const DualSlider = ({
   );
 };
 
-const CohortFilterSidebar = ({ theme, targets, activeDisease, onScoreRangesChange, onRankRangesChange }: {
+const CohortFilterSidebar = ({ theme, targets, activeDisease, onScoreRangesChange, onRankRangesChange, visibleCols, onVisibleColsChange }: {
   theme: Theme;
   targets: Target[];
   activeDisease?: { id: string; name: string } | null;
   onScoreRangesChange?: (ranges: Record<string, [number, number]>) => void;
   onRankRangesChange?: (ranges: Record<string, [number, number]>) => void;
+  visibleCols?: string[];
+  onVisibleColsChange?: (cols: string[]) => void;
 }) => {
   const isDark = theme === 'dark';
 
@@ -1203,6 +1220,44 @@ Be concise, scientific, and use markdown. Max 350 words.`;
                   ))}
                 </div>
               </div>
+
+              {/* Table column visibility */}
+              {onVisibleColsChange && (
+                <div className={`rounded-lg border overflow-hidden ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
+                  <div className={`px-3 py-2 flex items-center justify-between ${isDark ? 'bg-slate-900/40' : 'bg-slate-50'}`}>
+                    <span className={`text-[11px] font-bold ${isDark ? 'text-slate-200' : 'text-slate-700'}`}>Table Columns</span>
+                    <button
+                      onClick={() => onVisibleColsChange(TABLE_COLUMNS.filter(c => c.defaultOn).map(c => c.key))}
+                      className={`text-[8px] font-bold uppercase tracking-wider ${isDark ? 'text-slate-500 hover:text-slate-300' : 'text-slate-400 hover:text-slate-600'}`}
+                    >Reset</button>
+                  </div>
+                  <div className={`px-3 py-2 border-t grid grid-cols-2 gap-x-2 gap-y-1.5 ${isDark ? 'border-slate-800' : 'border-slate-100'}`}>
+                    {TABLE_COLUMNS.map(col => {
+                      const checked = visibleCols?.includes(col.key) ?? col.defaultOn;
+                      return (
+                        <label
+                          key={col.key}
+                          className="flex items-center gap-1.5 cursor-pointer group"
+                          onClick={() => {
+                            const current = visibleCols ?? TABLE_COLUMNS.filter(c => c.defaultOn).map(c => c.key);
+                            onVisibleColsChange(
+                              checked ? current.filter(k => k !== col.key) : [...current, col.key]
+                            );
+                          }}
+                        >
+                          <div
+                            className="w-3.5 h-3.5 rounded flex items-center justify-center border flex-shrink-0 transition-all"
+                            style={{ background: checked ? col.accent : 'transparent', borderColor: checked ? col.accent : isDark ? '#475569' : '#cbd5e1' }}
+                          >
+                            {checked && <svg className="w-2 h-2 text-white" viewBox="0 0 10 10" fill="none"><path d="M1.5 5L4 7.5L8.5 2.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                          </div>
+                          <span className={`text-[10px] font-medium select-none ${checked ? (isDark ? 'text-white' : 'text-slate-800') : (isDark ? 'text-slate-500' : 'text-slate-400')}`}>{col.label}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
 
             {totalActive > 0 && (
@@ -2180,6 +2235,9 @@ const App = () => {
   const [isLeftSidebarOpen, setIsLeftSidebarOpen] = useState(true);
   const [scoreRangeFilter, setScoreRangeFilter] = useState<Record<string, [number, number]>>({});
   const [rankRangeFilter, setRankRangeFilter]   = useState<Record<string, [number, number]>>({});
+  const [visibleColumns, setVisibleColumns]     = useState<string[]>(
+    TABLE_COLUMNS.filter(c => c.defaultOn).map(c => c.key)
+  );
   const [isExportDropdownOpen, setIsExportDropdownOpen] = useState(false);
   const [activeScoreInfo, setActiveScoreInfo] = useState<'genetic' | 'expression' | 'target' | 'overall' | 'literature' | 'get_score' | 'priority' | 'rp_score' | 'winner_score' | null>(null);
   const [activeTooltip, setActiveTooltip] = useState<string | null>(null);
@@ -3616,7 +3674,7 @@ Return ONLY valid JSON.
              </div>
            </form>
         </aside>
-        <CohortFilterSidebar theme={theme} targets={researchState.targets} activeDisease={researchState.activeDisease} onScoreRangesChange={setScoreRangeFilter} onRankRangesChange={setRankRangeFilter} />
+        <CohortFilterSidebar theme={theme} targets={researchState.targets} activeDisease={researchState.activeDisease} onScoreRangesChange={setScoreRangeFilter} onRankRangesChange={setRankRangeFilter} visibleCols={visibleColumns} onVisibleColsChange={setVisibleColumns} />
         {!isLeftSidebarOpen && (<button onClick={() => setIsLeftSidebarOpen(true)} className="absolute right-4 bottom-4 z-20 p-2.5 rounded-full bg-blue-600 text-white shadow-xl hover:scale-110 transition-transform"><MessageSquare className="w-5 h-5" /></button>)}
         <section className="order-1 flex-1 flex flex-col overflow-hidden relative min-w-0">
            <Breadcrumbs 
@@ -3764,219 +3822,26 @@ Return ONLY valid JSON.
                         </div>
                       </div>
                       <div className="flex-1 overflow-auto relative">
-                        <table className="w-full min-w-[1060px] text-left border-collapse">
+                        {/* col(key) helper — true if that column is toggled on */}
+                        {(() => {
+                          const col = (key: TableColKey) => visibleColumns.includes(key);
+                          return (
+                        <table className="w-full min-w-[640px] text-left border-collapse">
                           <thead className={`sticky top-0 z-10 text-[10px] font-black uppercase tracking-widest border-b ${theme === 'dark' ? 'bg-[#111827] border-slate-800 text-slate-300' : 'bg-white border-slate-200 text-slate-950 shadow-sm'}`}>
                             <tr>
                               <th className="p-4 pl-4">Gene</th>
                               <th className="p-4 text-center">Flags</th>
                               <th className="p-4 hidden md:table-cell">Gene Name</th>
-                              <th className="p-4 text-center relative">
-                                <div className="flex items-center justify-center gap-1.5">
-                                  Genetic
-                                  <button 
-                                    onMouseEnter={() => setActiveTooltip('genetic')} 
-                                    onMouseLeave={() => setActiveTooltip(null)}
-                                    onClick={() => setActiveScoreInfo('genetic')}
-                                    className="p-0.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors"
-                                  >
-                                    <Info className="w-3 h-3 text-neutral-400" />
-                                  </button>
-                                </div>
-                                {activeTooltip === 'genetic' && (
-                                  <div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-64 p-4 rounded-xl border bg-white dark:bg-[#1c1c1c] border-neutral-200 dark:border-neutral-800 shadow-2xl z-50 text-left normal-case tracking-normal animate-in fade-in slide-in-from-top-2 duration-200">
-                                    <div className="flex items-center gap-2 mb-2">
-                                      <div className="p-1.5 rounded-lg bg-blue-50 dark:bg-blue-900/20"><Info className="w-3.5 h-3.5 text-blue-500" /></div>
-                                      <h5 className="text-[12px] font-bold text-black dark:text-white">Genetic Score</h5>
-                                    </div>
-                                    <p className="text-[11px] text-black dark:text-neutral-400 leading-relaxed mb-3">Max of genetic_association, somatic_mutation, and genetic_literature datatype scores from Open Targets. Reflects strength of evidence linking this gene to the disease through germline variants, somatic mutations, and genetics-informed literature.</p>
-                                    <button onClick={() => setActiveScoreInfo('genetic')} className="text-[10px] font-bold text-blue-600 hover:underline flex items-center gap-1">Learn more <ChevronRight className="w-3 h-3" /></button>
-                                  </div>
-                                )}
-                              </th>
-                              <th className="p-4 text-center relative">
-                                <div className="flex items-center justify-center gap-1.5">
-                                  Expression
-                                  <button 
-                                    onMouseEnter={() => setActiveTooltip('expression')} 
-                                    onMouseLeave={() => setActiveTooltip(null)}
-                                    onClick={() => setActiveScoreInfo('expression')}
-                                    className="p-0.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors"
-                                  >
-                                    <Info className="w-3 h-3 text-neutral-400" />
-                                  </button>
-                                </div>
-                                {activeTooltip === 'expression' && (
-                                  <div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-64 p-4 rounded-xl border bg-white dark:bg-[#1c1c1c] border-neutral-200 dark:border-neutral-800 shadow-2xl z-50 text-left normal-case tracking-normal animate-in fade-in slide-in-from-top-2 duration-200">
-                                    <div className="flex items-center gap-2 mb-2">
-                                      <div className="p-1.5 rounded-lg bg-emerald-50 dark:bg-emerald-900/20"><Info className="w-3.5 h-3.5 text-emerald-500" /></div>
-                                      <h5 className="text-[12px] font-bold text-black dark:text-white">Expression Score</h5>
-                                    </div>
-                                    <p className="text-[11px] text-black dark:text-neutral-400 leading-relaxed mb-3">Calculated from Open Targets RNA expression data across all tissues. Combines expression strength (top 3 tissue average, log-normalized) and tissue selectivity (peak tissue vs mean). Higher score means strongly and selectively expressed.</p>
-                                    <button onClick={() => setActiveScoreInfo('expression')} className="text-[10px] font-bold text-emerald-600 hover:underline flex items-center gap-1">Learn more <ChevronRight className="w-3 h-3" /></button>
-                                  </div>
-                                )}
-                              </th>
-                              <th className="p-4 text-center relative">
-                                <div className="flex items-center justify-center gap-1.5">
-                                  Target
-                                  <button 
-                                    onMouseEnter={() => setActiveTooltip('target')} 
-                                    onMouseLeave={() => setActiveTooltip(null)}
-                                    onClick={() => setActiveScoreInfo('target')}
-                                    className="p-0.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors"
-                                  >
-                                    <Info className="w-3 h-3 text-neutral-400" />
-                                  </button>
-                                </div>
-                                {activeTooltip === 'target' && (
-                                  <div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-64 p-4 rounded-xl border bg-white dark:bg-[#1c1c1c] border-neutral-200 dark:border-neutral-800 shadow-2xl z-50 text-left normal-case tracking-normal animate-in fade-in slide-in-from-top-2 duration-200">
-                                    <div className="flex items-center gap-2 mb-2">
-                                      <div className="p-1.5 rounded-lg bg-amber-50 dark:bg-amber-900/20"><Pill className="w-3.5 h-3.5 text-amber-500" /></div>
-                                      <h5 className="text-[12px] font-bold text-black dark:text-white">Target Score</h5>
-                                    </div>
-                                    <p className="text-[11px] text-black dark:text-neutral-400 leading-relaxed mb-3">Derived from Open Targets tractability assessment. Reflects how druggable this gene is: Approved Drug (1.0), Advanced Clinical (0.85), Phase 1 Clinical (0.70), Structure with Ligand (0.55), High-Quality Pocket (0.40), Druggable Family (0.25), Unknown (0.10).</p>
-                                    <button onClick={() => setActiveScoreInfo('target')} className="text-[10px] font-bold text-amber-600 hover:underline flex items-center gap-1">Learn more <ChevronRight className="w-3 h-3" /></button>
-                                  </div>
-                                )}
-                              </th>
-                              <th className="p-4 text-center relative">
-                                <div className="flex items-center justify-center gap-1.5">
-                                  Literature
-                                  <button 
-                                    onMouseEnter={() => setActiveTooltip('literature')} 
-                                    onMouseLeave={() => setActiveTooltip(null)}
-                                    onClick={() => setActiveScoreInfo('literature')}
-                                    className="p-0.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors"
-                                  >
-                                    <Info className="w-3 h-3 text-neutral-400" />
-                                  </button>
-                                </div>
-                                {activeTooltip === 'literature' && (
-                                  <div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-64 p-4 rounded-xl border bg-white dark:bg-[#1c1c1c] border-neutral-200 dark:border-neutral-800 shadow-2xl z-50 text-left normal-case tracking-normal animate-in fade-in slide-in-from-top-2 duration-200">
-                                    <div className="flex items-center gap-2 mb-2">
-                                      <div className="p-1.5 rounded-lg bg-purple-50 dark:bg-purple-900/20"><BookOpen className="w-3.5 h-3.5 text-purple-500" /></div>
-                                      <h5 className="text-[12px] font-bold text-black dark:text-white">Literature Support</h5>
-                                    </div>
-                                    <p className="text-[11px] text-black dark:text-neutral-400 leading-relaxed mb-3">Literature datatype score from Open Targets. Reflects the volume and quality of published evidence associating this gene with the disease, sourced from Europe PMC text mining.</p>
-                                    <button onClick={() => setActiveScoreInfo('literature')} className="text-[10px] font-bold text-purple-600 hover:underline flex items-center gap-1">Learn more <ChevronRight className="w-3 h-3" /></button>
-                                  </div>
-                                )}
-                              </th>
-                              <th className="p-4 text-center relative">
-                                <div className="flex items-center justify-center gap-1.5">
-                                  GET Score
-                                  <button 
-                                    onMouseEnter={() => setActiveTooltip('get_score')} 
-                                    onMouseLeave={() => setActiveTooltip(null)}
-                                    onClick={() => setActiveScoreInfo('get_score')}
-                                    className="p-0.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors"
-                                  >
-                                    <Info className="w-3 h-3 text-neutral-400" />
-                                  </button>
-                                </div>
-                                {activeTooltip === 'get_score' && (
-                                  <div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-72 p-5 rounded-2xl border bg-white dark:bg-[#1c1c1c] border-neutral-200 dark:border-neutral-800 shadow-2xl z-50 text-left normal-case tracking-normal animate-in fade-in slide-in-from-top-2 duration-200">
-                                    <div className="flex items-center gap-2 mb-3">
-                                      <div className="p-1.5 rounded-lg bg-indigo-50 dark:bg-indigo-900/20"><Atom className="w-4 h-4 text-indigo-500" /></div>
-                                      <h5 className="text-[13px] font-bold text-black dark:text-white">GET Score Calculation</h5>
-                                    </div>
-                                    <div className="space-y-3">
-                                      <p className="text-[11px] text-neutral-600 dark:text-neutral-400 leading-relaxed">
-                                        The <span className="font-bold text-indigo-600">GET Score</span> is calculated using a multi-stage weighted formula:
-                                      </p>
-                                      <div className="p-3 rounded-xl bg-neutral-50 dark:bg-neutral-900 border border-neutral-100 dark:border-neutral-800 font-mono text-[10px] text-indigo-600 space-y-1">
-                                        <div>Baseline = (G × {researchState.weights.genetic}) + (E × {researchState.weights.expression}) + (T_new × {researchState.weights.target})</div>
-                                        <div>GET = (Baseline × {(1 - researchState.weights.velocity).toFixed(2)}) + (V_norm × {researchState.weights.velocity.toFixed(2)})</div>
-                                      </div>
-                                      <p className="text-[10px] text-neutral-500 italic">
-                                        T_new = (OT_Tractability × 0.65) + (Trial_Signal × 0.35)
-                                      </p>
-                                      <button onClick={() => setActiveScoreInfo('get_score')} className="text-[10px] font-bold text-indigo-600 hover:underline flex items-center gap-1 pt-1">Formula Definitions <ChevronRight className="w-3 h-3" /></button>
-                                    </div>
-                                  </div>
-                                )}
-                              </th>
-                              <th className="p-4 text-center relative">
-                                <div className="flex items-center justify-center gap-1.5">
-                                  RP Score
-                                  <button 
-                                    onMouseEnter={() => setActiveTooltip('rp_score')} 
-                                    onMouseLeave={() => setActiveTooltip(null)}
-                                    onClick={() => setActiveScoreInfo('rp_score')}
-                                    className="p-0.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors"
-                                  >
-                                    <Info className="w-3 h-3 text-neutral-400" />
-                                  </button>
-                                </div>
-                                {activeTooltip === 'rp_score' && (
-                                  <div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-64 p-4 rounded-xl border bg-white dark:bg-[#1c1c1c] border-neutral-200 dark:border-neutral-800 shadow-2xl z-50 text-left normal-case tracking-normal animate-in fade-in slide-in-from-top-2 duration-200">
-                                    <div className="flex items-center gap-2 mb-2">
-                                      <div className="p-1.5 rounded-lg bg-indigo-50 dark:bg-indigo-900/20"><Info className="w-3.5 h-3.5 text-indigo-500" /></div>
-                                      <h5 className="text-[12px] font-bold text-black dark:text-white">RP Score</h5>
-                                    </div>
-                                    <p className="text-[11px] text-black dark:text-neutral-400 leading-relaxed mb-3">Random Walk with Restart score. Reflects the connectivity of this gene to high-confidence disease seeds within the STRING interactome.</p>
-                                    <button onClick={() => setActiveScoreInfo('rp_score')} className="text-[10px] font-bold text-indigo-600 hover:underline flex items-center gap-1">Methodology <ChevronRight className="w-3 h-3" /></button>
-                                  </div>
-                                )}
-                              </th>
-                              <th className="p-4 text-center relative">
-                                <div className="flex items-center justify-center gap-1.5 whitespace-nowrap">
-                                  WINNER
-                                  <button 
-                                    onMouseEnter={() => setActiveTooltip('winner_score')} 
-                                    onMouseLeave={() => setActiveTooltip(null)}
-                                    onClick={() => setActiveScoreInfo('winner_score')}
-                                    className="p-0.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors"
-                                  >
-                                    <Info className="w-3 h-3 text-emerald-400" />
-                                  </button>
-                                </div>
-                                {activeTooltip === 'winner_score' && (
-                                  <div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-64 p-4 rounded-xl border bg-white dark:bg-[#1c1c1c] border-neutral-200 dark:border-neutral-800 shadow-2xl z-50 text-left normal-case tracking-normal animate-in fade-in slide-in-from-top-2 duration-200">
-                                    <div className="flex items-center gap-2 mb-2">
-                                      <div className="p-1.5 rounded-lg bg-emerald-50 dark:bg-emerald-900/20"><Info className="w-3.5 h-3.5 text-emerald-500" /></div>
-                                      <h5 className="text-[12px] font-bold text-black dark:text-white">WINNER Score</h5>
-                                    </div>
-                                    <p className="text-[11px] text-black dark:text-neutral-400 leading-relaxed mb-3">Weighted Iterative neighbor-based Score. Identifies central nodes in the protein interactome based on connection density.</p>
-                                    <button onClick={() => setActiveScoreInfo('winner_score')} className="text-[10px] font-bold text-emerald-600 hover:underline flex items-center gap-1">Methodology <ChevronRight className="w-3 h-3" /></button>
-                                  </div>
-                                )}
-                              </th>
-                              <th className="p-4 pr-8 text-right relative text-blue-600">
-                                <div className="flex flex-col items-end gap-0.5">
-                                  <div className="flex items-center justify-end gap-1.5">
-                                    Final Score
-                                    <button 
-                                      onMouseEnter={() => setActiveTooltip('overall')} 
-                                      onMouseLeave={() => setActiveTooltip(null)}
-                                      onClick={() => setActiveScoreInfo('overall')}
-                                      className="p-0.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors"
-                                    >
-                                      <Info className="w-3 h-3 text-blue-400" />
-                                    </button>
-                                  </div>
-                                </div>
-                                {activeTooltip === 'overall' && (
-                                  <div className="absolute top-full right-0 mt-2 w-72 p-5 rounded-2xl border bg-white dark:bg-[#1c1c1c] border-neutral-200 dark:border-neutral-800 shadow-2xl z-50 text-left normal-case tracking-normal animate-in fade-in slide-in-from-top-2 duration-200">
-                                    <div className="flex items-center gap-2 mb-3">
-                                      <div className="p-1.5 rounded-lg bg-blue-50 dark:bg-blue-900/20"><Atom className="w-4 h-4 text-blue-500" /></div>
-                                      <h5 className="text-[13px] font-bold text-black dark:text-white">Final Score (GET + RP + WINNER)</h5>
-                                    </div>
-                                    <div className="space-y-3">
-                                      <p className="text-[11px] text-neutral-600 dark:text-neutral-400 leading-relaxed">
-                                        The <span className="font-bold text-blue-600">Final Score</span> integrates GET Score (biological evidence) with RP Score (RWR propagation) and WINNER Score (topology).
-                                      </p>
-                                      <div className="p-3 rounded-xl bg-neutral-50 dark:bg-neutral-900 border border-neutral-100 dark:border-neutral-800 font-mono text-[10px] text-blue-600 leading-tight">
-                                        Final = (GET × 0.50) + (RP × 0.25) + (WINNER × 0.25)
-                                      </div>
-                                      <p className="text-[10px] text-neutral-500 italic">
-                                        RP (Random Propagation) uses STRING v12 to find genes connected to high-confidence disease seeds.
-                                      </p>
-                                      <button onClick={() => setActiveScoreInfo('overall')} className="text-[10px] font-bold text-blue-600 hover:underline flex items-center gap-1 pt-1">Detailed Explanation <ChevronRight className="w-3 h-3" /></button>
-                                    </div>
-                                  </div>
-                                )}
-                              </th>
+                              {col('geneticScore') && <th className="p-4 text-center relative"><div className="flex items-center justify-center gap-1.5">Genetic<button onMouseEnter={() => setActiveTooltip('genetic')} onMouseLeave={() => setActiveTooltip(null)} onClick={() => setActiveScoreInfo('genetic')} className="p-0.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors"><Info className="w-3 h-3 text-neutral-400" /></button></div>{activeTooltip === 'genetic' && (<div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-64 p-4 rounded-xl border bg-white dark:bg-[#1c1c1c] border-neutral-200 dark:border-neutral-800 shadow-2xl z-50 text-left normal-case tracking-normal"><h5 className="text-[12px] font-bold mb-1">Genetic Score</h5><p className="text-[11px] text-neutral-400 leading-relaxed">Max of genetic_association, somatic_mutation, and genetic_literature scores from Open Targets.</p></div>)}</th>}
+                              {col('combinedExpression') && <th className="p-4 text-center relative"><div className="flex items-center justify-center gap-1.5">Expression<button onMouseEnter={() => setActiveTooltip('expression')} onMouseLeave={() => setActiveTooltip(null)} onClick={() => setActiveScoreInfo('expression')} className="p-0.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors"><Info className="w-3 h-3 text-neutral-400" /></button></div>{activeTooltip === 'expression' && (<div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-64 p-4 rounded-xl border bg-white dark:bg-[#1c1c1c] border-neutral-200 dark:border-neutral-800 shadow-2xl z-50 text-left normal-case tracking-normal"><h5 className="text-[12px] font-bold mb-1">Expression Score</h5><p className="text-[11px] text-neutral-400 leading-relaxed">Combines expression strength and tissue selectivity from Open Targets RNA data.</p></div>)}</th>}
+                              {col('targetScore') && <th className="p-4 text-center relative"><div className="flex items-center justify-center gap-1.5">Target<button onMouseEnter={() => setActiveTooltip('target')} onMouseLeave={() => setActiveTooltip(null)} onClick={() => setActiveScoreInfo('target')} className="p-0.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors"><Info className="w-3 h-3 text-neutral-400" /></button></div>{activeTooltip === 'target' && (<div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-64 p-4 rounded-xl border bg-white dark:bg-[#1c1c1c] border-neutral-200 dark:border-neutral-800 shadow-2xl z-50 text-left normal-case tracking-normal"><h5 className="text-[12px] font-bold mb-1">Target Score</h5><p className="text-[11px] text-neutral-400 leading-relaxed">Druggability from Open Targets tractability: Approved Drug (1.0) → Unknown (0.10).</p></div>)}</th>}
+                              {col('literatureScore') && <th className="p-4 text-center relative"><div className="flex items-center justify-center gap-1.5">Literature<button onMouseEnter={() => setActiveTooltip('literature')} onMouseLeave={() => setActiveTooltip(null)} onClick={() => setActiveScoreInfo('literature')} className="p-0.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors"><Info className="w-3 h-3 text-neutral-400" /></button></div>{activeTooltip === 'literature' && (<div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-64 p-4 rounded-xl border bg-white dark:bg-[#1c1c1c] border-neutral-200 dark:border-neutral-800 shadow-2xl z-50 text-left normal-case tracking-normal"><h5 className="text-[12px] font-bold mb-1">Literature Score</h5><p className="text-[11px] text-neutral-400 leading-relaxed">Literature datatype score from Open Targets / Europe PMC text mining.</p></div>)}</th>}
+                              {col('getScore') && <th className="p-4 text-center relative"><div className="flex items-center justify-center gap-1.5">GET Score<button onMouseEnter={() => setActiveTooltip('get_score')} onMouseLeave={() => setActiveTooltip(null)} onClick={() => setActiveScoreInfo('get_score')} className="p-0.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors"><Info className="w-3 h-3 text-neutral-400" /></button></div>{activeTooltip === 'get_score' && (<div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-64 p-4 rounded-xl border bg-white dark:bg-[#1c1c1c] border-neutral-200 dark:border-neutral-800 shadow-2xl z-50 text-left normal-case tracking-normal"><h5 className="text-[12px] font-bold mb-1">GET Score</h5><p className="text-[11px] text-neutral-400 leading-relaxed">Composite: G×0.50 + E×0.25 + T×0.25 with velocity bonus.</p></div>)}</th>}
+                              {col('rpScore') && <th className="p-4 text-center relative"><div className="flex items-center justify-center gap-1.5">RP Score<button onMouseEnter={() => setActiveTooltip('rp_score')} onMouseLeave={() => setActiveTooltip(null)} onClick={() => setActiveScoreInfo('rp_score')} className="p-0.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors"><Info className="w-3 h-3 text-neutral-400" /></button></div>{activeTooltip === 'rp_score' && (<div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-64 p-4 rounded-xl border bg-white dark:bg-[#1c1c1c] border-neutral-200 dark:border-neutral-800 shadow-2xl z-50 text-left normal-case tracking-normal"><h5 className="text-[12px] font-bold mb-1">RP Score</h5><p className="text-[11px] text-neutral-400 leading-relaxed">Random Walk with Restart — proximity to disease seeds in STRING network.</p></div>)}</th>}
+                              {col('winnerScore') && <th className="p-4 text-center relative"><div className="flex items-center justify-center gap-1.5">WINNER<button onMouseEnter={() => setActiveTooltip('winner_score')} onMouseLeave={() => setActiveTooltip(null)} onClick={() => setActiveScoreInfo('winner_score')} className="p-0.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors"><Info className="w-3 h-3 text-emerald-400" /></button></div>{activeTooltip === 'winner_score' && (<div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-64 p-4 rounded-xl border bg-white dark:bg-[#1c1c1c] border-neutral-200 dark:border-neutral-800 shadow-2xl z-50 text-left normal-case tracking-normal"><h5 className="text-[12px] font-bold mb-1">WINNER Score</h5><p className="text-[11px] text-neutral-400 leading-relaxed">Weighted Iterative Network-based Score — central nodes in the interactome.</p></div>)}</th>}
+                              {col('tauTissue') && <th className="p-4 text-center whitespace-nowrap text-orange-500">TAU Tissue</th>}
+                              {col('tauSingleCell') && <th className="p-4 text-center whitespace-nowrap text-red-500">TAU Cell</th>}
+                              {col('finalScore') && <th className="p-4 pr-8 text-right relative text-blue-600"><div className="flex items-center justify-end gap-1.5">Final Score<button onMouseEnter={() => setActiveTooltip('overall')} onMouseLeave={() => setActiveTooltip(null)} onClick={() => setActiveScoreInfo('overall')} className="p-0.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors"><Info className="w-3 h-3 text-blue-400" /></button></div>{activeTooltip === 'overall' && (<div className="absolute top-full right-0 mt-2 w-64 p-4 rounded-xl border bg-white dark:bg-[#1c1c1c] border-neutral-200 dark:border-neutral-800 shadow-2xl z-50 text-left normal-case tracking-normal"><h5 className="text-[12px] font-bold mb-1">Final Score</h5><p className="text-[11px] text-neutral-400 leading-relaxed">(GET × 0.50) + (RP × 0.25) + (WINNER × 0.25)</p></div>)}</th>}
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
@@ -4016,41 +3881,24 @@ Return ONLY valid JSON.
                                     )}
                                   </td>
                                   <td className={`p-4 text-[12px] hidden md:table-cell ${theme === 'dark' ? 'text-neutral-400' : 'text-neutral-900'}`}>{t.name}</td>
-                                  <td className={`p-4 text-center font-mono text-[11px] font-medium ${theme === 'dark' ? 'text-neutral-400' : 'text-slate-950'}`}>{t.geneticScore.toFixed(3)}</td>
-                                  <td className={`p-4 text-center font-mono text-[11px] font-medium ${theme === 'dark' ? 'text-neutral-400' : 'text-slate-950'}`}>{t.combinedExpression?.toFixed(3)}</td>
-                                  <td className={`p-4 text-center font-mono text-[11px] font-medium ${theme === 'dark' ? 'text-neutral-400' : 'text-slate-950'}`}>{t.targetScore.toFixed(3)}</td>
-                                   <td className={`p-4 text-center font-mono text-[11px] font-medium ${theme === 'dark' ? 'text-neutral-400' : 'text-slate-950'}`}>{t.literatureScore?.toFixed(3)}</td>
-                                  <td className={`p-4 text-center font-mono text-[11px] font-medium ${theme === 'dark' ? 'text-indigo-400' : 'text-indigo-700'}`}>{t.getScore?.toFixed(3)}</td>
-                                   <td className="p-4 text-center">
-                                     {t.rpScore !== undefined ? (
-                                       <ScoreBar value={t.rpScore} color="bg-indigo-500" theme={theme} />
-                                     ) : (
-                                       <span className="text-neutral-400 text-[10px]">---</span>
-                                     )}
-                                   </td>
-                                   <td className="p-4 text-center">
-                                      {t.winnerScore !== undefined ? (
-                                        <div className="flex flex-col items-center gap-1">
-                                          <ScoreBar value={t.winnerScore} color="bg-emerald-500" theme={theme} />
-                                          <span className="text-[9px] text-neutral-400 dark:text-neutral-500 font-mono">raw: {t.winnerRawScore?.toFixed(2) || "0.00"}</span>
-                                        </div>
-                                      ) : (
-                                        <span className="text-neutral-400 text-[10px]">---</span>
-                                      )}
-                                   </td>
-                                  <td className="p-4 pr-8 text-right">
-                                    {t.finalScore !== undefined ? (
-                                      <ScoreBar value={t.finalScore} color="bg-blue-600" theme={theme} />
-                                    ) : (
-                                      <span className="text-blue-600 font-bold text-[12px] font-mono">{t.overallScore.toFixed(4)}</span>
-                                    )}
-                                  </td>
+                                  {col('geneticScore') && <td className={`p-4 text-center font-mono text-[11px] font-medium ${theme === 'dark' ? 'text-neutral-400' : 'text-slate-950'}`}>{t.geneticScore.toFixed(3)}</td>}
+                                  {col('combinedExpression') && <td className={`p-4 text-center font-mono text-[11px] font-medium ${theme === 'dark' ? 'text-neutral-400' : 'text-slate-950'}`}>{t.combinedExpression?.toFixed(3)}</td>}
+                                  {col('targetScore') && <td className={`p-4 text-center font-mono text-[11px] font-medium ${theme === 'dark' ? 'text-neutral-400' : 'text-slate-950'}`}>{t.targetScore.toFixed(3)}</td>}
+                                  {col('literatureScore') && <td className={`p-4 text-center font-mono text-[11px] font-medium ${theme === 'dark' ? 'text-neutral-400' : 'text-slate-950'}`}>{t.literatureScore?.toFixed(3) ?? '—'}</td>}
+                                  {col('getScore') && <td className={`p-4 text-center font-mono text-[11px] font-medium ${theme === 'dark' ? 'text-indigo-400' : 'text-indigo-700'}`}>{t.getScore?.toFixed(3)}</td>}
+                                  {col('rpScore') && <td className="p-4 text-center">{t.rpScore !== undefined ? <ScoreBar value={t.rpScore} color="bg-indigo-500" theme={theme} /> : <span className="text-neutral-400 text-[10px]">—</span>}</td>}
+                                  {col('winnerScore') && <td className="p-4 text-center">{t.winnerScore !== undefined ? <div className="flex flex-col items-center gap-1"><ScoreBar value={t.winnerScore} color="bg-emerald-500" theme={theme} /><span className="text-[9px] text-neutral-400 font-mono">raw: {t.winnerRawScore?.toFixed(2) || '0.00'}</span></div> : <span className="text-neutral-400 text-[10px]">—</span>}</td>}
+                                  {col('tauTissue') && <td className="p-4 text-center font-mono text-[11px]">{t.tauTissue !== undefined ? <ScoreBar value={t.tauTissue} color="bg-orange-400" theme={theme} /> : <span className="text-neutral-400 text-[10px]">—</span>}</td>}
+                                  {col('tauSingleCell') && <td className="p-4 text-center font-mono text-[11px]">{t.tauSingleCell !== undefined ? <ScoreBar value={t.tauSingleCell} color="bg-red-400" theme={theme} /> : <span className="text-neutral-400 text-[10px]">—</span>}</td>}
+                                  {col('finalScore') && <td className="p-4 pr-8 text-right">{t.finalScore !== undefined ? <ScoreBar value={t.finalScore} color="bg-blue-600" theme={theme} /> : <span className="text-blue-600 font-bold text-[12px] font-mono">{t.overallScore.toFixed(4)}</span>}</td>}
                                 </tr>
                               </React.Fragment>
                             );
                           })}
                         </tbody>
                         </table>
+                          ); // end IIFE return
+                        })()} {/* end col() IIFE */}
                         {researchState.activeDisease && (
                           <div className="p-8 flex flex-col items-center gap-4 border-t border-neutral-100 dark:border-neutral-800 bg-neutral-50/30 dark:bg-transparent">
                             {researchState.filters.length > 0 && (
