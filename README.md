@@ -1,7 +1,3 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
-
 # Disease2Target — AI-Powered Drug Target Prioritization
 
 An AI-powered platform that takes a disease name and produces a ranked, evidence-weighted list of drug targets by aggregating data from Open Targets, PubMed, ClinicalTrials.gov, Protein Atlas, STRING-DB, Enrichr, and more — no manual curation required.
