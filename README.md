@@ -6,8 +6,6 @@
 
 An AI-powered platform that takes a disease name and produces a ranked, evidence-weighted list of drug targets by aggregating data from Open Targets, PubMed, ClinicalTrials.gov, Protein Atlas, STRING-DB, Enrichr, and more — no manual curation required.
 
-View your app in AI Studio: https://ai.studio/apps/935ce7b7-a457-47fb-bf7c-c78c0b98ec5a
-
 ## Run Locally
 
 **Prerequisites:** Node.js 18+
