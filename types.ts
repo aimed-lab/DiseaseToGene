@@ -102,8 +102,11 @@ export interface DiseaseInfo {
 export interface EnrichmentResult {
   term: string;
   pValue: number;
+  adjustedPValue: number;
   combinedScore: number;
   genes: string[];
+  pathwaySize?: number;
+  source: 'KEGG' | 'Reactome' | 'WikiPathways';
 }
 
 export interface PubMedStats {

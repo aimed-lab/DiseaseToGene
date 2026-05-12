@@ -207,31 +207,6 @@ export const api = {
       // Sort by GET Score
       uniqueTargets.sort((a, b) => (b.getScore ?? 0) - (a.getScore ?? 0));
 
-      // ── Protein Atlas TAU scores (tissue specificity) ─────────────────────
-      // Fetched in batches of 5 to avoid rate-limiting
-      const PA_COLS = 'g,eg,t_RNA__tau,sc_RNA__tau';
-      const tauBatchSize = 5;
-      for (let i = 0; i < uniqueTargets.length; i += tauBatchSize) {
-        const batch = uniqueTargets.slice(i, i + tauBatchSize);
-        await Promise.all(batch.map(async (target) => {
-          try {
-            const paUrl = `https://www.proteinatlas.org/api/search_download.php?search=${target.id}&format=json&columns=${PA_COLS}&compress=no`;
-            const res = await proxyFetch(paUrl);
-            if (res.ok) {
-              const data = await res.json();
-              if (Array.isArray(data) && data.length > 0) {
-                const row = data[0];
-                target.tauTissue     = parseFloat(row['TAU score - Tissue']           ?? row['t_RNA__tau']   ?? '0') || 0;
-                target.tauSingleCell = parseFloat(row['TAU score - Single Cell Type'] ?? row['sc_RNA__tau']  ?? '0') || 0;
-              }
-            }
-          } catch (_) { /* TAU scores are optional — silent fail */ }
-        }));
-        if (i + tauBatchSize < uniqueTargets.length) {
-          await new Promise(r => setTimeout(r, 120));
-        }
-      }
-
       return uniqueTargets;
     } catch (err) { return []; }
   },
@@ -263,13 +238,52 @@ export const api = {
   async getEnrichment(genes: string[]): Promise<EnrichmentResult[]> {
     if (genes.length === 0) return [];
     try {
+      // One addList call — userListId is reused for all 3 library queries
       const formData = new FormData();
       formData.append('list', genes.join('\n'));
       const addRes = await fetch(`${ENRICHR_API}/addList`, { method: 'POST', body: formData });
       const addData = await addRes.json();
-      const enRes = await fetch(`${ENRICHR_API}/enrich?userListId=${addData.userListId}&backgroundType=KEGG_2021_Human`);
-      const enData = await enRes.json();
-      return enData['KEGG_2021_Human']?.map((r: any) => ({ term: r[1], pValue: r[2], combinedScore: r[4], genes: r[5] })) || [];
+      const uid = addData.userListId;
+
+      const LIBS: { key: string; source: EnrichmentResult['source'] }[] = [
+        { key: 'KEGG_2021_Human',        source: 'KEGG'        },
+        { key: 'Reactome_2022',           source: 'Reactome'    },
+        { key: 'WikiPathway_2023_Human',  source: 'WikiPathways' },
+      ];
+
+      // Parallel fetch — all 3 run at the same time
+      const results = await Promise.all(
+        LIBS.map(async ({ key, source }) => {
+          try {
+            const res  = await fetch(`${ENRICHR_API}/enrich?userListId=${uid}&backgroundType=${key}`);
+            const data = await res.json();
+            const rows: any[] = data[key] || [];
+            return rows.map((r: any): EnrichmentResult => ({
+              term:          r[1],
+              pValue:        r[2],
+              adjustedPValue: r[6] ?? r[2],   // index 6 = adjusted p-value from Enrichr
+              combinedScore: r[4],
+              genes:         r[5],
+              pathwaySize:   r[3] ?? undefined, // index 3 = overlap size / term size
+              source,
+            }));
+          } catch {
+            return [] as EnrichmentResult[];
+          }
+        })
+      );
+
+      // Merge all 3, sort by combined score desc, deduplicate by term
+      const seen = new Set<string>();
+      return results
+        .flat()
+        .sort((a, b) => b.combinedScore - a.combinedScore)
+        .filter(r => {
+          const k = `${r.source}::${r.term}`;
+          if (seen.has(k)) return false;
+          seen.add(k);
+          return true;
+        });
     } catch (e) { return []; }
   },
 
@@ -755,9 +769,33 @@ export const api = {
         items: data.result || data.items || data.rows || (Array.isArray(data) ? data : []),
         hasMore: data.hasMore || false
       };
-    } catch (e) { 
+    } catch (e) {
       console.error("getTcgaExpressionPage failed:", e);
-      return { items: [], hasMore: false }; 
+      return { items: [], hasMore: false };
     }
-  }
+  },
+
+  // ── Protein Atlas TAU scores — background enrichment after initial load ──
+  async enrichTau(targets: Target[]): Promise<void> {
+    const PA_COLS = 'g,eg,t_RNA__tau,sc_RNA__tau';
+    const batchSize = 5;
+    for (let i = 0; i < targets.length; i += batchSize) {
+      const batch = targets.slice(i, i + batchSize);
+      await Promise.all(batch.map(async (target) => {
+        try {
+          const paUrl = `https://www.proteinatlas.org/api/search_download.php?search=${target.id}&format=json&columns=${PA_COLS}&compress=no`;
+          const res = await proxyFetch(paUrl);
+          if (res.ok) {
+            const data = await res.json();
+            if (Array.isArray(data) && data.length > 0) {
+              const row = data[0];
+              target.tauTissue     = parseFloat(row['TAU score - Tissue']           ?? row['t_RNA__tau']  ?? '0') || 0;
+              target.tauSingleCell = parseFloat(row['TAU score - Single Cell Type'] ?? row['sc_RNA__tau'] ?? '0') || 0;
+            }
+          }
+        } catch (_) { /* optional — silent fail */ }
+      }));
+      if (i + batchSize < targets.length) await new Promise(r => setTimeout(r, 120));
+    }
+  },
 };

@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { GoogleGenAI, Type, Chat, GenerateContentResponse } from "@google/genai";
 import * as d3 from "d3";
 import Markdown from 'react-markdown';
-import { Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell, WidthType, AlignmentType, HeadingLevel } from 'docx';
+import { Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell, WidthType, AlignmentType, HeadingLevel, BorderStyle, ShadingType } from 'docx';
 import { saveAs } from 'file-saver';
 import './index.css';
 import { 
@@ -830,6 +830,8 @@ const LEFT_NAV_ITEMS = [
 ] as const;
 
 // ── Dual-handle range slider ─────────────────────────────────────────────────
+// Uses pointer events on a track div so both thumbs are always independently
+// draggable — stacked <input type=range> elements cannot achieve this reliably.
 const DualSlider = ({
   label, values, onChange, accent, isDark,
 }: {
@@ -840,7 +842,44 @@ const DualSlider = ({
   isDark: boolean;
 }) => {
   const [min, max] = values;
-  const pct = (v: number) => `${(v * 100).toFixed(0)}%`;
+  const trackRef = useRef<HTMLDivElement>(null);
+  const dragging = useRef<'min' | 'max' | null>(null);
+
+  const clamp = (v: number) => Math.max(0, Math.min(1, v));
+
+  const valueAt = (clientX: number): number => {
+    const rect = trackRef.current!.getBoundingClientRect();
+    return clamp((clientX - rect.left) / rect.width);
+  };
+
+  const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const v = valueAt(e.clientX);
+    // Pick whichever thumb is closer; break ties toward min so it can move right
+    dragging.current = Math.abs(v - min) <= Math.abs(v - max) ? 'min' : 'max';
+    // Immediately snap the chosen thumb to the click position
+    if (dragging.current === 'min') {
+      onChange([clamp(Math.min(v, max - 0.01)), max]);
+    } else {
+      onChange([min, clamp(Math.max(v, min + 0.01))]);
+    }
+  };
+
+  const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!dragging.current) return;
+    const v = valueAt(e.clientX);
+    if (dragging.current === 'min') {
+      onChange([clamp(Math.min(v, max - 0.01)), max]);
+    } else {
+      onChange([min, clamp(Math.max(v, min + 0.01))]);
+    }
+  };
+
+  const onPointerUp = () => { dragging.current = null; };
+
+  const pct = (v: number) => `${(v * 100).toFixed(1)}%`;
+  const THUMB = `w-3.5 h-3.5 rounded-full border-2 border-white shadow-md absolute top-1/2 -translate-y-1/2 -translate-x-1/2 cursor-grab active:cursor-grabbing`;
+
   return (
     <div className="space-y-1">
       <div className="flex items-center justify-between">
@@ -849,27 +888,31 @@ const DualSlider = ({
           {min.toFixed(2)} – {max.toFixed(2)}
         </span>
       </div>
-      <div className="relative h-4 flex items-center">
-        {/* Track */}
-        <div className={`absolute w-full h-1 rounded-full ${isDark ? 'bg-slate-700' : 'bg-slate-200'}`}>
-          <div
-            className="absolute h-full rounded-full opacity-80"
-            style={{ background: accent, left: pct(min), right: `${100 - max * 100}%` }}
-          />
-        </div>
-        {/* Min thumb */}
-        <input
-          type="range" min={0} max={1} step={0.01} value={min}
-          onChange={e => onChange([Math.min(+e.target.value, max - 0.05), max])}
-          className="absolute w-full h-4 appearance-none bg-transparent cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-white [&::-webkit-slider-thumb]:shadow-md"
-          style={{ '--thumb-bg': accent } as React.CSSProperties}
+      {/* Draggable track */}
+      <div
+        ref={trackRef}
+        className={`relative h-4 flex items-center select-none cursor-pointer`}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerLeave={onPointerUp}
+      >
+        {/* Background rail */}
+        <div className={`absolute w-full h-1.5 rounded-full ${isDark ? 'bg-slate-700' : 'bg-slate-200'}`} />
+        {/* Filled range between thumbs */}
+        <div
+          className="absolute h-1.5 rounded-full opacity-80"
+          style={{ background: accent, left: pct(min), width: `${(max - min) * 100}%` }}
         />
-        {/* Max thumb — rendered on top */}
-        <input
-          type="range" min={0} max={1} step={0.01} value={max}
-          onChange={e => onChange([min, Math.max(+e.target.value, min + 0.05)])}
-          className="absolute w-full h-4 appearance-none bg-transparent cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-white [&::-webkit-slider-thumb]:shadow-md"
-          style={{ '--thumb-bg': accent } as React.CSSProperties}
+        {/* Min thumb */}
+        <div
+          className={THUMB}
+          style={{ background: accent, left: pct(min) }}
+        />
+        {/* Max thumb */}
+        <div
+          className={THUMB}
+          style={{ background: accent, left: pct(max) }}
         />
       </div>
     </div>
@@ -2238,6 +2281,8 @@ const App = () => {
   const [visibleColumns, setVisibleColumns]     = useState<string[]>(
     TABLE_COLUMNS.filter(c => c.defaultOn).map(c => c.key)
   );
+  const [tableSort, setTableSort] = useState<{key: string; dir: 'asc'|'desc'}|null>(null);
+  const [enrichSourceFilter, setEnrichSourceFilter] = useState<'All' | 'KEGG' | 'Reactome' | 'WikiPathways'>('All');
   const [isExportDropdownOpen, setIsExportDropdownOpen] = useState(false);
   const [activeScoreInfo, setActiveScoreInfo] = useState<'genetic' | 'expression' | 'target' | 'overall' | 'literature' | 'get_score' | 'priority' | 'rp_score' | 'winner_score' | null>(null);
   const [activeTooltip, setActiveTooltip] = useState<string | null>(null);
@@ -2536,83 +2581,89 @@ Return ONLY valid JSON.
     }
   };
 
+  // All columns available for export (fixed + optional visible ones)
+  const getExportRows = () => {
+    const visibleCols = TABLE_COLUMNS.filter(c => visibleColumns.includes(c.key));
+    const headers = ['Gene', 'Gene Name', ...visibleCols.map(c => c.label)];
+    const rows = displayTargets.map(t => {
+      const fixed = [t.symbol, t.name];
+      const scores = visibleCols.map(c => {
+        const v = (t as any)[c.key];
+        return v !== undefined && v !== null ? (typeof v === 'number' ? v.toFixed(4) : String(v)) : '—';
+      });
+      return [...fixed, ...scores];
+    });
+    return { headers, rows };
+  };
+
+  const exportToCsv = () => {
+    if (!displayTargets.length) { alert("No data to export."); return; }
+    const { headers, rows } = getExportRows();
+    const escape = (s: string) => `"${s.replace(/"/g, '""')}"`;
+    const csv = [headers.map(escape).join(','), ...rows.map(r => r.map(escape).join(','))].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    saveAs(blob, `Target_Prioritization_${(researchState.activeDisease?.name || 'Unknown').replace(/\s+/g, '_')}.csv`);
+  };
+
   const exportToDocx = async () => {
-    if (!researchState.targets.length) {
+    if (!displayTargets.length) {
       alert("No data to export. Please search for a disease first.");
       return;
     }
     setIsExporting(true);
     try {
       const diseaseName = researchState.activeDisease?.name || 'Unknown Disease';
-      
+      const { headers, rows } = getExportRows();
+
+      // Column widths: Gene+Name get more space, scores share evenly
+      const TOTAL_DXA = 9360; // US Letter content width (8.5" - 2" margins)
+      const fixedW = Math.round(TOTAL_DXA * 0.18);
+      const scoreW = Math.round((TOTAL_DXA - fixedW * 2) / Math.max(headers.length - 2, 1));
+      const colWidths = [fixedW, fixedW, ...Array(headers.length - 2).fill(scoreW)];
+
+      const headerBorder = { style: BorderStyle.SINGLE, size: 2, color: '2563EB' } as const;
+      const cellBorder   = { style: BorderStyle.SINGLE, size: 1, color: 'CCCCCC' } as const;
+      const allBorders   = { top: cellBorder, bottom: cellBorder, left: cellBorder, right: cellBorder };
+
+      const makeCell = (text: string, colIdx: number, isHeader = false) => new TableCell({
+        width: { size: colWidths[colIdx] ?? scoreW, type: WidthType.DXA },
+        borders: isHeader ? { top: headerBorder, bottom: headerBorder, left: headerBorder, right: headerBorder } : allBorders,
+        shading: isHeader ? { fill: 'EFF6FF', type: ShadingType.CLEAR } : { fill: 'FFFFFF', type: ShadingType.CLEAR },
+        margins: { top: 60, bottom: 60, left: 80, right: 80 },
+        children: [new Paragraph({
+          alignment: AlignmentType.CENTER,
+          children: [new TextRun({ text, bold: isHeader, size: isHeader ? 18 : 16, font: 'Arial' })],
+        })],
+      });
+
       const doc = new Document({
         sections: [{
-          properties: {},
+          properties: {
+            page: { size: { width: 12240, height: 15840 }, margin: { top: 1440, right: 1440, bottom: 1440, left: 1440 } }
+          },
           children: [
             new Paragraph({
-              text: `Target Prioritization Report: ${diseaseName}`,
-              heading: HeadingLevel.HEADING_1,
-              spacing: { after: 400 },
-            }),
-            new Paragraph({
-              text: `Generated on: ${new Date().toLocaleDateString()}`,
+              children: [new TextRun({ text: `Target Prioritization Report: ${diseaseName}`, bold: true, size: 36, font: 'Arial' })],
               spacing: { after: 200 },
             }),
+            new Paragraph({
+              children: [new TextRun({ text: `Generated: ${new Date().toLocaleDateString()} · Targets: ${rows.length} · Columns: ${headers.join(', ')}`, size: 18, color: '6B7280', font: 'Arial' })],
+              spacing: { after: 400 },
+            }),
             new Table({
-              width: { size: 100, type: WidthType.PERCENTAGE },
+              width: { size: TOTAL_DXA, type: WidthType.DXA },
+              columnWidths: colWidths,
               rows: [
-                new TableRow({
-                  children: [
-                    'Gene', 'Genetic Score', 'Expression', 'Target Score', 'Overall Score'
-                  ].map(text => new TableCell({
-                    children: [new Paragraph({ text, alignment: AlignmentType.CENTER })],
-                    shading: { fill: "E0E0E0" }
-                  })),
-                }),
-                ...researchState.targets
-                  .filter(t => !t.usefulness || !Object.values(t.usefulness).includes('not-useful'))
-                  .slice(0, 100)
-                  .map(target => new TableRow({
-                    children: [
-                      target.symbol,
-                      (target.geneticScore || 0).toFixed(3),
-                      (target.combinedExpression || 0).toFixed(3),
-                      (target.targetScore || 0).toFixed(3),
-                      (target.overallScore || 0).toFixed(3)
-                    ].map(text => new TableCell({
-                      children: [new Paragraph({ text, alignment: AlignmentType.CENTER })],
-                    })),
-                  })),
+                new TableRow({ children: headers.map((h, i) => makeCell(h, i, true)), tableHeader: true }),
+                ...rows.map(r => new TableRow({ children: r.map((cell, i) => makeCell(cell, i, false)) })),
               ],
             }),
-            ...researchState.targets
-              .filter(t => t.usefulness && Object.values(t.usefulness).includes('useful'))
-              .slice(0, 20)
-              .map(target => [
-                new Paragraph({
-                  text: `Supporting Evidence: ${target.symbol}`,
-                  heading: HeadingLevel.HEADING_2,
-                  spacing: { before: 400, after: 200 },
-                }),
-                new Paragraph({
-                  text: `The following evidence sources were prioritized as useful for this target:`,
-                  spacing: { after: 100 },
-                }),
-                ...Object.entries(target.usefulness || {})
-                  .filter(([_, status]) => status === 'useful')
-                  .map(([source]) => new Paragraph({
-                    text: `${source.charAt(0).toUpperCase() + source.slice(1)} Intelligence`,
-                    bullet: { level: 0 }
-                  }))
-              ]).flat(),
           ],
         }],
       });
 
       const blob = await Packer.toBlob(doc);
       saveAs(blob, `Target_Prioritization_${diseaseName.replace(/\s+/g, '_')}.docx`);
-      
-      alert("Document generated and download started.");
     } catch (err) {
       console.error("DOCX Export Error:", err);
       alert(`Export error: ${err}`);
@@ -2753,6 +2804,19 @@ Return ONLY valid JSON.
       return b.overallScore - a.overallScore;
     });
 
+    // Apply column sort from table header clicks
+    if (tableSort) {
+      result = [...result].sort((a, b) => {
+        const av = (a as any)[tableSort.key] ?? -Infinity;
+        const bv = (b as any)[tableSort.key] ?? -Infinity;
+        if (typeof av === 'number' && typeof bv === 'number')
+          return tableSort.dir === 'desc' ? bv - av : av - bv;
+        return tableSort.dir === 'desc'
+          ? String(bv).localeCompare(String(av))
+          : String(av).localeCompare(String(bv));
+      });
+    }
+
     // Apply sidebar score range filters
     result = result.filter(t =>
       Object.entries(scoreRangeFilter).every(([key, [min, max]]) => {
@@ -2774,7 +2838,27 @@ Return ONLY valid JSON.
     );
 
     return result;
-  }, [researchState.targets, researchState.filters, researchState.sorts, scoreRangeFilter, rankRangeFilter]);
+  }, [researchState.targets, researchState.filters, researchState.sorts, scoreRangeFilter, rankRangeFilter, tableSort]);
+
+
+  // Background TAU enrichment — runs after genes load, does NOT block initial render
+  useEffect(() => {
+    if (!researchState.targets.length) return;
+    const targetsNeedingTau = researchState.targets.filter(t => t.tauTissue === undefined);
+    if (!targetsNeedingTau.length) return;
+    // Clone so mutations inside enrichTau land on the clones, then we flush them back
+    const clones = researchState.targets.map(t => ({ ...t }));
+    api.enrichTau(clones).then(() => {
+      setResearchState(prev => ({
+        ...prev,
+        targets: prev.targets.map(t => {
+          const enriched = clones.find(c => c.id === t.id);
+          return enriched ? { ...t, tauTissue: enriched.tauTissue, tauSingleCell: enriched.tauSingleCell } : t;
+        }),
+      }));
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [researchState.targets.length]);
 
   useEffect(() => {
     if (viewMode === 'pubtator' && researchState.activeDisease && !researchState.pubtatorResults && !researchState.isFetchingPubTator) {
@@ -3812,9 +3896,13 @@ Return ONLY valid JSON.
                                   <div className="p-1.5 rounded-md bg-neutral-100 dark:bg-neutral-800"><Database className="w-3.5 h-3.5 text-neutral-500" /></div>
                                   <span>Notion</span>
                                 </button>
-                                <button onClick={() => { exportToDocx(); setIsExportDropdownOpen(false); }} className="w-full px-4 py-3 text-left text-[11px] font-semibold hover:bg-neutral-50 dark:hover:bg-neutral-800 flex items-center gap-3 transition-colors text-neutral-700 dark:text-neutral-300">
+                                <button onClick={() => { exportToDocx(); setIsExportDropdownOpen(false); }} className="w-full px-4 py-3 text-left text-[11px] font-semibold hover:bg-neutral-50 dark:hover:bg-neutral-800 flex items-center gap-3 border-b border-neutral-100 dark:border-neutral-800 transition-colors text-neutral-700 dark:text-neutral-300">
                                   <div className="p-1.5 rounded-md bg-blue-50 dark:bg-blue-900/20"><FileDown className="w-3.5 h-3.5 text-blue-500" /></div>
                                   <span>Download DOCX</span>
+                                </button>
+                                <button onClick={() => { exportToCsv(); setIsExportDropdownOpen(false); }} className="w-full px-4 py-3 text-left text-[11px] font-semibold hover:bg-neutral-50 dark:hover:bg-neutral-800 flex items-center gap-3 transition-colors text-neutral-700 dark:text-neutral-300">
+                                  <div className="p-1.5 rounded-md bg-emerald-50 dark:bg-emerald-900/20"><FileDown className="w-3.5 h-3.5 text-emerald-500" /></div>
+                                  <span>Download CSV</span>
                                 </button>
                               </div>
                             )}
@@ -3822,9 +3910,18 @@ Return ONLY valid JSON.
                         </div>
                       </div>
                       <div className="flex-1 overflow-auto relative">
-                        {/* col(key) helper — true if that column is toggled on */}
+                        {/* col(key) helper — true if that column is toggled on; sortTh — clickable sort header */}
                         {(() => {
                           const col = (key: TableColKey) => visibleColumns.includes(key);
+                          const sortTh = (key: string, label: React.ReactNode) => (
+                            <button
+                              onClick={() => setTableSort(prev => prev?.key === key ? { key, dir: prev.dir === 'desc' ? 'asc' : 'desc' } : { key, dir: 'desc' })}
+                              className="flex items-center justify-center gap-1 hover:text-blue-500 transition-colors w-full"
+                            >
+                              {label}
+                              <ArrowUpDown className={`w-2.5 h-2.5 shrink-0 ${tableSort?.key === key ? 'text-blue-500' : 'opacity-40'}`} />
+                            </button>
+                          );
                           return (
                         <table className="w-full min-w-[640px] text-left border-collapse">
                           <thead className={`sticky top-0 z-10 text-[10px] font-black uppercase tracking-widest border-b ${theme === 'dark' ? 'bg-[#111827] border-slate-800 text-slate-300' : 'bg-white border-slate-200 text-slate-950 shadow-sm'}`}>
@@ -3832,16 +3929,16 @@ Return ONLY valid JSON.
                               <th className="p-4 pl-4">Gene</th>
                               <th className="p-4 text-center">Flags</th>
                               <th className="p-4 hidden md:table-cell">Gene Name</th>
-                              {col('geneticScore') && <th className="p-4 text-center relative"><div className="flex items-center justify-center gap-1.5">Genetic<button onMouseEnter={() => setActiveTooltip('genetic')} onMouseLeave={() => setActiveTooltip(null)} onClick={() => setActiveScoreInfo('genetic')} className="p-0.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors"><Info className="w-3 h-3 text-neutral-400" /></button></div>{activeTooltip === 'genetic' && (<div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-64 p-4 rounded-xl border bg-white dark:bg-[#1c1c1c] border-neutral-200 dark:border-neutral-800 shadow-2xl z-50 text-left normal-case tracking-normal"><h5 className="text-[12px] font-bold mb-1">Genetic Score</h5><p className="text-[11px] text-neutral-400 leading-relaxed">Max of genetic_association, somatic_mutation, and genetic_literature scores from Open Targets.</p></div>)}</th>}
-                              {col('combinedExpression') && <th className="p-4 text-center relative"><div className="flex items-center justify-center gap-1.5">Expression<button onMouseEnter={() => setActiveTooltip('expression')} onMouseLeave={() => setActiveTooltip(null)} onClick={() => setActiveScoreInfo('expression')} className="p-0.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors"><Info className="w-3 h-3 text-neutral-400" /></button></div>{activeTooltip === 'expression' && (<div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-64 p-4 rounded-xl border bg-white dark:bg-[#1c1c1c] border-neutral-200 dark:border-neutral-800 shadow-2xl z-50 text-left normal-case tracking-normal"><h5 className="text-[12px] font-bold mb-1">Expression Score</h5><p className="text-[11px] text-neutral-400 leading-relaxed">Combines expression strength and tissue selectivity from Open Targets RNA data.</p></div>)}</th>}
-                              {col('targetScore') && <th className="p-4 text-center relative"><div className="flex items-center justify-center gap-1.5">Target<button onMouseEnter={() => setActiveTooltip('target')} onMouseLeave={() => setActiveTooltip(null)} onClick={() => setActiveScoreInfo('target')} className="p-0.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors"><Info className="w-3 h-3 text-neutral-400" /></button></div>{activeTooltip === 'target' && (<div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-64 p-4 rounded-xl border bg-white dark:bg-[#1c1c1c] border-neutral-200 dark:border-neutral-800 shadow-2xl z-50 text-left normal-case tracking-normal"><h5 className="text-[12px] font-bold mb-1">Target Score</h5><p className="text-[11px] text-neutral-400 leading-relaxed">Druggability from Open Targets tractability: Approved Drug (1.0) → Unknown (0.10).</p></div>)}</th>}
-                              {col('literatureScore') && <th className="p-4 text-center relative"><div className="flex items-center justify-center gap-1.5">Literature<button onMouseEnter={() => setActiveTooltip('literature')} onMouseLeave={() => setActiveTooltip(null)} onClick={() => setActiveScoreInfo('literature')} className="p-0.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors"><Info className="w-3 h-3 text-neutral-400" /></button></div>{activeTooltip === 'literature' && (<div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-64 p-4 rounded-xl border bg-white dark:bg-[#1c1c1c] border-neutral-200 dark:border-neutral-800 shadow-2xl z-50 text-left normal-case tracking-normal"><h5 className="text-[12px] font-bold mb-1">Literature Score</h5><p className="text-[11px] text-neutral-400 leading-relaxed">Literature datatype score from Open Targets / Europe PMC text mining.</p></div>)}</th>}
-                              {col('getScore') && <th className="p-4 text-center relative"><div className="flex items-center justify-center gap-1.5">GET Score<button onMouseEnter={() => setActiveTooltip('get_score')} onMouseLeave={() => setActiveTooltip(null)} onClick={() => setActiveScoreInfo('get_score')} className="p-0.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors"><Info className="w-3 h-3 text-neutral-400" /></button></div>{activeTooltip === 'get_score' && (<div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-64 p-4 rounded-xl border bg-white dark:bg-[#1c1c1c] border-neutral-200 dark:border-neutral-800 shadow-2xl z-50 text-left normal-case tracking-normal"><h5 className="text-[12px] font-bold mb-1">GET Score</h5><p className="text-[11px] text-neutral-400 leading-relaxed">Composite: G×0.50 + E×0.25 + T×0.25 with velocity bonus.</p></div>)}</th>}
-                              {col('rpScore') && <th className="p-4 text-center relative"><div className="flex items-center justify-center gap-1.5">RP Score<button onMouseEnter={() => setActiveTooltip('rp_score')} onMouseLeave={() => setActiveTooltip(null)} onClick={() => setActiveScoreInfo('rp_score')} className="p-0.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors"><Info className="w-3 h-3 text-neutral-400" /></button></div>{activeTooltip === 'rp_score' && (<div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-64 p-4 rounded-xl border bg-white dark:bg-[#1c1c1c] border-neutral-200 dark:border-neutral-800 shadow-2xl z-50 text-left normal-case tracking-normal"><h5 className="text-[12px] font-bold mb-1">RP Score</h5><p className="text-[11px] text-neutral-400 leading-relaxed">Random Walk with Restart — proximity to disease seeds in STRING network.</p></div>)}</th>}
-                              {col('winnerScore') && <th className="p-4 text-center relative"><div className="flex items-center justify-center gap-1.5">WINNER<button onMouseEnter={() => setActiveTooltip('winner_score')} onMouseLeave={() => setActiveTooltip(null)} onClick={() => setActiveScoreInfo('winner_score')} className="p-0.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors"><Info className="w-3 h-3 text-emerald-400" /></button></div>{activeTooltip === 'winner_score' && (<div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-64 p-4 rounded-xl border bg-white dark:bg-[#1c1c1c] border-neutral-200 dark:border-neutral-800 shadow-2xl z-50 text-left normal-case tracking-normal"><h5 className="text-[12px] font-bold mb-1">WINNER Score</h5><p className="text-[11px] text-neutral-400 leading-relaxed">Weighted Iterative Network-based Score — central nodes in the interactome.</p></div>)}</th>}
-                              {col('tauTissue') && <th className="p-4 text-center whitespace-nowrap text-orange-500">TAU Tissue</th>}
-                              {col('tauSingleCell') && <th className="p-4 text-center whitespace-nowrap text-red-500">TAU Cell</th>}
-                              {col('finalScore') && <th className="p-4 pr-8 text-right relative text-blue-600"><div className="flex items-center justify-end gap-1.5">Final Score<button onMouseEnter={() => setActiveTooltip('overall')} onMouseLeave={() => setActiveTooltip(null)} onClick={() => setActiveScoreInfo('overall')} className="p-0.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors"><Info className="w-3 h-3 text-blue-400" /></button></div>{activeTooltip === 'overall' && (<div className="absolute top-full right-0 mt-2 w-64 p-4 rounded-xl border bg-white dark:bg-[#1c1c1c] border-neutral-200 dark:border-neutral-800 shadow-2xl z-50 text-left normal-case tracking-normal"><h5 className="text-[12px] font-bold mb-1">Final Score</h5><p className="text-[11px] text-neutral-400 leading-relaxed">(GET × 0.50) + (RP × 0.25) + (WINNER × 0.25)</p></div>)}</th>}
+                              {col('geneticScore') && <th className="p-4 text-center relative"><div className="flex items-center justify-center gap-1.5">{sortTh('geneticScore', 'Genetic')}<button onMouseEnter={() => setActiveTooltip('genetic')} onMouseLeave={() => setActiveTooltip(null)} onClick={() => setActiveScoreInfo('genetic')} className="p-0.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors"><Info className="w-3 h-3 text-neutral-400" /></button></div>{activeTooltip === 'genetic' && (<div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-64 p-4 rounded-xl border bg-white dark:bg-[#1c1c1c] border-neutral-200 dark:border-neutral-800 shadow-2xl z-50 text-left normal-case tracking-normal"><h5 className="text-[12px] font-bold mb-1">Genetic Score</h5><p className="text-[11px] text-neutral-400 leading-relaxed">Max of genetic_association, somatic_mutation, and genetic_literature scores from Open Targets.</p></div>)}</th>}
+                              {col('combinedExpression') && <th className="p-4 text-center relative"><div className="flex items-center justify-center gap-1.5">{sortTh('combinedExpression', 'Expression')}<button onMouseEnter={() => setActiveTooltip('expression')} onMouseLeave={() => setActiveTooltip(null)} onClick={() => setActiveScoreInfo('expression')} className="p-0.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors"><Info className="w-3 h-3 text-neutral-400" /></button></div>{activeTooltip === 'expression' && (<div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-64 p-4 rounded-xl border bg-white dark:bg-[#1c1c1c] border-neutral-200 dark:border-neutral-800 shadow-2xl z-50 text-left normal-case tracking-normal"><h5 className="text-[12px] font-bold mb-1">Expression Score</h5><p className="text-[11px] text-neutral-400 leading-relaxed">Combines expression strength and tissue selectivity from Open Targets RNA data.</p></div>)}</th>}
+                              {col('targetScore') && <th className="p-4 text-center relative"><div className="flex items-center justify-center gap-1.5">{sortTh('targetScore', 'Target')}<button onMouseEnter={() => setActiveTooltip('target')} onMouseLeave={() => setActiveTooltip(null)} onClick={() => setActiveScoreInfo('target')} className="p-0.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors"><Info className="w-3 h-3 text-neutral-400" /></button></div>{activeTooltip === 'target' && (<div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-64 p-4 rounded-xl border bg-white dark:bg-[#1c1c1c] border-neutral-200 dark:border-neutral-800 shadow-2xl z-50 text-left normal-case tracking-normal"><h5 className="text-[12px] font-bold mb-1">Target Score</h5><p className="text-[11px] text-neutral-400 leading-relaxed">Druggability from Open Targets tractability: Approved Drug (1.0) → Unknown (0.10).</p></div>)}</th>}
+                              {col('literatureScore') && <th className="p-4 text-center relative"><div className="flex items-center justify-center gap-1.5">{sortTh('literatureScore', 'Literature')}<button onMouseEnter={() => setActiveTooltip('literature')} onMouseLeave={() => setActiveTooltip(null)} onClick={() => setActiveScoreInfo('literature')} className="p-0.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors"><Info className="w-3 h-3 text-neutral-400" /></button></div>{activeTooltip === 'literature' && (<div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-64 p-4 rounded-xl border bg-white dark:bg-[#1c1c1c] border-neutral-200 dark:border-neutral-800 shadow-2xl z-50 text-left normal-case tracking-normal"><h5 className="text-[12px] font-bold mb-1">Literature Score</h5><p className="text-[11px] text-neutral-400 leading-relaxed">Literature datatype score from Open Targets / Europe PMC text mining.</p></div>)}</th>}
+                              {col('getScore') && <th className="p-4 text-center relative"><div className="flex items-center justify-center gap-1.5">{sortTh('getScore', 'GET Score')}<button onMouseEnter={() => setActiveTooltip('get_score')} onMouseLeave={() => setActiveTooltip(null)} onClick={() => setActiveScoreInfo('get_score')} className="p-0.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors"><Info className="w-3 h-3 text-neutral-400" /></button></div>{activeTooltip === 'get_score' && (<div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-64 p-4 rounded-xl border bg-white dark:bg-[#1c1c1c] border-neutral-200 dark:border-neutral-800 shadow-2xl z-50 text-left normal-case tracking-normal"><h5 className="text-[12px] font-bold mb-1">GET Score</h5><p className="text-[11px] text-neutral-400 leading-relaxed">Composite: G×0.50 + E×0.25 + T×0.25 with velocity bonus.</p></div>)}</th>}
+                              {col('rpScore') && <th className="p-4 text-center relative"><div className="flex items-center justify-center gap-1.5">{sortTh('rpScore', 'RP Score')}<button onMouseEnter={() => setActiveTooltip('rp_score')} onMouseLeave={() => setActiveTooltip(null)} onClick={() => setActiveScoreInfo('rp_score')} className="p-0.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors"><Info className="w-3 h-3 text-neutral-400" /></button></div>{activeTooltip === 'rp_score' && (<div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-64 p-4 rounded-xl border bg-white dark:bg-[#1c1c1c] border-neutral-200 dark:border-neutral-800 shadow-2xl z-50 text-left normal-case tracking-normal"><h5 className="text-[12px] font-bold mb-1">RP Score</h5><p className="text-[11px] text-neutral-400 leading-relaxed">Random Walk with Restart — proximity to disease seeds in STRING network.</p></div>)}</th>}
+                              {col('winnerScore') && <th className="p-4 text-center relative"><div className="flex items-center justify-center gap-1.5">{sortTh('winnerScore', 'WINNER')}<button onMouseEnter={() => setActiveTooltip('winner_score')} onMouseLeave={() => setActiveTooltip(null)} onClick={() => setActiveScoreInfo('winner_score')} className="p-0.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors"><Info className="w-3 h-3 text-emerald-400" /></button></div>{activeTooltip === 'winner_score' && (<div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-64 p-4 rounded-xl border bg-white dark:bg-[#1c1c1c] border-neutral-200 dark:border-neutral-800 shadow-2xl z-50 text-left normal-case tracking-normal"><h5 className="text-[12px] font-bold mb-1">WINNER Score</h5><p className="text-[11px] text-neutral-400 leading-relaxed">Weighted Iterative Network-based Score — central nodes in the interactome.</p></div>)}</th>}
+                              {col('tauTissue') && <th className="p-4 text-center whitespace-nowrap text-orange-500">{sortTh('tauTissue', 'TAU Tissue')}</th>}
+                              {col('tauSingleCell') && <th className="p-4 text-center whitespace-nowrap text-red-500">{sortTh('tauSingleCell', 'TAU Cell')}</th>}
+                              {col('finalScore') && <th className="p-4 pr-8 text-right relative text-blue-600"><div className="flex items-center justify-end gap-1.5">{sortTh('finalScore', 'Final Score')}<button onMouseEnter={() => setActiveTooltip('overall')} onMouseLeave={() => setActiveTooltip(null)} onClick={() => setActiveScoreInfo('overall')} className="p-0.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors"><Info className="w-3 h-3 text-blue-400" /></button></div>{activeTooltip === 'overall' && (<div className="absolute top-full right-0 mt-2 w-64 p-4 rounded-xl border bg-white dark:bg-[#1c1c1c] border-neutral-200 dark:border-neutral-800 shadow-2xl z-50 text-left normal-case tracking-normal"><h5 className="text-[12px] font-bold mb-1">Final Score</h5><p className="text-[11px] text-neutral-400 leading-relaxed">(GET × 0.50) + (RP × 0.25) + (WINNER × 0.25)</p></div>)}</th>}
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
@@ -3931,7 +4028,118 @@ Return ONLY valid JSON.
                       </div>
                     </div>
                   )}
-                  {viewMode === 'enrichment' && (<div className="p-10 h-full overflow-auto space-y-6"><div className={`flex items-center justify-between border-b pb-4 ${theme === 'dark' ? 'border-neutral-800' : 'border-neutral-200'}`}><h4 className="text-[13px] font-bold uppercase text-neutral-700 dark:text-neutral-400 tracking-wider">Molecular Pathway Analytics</h4></div><div className="grid grid-cols-1 gap-4">{researchState.enrichment.map((e, i) => { const nCoCo = Math.min(0.95, (Math.log10(e.combinedScore + 1) / 3)); return (<div key={i} className={`p-6 rounded-2xl border shadow-sm transition-hover hover:shadow-md ${theme === 'dark' ? 'bg-[#171717] border-neutral-800' : 'bg-white border-neutral-200'}`}><div className="flex flex-col lg:flex-row justify-between gap-6"><div className="space-y-4 flex-1"><div className="flex items-center gap-3"><span className={`text-[15px] font-bold tracking-tight ${theme === 'dark' ? 'text-neutral-100' : 'text-neutral-900'}`}>{e.term}</span></div><div className="flex flex-wrap gap-2">{e.genes.slice(0, 15).map(g => (<span key={g} className={`px-2.5 py-1 rounded-md text-[10px] font-bold border transition-colors ${theme === 'dark' ? 'bg-neutral-800 text-neutral-400 border-neutral-700 hover:text-blue-400' : 'bg-blue-50 text-blue-700 border-blue-100 hover:bg-blue-100'}`}>{g}</span>))}</div></div><div className="flex items-center gap-12 shrink-0"><div className="text-right"><div className="text-[10px] font-bold uppercase mb-1 text-neutral-500 tracking-wider">p-Value</div><div className="text-sm font-mono font-bold text-blue-600">{e.pValue.toExponential(3)}</div></div><div className="w-40 space-y-3"><div className="flex justify-between items-end"><span className="text-[10px] font-bold uppercase text-neutral-500 tracking-wider">Enrichment Score</span><span className="text-[11px] font-bold font-mono text-blue-600">{nCoCo.toFixed(3)}</span></div><div className={`h-2 rounded-full overflow-hidden ${theme === 'dark' ? 'bg-neutral-800' : 'bg-neutral-100 shadow-inner'}`}><div className="h-full bg-blue-600 shadow-[0_0_8px_rgba(37,99,235,0.4)]" style={{width: `${nCoCo*100}%`}} /></div></div></div></div></div>); })}</div></div>)}
+                  {viewMode === 'enrichment' && (() => {
+                    const SOURCE_META = {
+                      KEGG:        { label: 'KEGG',        color: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300'    },
+                      Reactome:    { label: 'Reactome',    color: 'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300' },
+                      WikiPathways:{ label: 'WikiPathways', color: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300' },
+                    } as const;
+
+                    const filteredEnrichment = enrichSourceFilter === 'All'
+                      ? researchState.enrichment
+                      : researchState.enrichment.filter(e => e.source === enrichSourceFilter);
+
+                    const FILTER_TABS: ('All' | 'KEGG' | 'Reactome' | 'WikiPathways')[] = ['All', 'KEGG', 'Reactome', 'WikiPathways'];
+                    const counts = {
+                      All:          researchState.enrichment.length,
+                      KEGG:         researchState.enrichment.filter(e => e.source === 'KEGG').length,
+                      Reactome:     researchState.enrichment.filter(e => e.source === 'Reactome').length,
+                      WikiPathways: researchState.enrichment.filter(e => e.source === 'WikiPathways').length,
+                    };
+
+                    return (
+                      <div className="p-8 h-full overflow-auto space-y-6">
+                        {/* Header */}
+                        <div className={`flex flex-col gap-4 border-b pb-5 ${theme === 'dark' ? 'border-neutral-800' : 'border-neutral-200'}`}>
+                          <div className="flex items-center justify-between">
+                            <h4 className="text-[13px] font-bold uppercase text-neutral-700 dark:text-neutral-400 tracking-wider">Molecular Pathway Analytics</h4>
+                            <span className="text-[11px] text-neutral-500">{filteredEnrichment.length} pathways</span>
+                          </div>
+                          {/* Source filter tabs */}
+                          <div className="flex gap-2">
+                            {FILTER_TABS.map(tab => (
+                              <button
+                                key={tab}
+                                onClick={() => setEnrichSourceFilter(tab)}
+                                className={`px-3 py-1.5 rounded-lg text-[11px] font-bold transition-all border ${
+                                  enrichSourceFilter === tab
+                                    ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
+                                    : theme === 'dark'
+                                      ? 'bg-neutral-800 text-neutral-400 border-neutral-700 hover:text-neutral-200'
+                                      : 'bg-white text-neutral-600 border-neutral-200 hover:bg-neutral-50'
+                                }`}
+                              >
+                                {tab} <span className={`ml-1 text-[10px] ${enrichSourceFilter === tab ? 'opacity-80' : 'opacity-60'}`}>({counts[tab]})</span>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* Pathway cards */}
+                        <div className="grid grid-cols-1 gap-4">
+                          {filteredEnrichment.map((e, i) => {
+                            const cleanTerm = e.term.replace(/\s+R-HSA-\d+$/i, '').trim();
+                            const rawScore = e.combinedScore;
+                            // bar width: cap at max 500 for visual scale (Enrichr combined scores vary widely)
+                            const barPct = Math.min(1, rawScore / 500);
+                            const geneRatio = e.genes.length;
+                            const adjP = e.adjustedPValue ?? e.pValue;
+                            const sm = SOURCE_META[e.source] ?? SOURCE_META['KEGG'];
+                            return (
+                              <div key={`${e.source}-${i}`} className={`p-6 rounded-2xl border shadow-sm hover:shadow-md transition-shadow ${theme === 'dark' ? 'bg-[#171717] border-neutral-800' : 'bg-white border-neutral-200'}`}>
+                                <div className="flex flex-col lg:flex-row justify-between gap-6">
+                                  <div className="space-y-3 flex-1">
+                                    {/* Pathway name + source badge */}
+                                    <div className="flex items-start gap-2 flex-wrap">
+                                      <span className={`text-[15px] font-bold tracking-tight ${theme === 'dark' ? 'text-neutral-100' : 'text-neutral-900'}`}>{cleanTerm}</span>
+                                      <span className={`px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider shrink-0 ${sm.color}`}>{sm.label}</span>
+                                    </div>
+                                    {/* FDR + gene ratio line */}
+                                    <div className="flex items-center gap-4 flex-wrap">
+                                      <span className="text-[10px] font-mono text-neutral-500">
+                                        FDR: <span className={`font-bold ${adjP < 0.05 ? 'text-emerald-600 dark:text-emerald-400' : 'text-neutral-400'}`}>{adjP.toExponential(2)}</span>
+                                      </span>
+                                      <span className="text-[10px] font-mono text-neutral-500">
+                                        Genes: <span className="font-bold text-blue-600 dark:text-blue-400">{geneRatio} overlap</span>
+                                      </span>
+                                    </div>
+                                    {/* Gene chips */}
+                                    <div className="flex flex-wrap gap-1.5">
+                                      {e.genes.slice(0, 15).map(g => (
+                                        <span key={g} className={`px-2.5 py-1 rounded-md text-[10px] font-bold border transition-colors ${theme === 'dark' ? 'bg-neutral-800 text-neutral-400 border-neutral-700 hover:text-blue-400' : 'bg-blue-50 text-blue-700 border-blue-100 hover:bg-blue-100'}`}>{g}</span>
+                                      ))}
+                                      {e.genes.length > 15 && <span className="px-2 py-1 text-[10px] text-neutral-400">+{e.genes.length - 15} more</span>}
+                                    </div>
+                                  </div>
+                                  {/* Stats */}
+                                  <div className="flex items-center gap-10 shrink-0">
+                                    <div className="text-right">
+                                      <div className="text-[10px] font-bold uppercase mb-1 text-neutral-500 tracking-wider">p-Value</div>
+                                      <div className="text-sm font-mono font-bold text-blue-600">{e.pValue.toExponential(3)}</div>
+                                    </div>
+                                    <div className="w-40 space-y-2">
+                                      <div className="flex justify-between items-end">
+                                        <span className="text-[10px] font-bold uppercase text-neutral-500 tracking-wider">Score</span>
+                                        <span className="text-[11px] font-bold font-mono text-blue-600">{rawScore.toFixed(1)}</span>
+                                      </div>
+                                      <div className={`h-2 rounded-full overflow-hidden ${theme === 'dark' ? 'bg-neutral-800' : 'bg-neutral-100 shadow-inner'}`}>
+                                        <div className="h-full bg-blue-600 shadow-[0_0_8px_rgba(37,99,235,0.4)]" style={{width: `${barPct * 100}%`}} />
+                                      </div>
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                          {filteredEnrichment.length === 0 && (
+                            <div className="py-20 text-center text-neutral-400 text-[13px]">
+                              No pathways found{enrichSourceFilter !== 'All' ? ` for ${enrichSourceFilter}` : ''}. Run an analysis first.
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })()}
                   {viewMode === 'raw' && <RawDataView targets={displayTargets} theme={theme} cancerType={activeCancerType || 'BRCA'} />}
                 </div>
               )}
