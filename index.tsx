@@ -820,6 +820,18 @@ const TABLE_COLUMNS = [
 ] as const;
 type TableColKey = typeof TABLE_COLUMNS[number]['key'];
 
+// ── Bimodality tissue list (36 tissues from bimodality_final_wide.csv) ────────
+const BIMODALITY_TISSUES = [
+  'adipose_tissue','adrenal_gland','blood','bone_marrow','brain_neurons',
+  'brain_non-neurons','breast','colon','endometrium','epididymis','esophagus',
+  'eye','fallopian_tube','heart_muscle','kidney','liver','lung','lymph_node',
+  'ovary','pancreas','pituitary_gland','placenta','prostate','rectum','retina',
+  'salivary_gland','skeletal_muscle','skin','small_intestine','spleen','stomach',
+  'testis','thymus','tongue','urinary_bladder','vasculature',
+] as const;
+type BioTissue = typeof BIMODALITY_TISSUES[number];
+const bioTissueLabel = (t: string) => t.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+
 const LEFT_NAV_ITEMS = [
   { id: 'workspace', icon: Home,     label: 'Workspace' },
   { id: 'targets',   icon: List,     label: 'Targets'   },
@@ -919,7 +931,7 @@ const DualSlider = ({
   );
 };
 
-const CohortFilterSidebar = ({ theme, targets, activeDisease, onScoreRangesChange, onRankRangesChange, visibleCols, onVisibleColsChange }: {
+const CohortFilterSidebar = ({ theme, targets, activeDisease, onScoreRangesChange, onRankRangesChange, visibleCols, onVisibleColsChange, visibleBioTissues, onVisibleBioTissuesChange }: {
   theme: Theme;
   targets: Target[];
   activeDisease?: { id: string; name: string } | null;
@@ -927,6 +939,8 @@ const CohortFilterSidebar = ({ theme, targets, activeDisease, onScoreRangesChang
   onRankRangesChange?: (ranges: Record<string, [number, number]>) => void;
   visibleCols?: string[];
   onVisibleColsChange?: (cols: string[]) => void;
+  visibleBioTissues?: string[];
+  onVisibleBioTissuesChange?: (tissues: string[]) => void;
 }) => {
   const isDark = theme === 'dark';
 
@@ -1302,6 +1316,50 @@ Be concise, scientific, and use markdown. Max 350 words.`;
                 </div>
               )}
             </div>
+
+              {/* Bimodality tissue selector */}
+              {onVisibleBioTissuesChange && (
+                <div className={`rounded-lg border overflow-hidden ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
+                  <div className={`px-3 py-2 flex items-center justify-between ${isDark ? 'bg-slate-900/40' : 'bg-slate-50'}`}>
+                    <span className={`text-[11px] font-bold ${isDark ? 'text-slate-200' : 'text-slate-700'}`}>Bimodality Tissues</span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => onVisibleBioTissuesChange(BIMODALITY_TISSUES.slice())}
+                        className={`text-[8px] font-bold uppercase tracking-wider ${isDark ? 'text-slate-500 hover:text-slate-300' : 'text-slate-400 hover:text-slate-600'}`}
+                      >All</button>
+                      <button
+                        onClick={() => onVisibleBioTissuesChange([])}
+                        className={`text-[8px] font-bold uppercase tracking-wider ${isDark ? 'text-slate-500 hover:text-slate-300' : 'text-slate-400 hover:text-slate-600'}`}
+                      >None</button>
+                    </div>
+                  </div>
+                  <div className={`px-3 py-2 border-t grid grid-cols-2 gap-x-2 gap-y-1.5 ${isDark ? 'border-slate-800' : 'border-slate-100'}`}>
+                    {BIMODALITY_TISSUES.map(tissue => {
+                      const checked = visibleBioTissues?.includes(tissue) ?? false;
+                      return (
+                        <label
+                          key={tissue}
+                          className="flex items-center gap-1.5 cursor-pointer group"
+                          onClick={() => {
+                            const current = visibleBioTissues ?? [];
+                            onVisibleBioTissuesChange(
+                              checked ? current.filter(t => t !== tissue) : [...current, tissue]
+                            );
+                          }}
+                        >
+                          <div
+                            className="w-3.5 h-3.5 rounded flex items-center justify-center border flex-shrink-0 transition-all"
+                            style={{ background: checked ? '#a855f7' : 'transparent', borderColor: checked ? '#a855f7' : isDark ? '#475569' : '#cbd5e1' }}
+                          >
+                            {checked && <svg className="w-2 h-2 text-white" viewBox="0 0 10 10" fill="none"><path d="M1.5 5L4 7.5L8.5 2.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                          </div>
+                          <span className={`text-[9px] font-medium select-none leading-tight ${checked ? (isDark ? 'text-white' : 'text-slate-800') : (isDark ? 'text-slate-500' : 'text-slate-400')}`}>{bioTissueLabel(tissue)}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
 
             {totalActive > 0 && (
               <div className={`p-2 border-t flex-shrink-0 ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
@@ -2283,6 +2341,9 @@ const App = () => {
   );
   const [tableSort, setTableSort] = useState<{key: string; dir: 'asc'|'desc'}|null>(null);
   const [enrichSourceFilter, setEnrichSourceFilter] = useState<'All' | 'KEGG' | 'Reactome' | 'WikiPathways'>('All');
+  const [visibleBioTissues, setVisibleBioTissues] = useState<string[]>([]);  // selected tissues to show as columns
+  const bimodalityCache = useRef<Record<string, Record<string, number>> | null>(null);
+  const bimodalityLoading = useRef(false);
   const [isExportDropdownOpen, setIsExportDropdownOpen] = useState(false);
   const [activeScoreInfo, setActiveScoreInfo] = useState<'genetic' | 'expression' | 'target' | 'overall' | 'literature' | 'get_score' | 'priority' | 'rp_score' | 'winner_score' | null>(null);
   const [activeTooltip, setActiveTooltip] = useState<string | null>(null);
@@ -2857,6 +2918,39 @@ Return ONLY valid JSON.
         }),
       }));
     });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [researchState.targets.length]);
+
+  // Lazy-load bimodality.json once, then patch targets — non-blocking
+  useEffect(() => {
+    if (!researchState.targets.length) return;
+    if (bimodalityLoading.current) return;
+    if (bimodalityCache.current) {
+      // Already loaded — just patch any targets that don't have scores yet
+      const lookup = bimodalityCache.current;
+      setResearchState(prev => ({
+        ...prev,
+        targets: prev.targets.map(t =>
+          t.bimodalityScores ? t : { ...t, bimodalityScores: lookup[t.id] ?? {} }
+        ),
+      }));
+      return;
+    }
+    bimodalityLoading.current = true;
+    fetch('/bimodality.json')
+      .then(r => r.json())
+      .then((lookup: Record<string, Record<string, number>>) => {
+        bimodalityCache.current = lookup;
+        bimodalityLoading.current = false;
+        setResearchState(prev => ({
+          ...prev,
+          targets: prev.targets.map(t => ({
+            ...t,
+            bimodalityScores: lookup[t.id] ?? {},
+          })),
+        }));
+      })
+      .catch(() => { bimodalityLoading.current = false; });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [researchState.targets.length]);
 
@@ -3758,7 +3852,7 @@ Return ONLY valid JSON.
              </div>
            </form>
         </aside>
-        <CohortFilterSidebar theme={theme} targets={researchState.targets} activeDisease={researchState.activeDisease} onScoreRangesChange={setScoreRangeFilter} onRankRangesChange={setRankRangeFilter} visibleCols={visibleColumns} onVisibleColsChange={setVisibleColumns} />
+        <CohortFilterSidebar theme={theme} targets={researchState.targets} activeDisease={researchState.activeDisease} onScoreRangesChange={setScoreRangeFilter} onRankRangesChange={setRankRangeFilter} visibleCols={visibleColumns} onVisibleColsChange={setVisibleColumns} visibleBioTissues={visibleBioTissues} onVisibleBioTissuesChange={setVisibleBioTissues} />
         {!isLeftSidebarOpen && (<button onClick={() => setIsLeftSidebarOpen(true)} className="absolute right-4 bottom-4 z-20 p-2.5 rounded-full bg-blue-600 text-white shadow-xl hover:scale-110 transition-transform"><MessageSquare className="w-5 h-5" /></button>)}
         <section className="order-1 flex-1 flex flex-col overflow-hidden relative min-w-0">
            <Breadcrumbs 
@@ -3938,6 +4032,11 @@ Return ONLY valid JSON.
                               {col('winnerScore') && <th className="p-4 text-center relative"><div className="flex items-center justify-center gap-1.5">{sortTh('winnerScore', 'WINNER')}<button onMouseEnter={() => setActiveTooltip('winner_score')} onMouseLeave={() => setActiveTooltip(null)} onClick={() => setActiveScoreInfo('winner_score')} className="p-0.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors"><Info className="w-3 h-3 text-emerald-400" /></button></div>{activeTooltip === 'winner_score' && (<div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-64 p-4 rounded-xl border bg-white dark:bg-[#1c1c1c] border-neutral-200 dark:border-neutral-800 shadow-2xl z-50 text-left normal-case tracking-normal"><h5 className="text-[12px] font-bold mb-1">WINNER Score</h5><p className="text-[11px] text-neutral-400 leading-relaxed">Weighted Iterative Network-based Score — central nodes in the interactome.</p></div>)}</th>}
                               {col('tauTissue') && <th className="p-4 text-center whitespace-nowrap text-orange-500">{sortTh('tauTissue', 'TAU Tissue')}</th>}
                               {col('tauSingleCell') && <th className="p-4 text-center whitespace-nowrap text-red-500">{sortTh('tauSingleCell', 'TAU Cell')}</th>}
+                              {/* Bimodality columns — Max always first, then per-tissue */}
+                              {visibleBioTissues.length > 0 && <th className="p-4 text-center whitespace-nowrap text-purple-500 text-[9px] font-black uppercase tracking-wider">Max Bio</th>}
+                              {visibleBioTissues.map(tissue => (
+                                <th key={tissue} className="p-4 text-center whitespace-nowrap text-purple-400 text-[9px] font-black uppercase tracking-wider">{bioTissueLabel(tissue)}</th>
+                              ))}
                               {col('finalScore') && <th className="p-4 pr-8 text-right relative text-blue-600"><div className="flex items-center justify-end gap-1.5">{sortTh('finalScore', 'Final Score')}<button onMouseEnter={() => setActiveTooltip('overall')} onMouseLeave={() => setActiveTooltip(null)} onClick={() => setActiveScoreInfo('overall')} className="p-0.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors"><Info className="w-3 h-3 text-blue-400" /></button></div>{activeTooltip === 'overall' && (<div className="absolute top-full right-0 mt-2 w-64 p-4 rounded-xl border bg-white dark:bg-[#1c1c1c] border-neutral-200 dark:border-neutral-800 shadow-2xl z-50 text-left normal-case tracking-normal"><h5 className="text-[12px] font-bold mb-1">Final Score</h5><p className="text-[11px] text-neutral-400 leading-relaxed">(GET × 0.50) + (RP × 0.25) + (WINNER × 0.25)</p></div>)}</th>}
                             </tr>
                           </thead>
@@ -3987,6 +4086,23 @@ Return ONLY valid JSON.
                                   {col('winnerScore') && <td className="p-4 text-center">{t.winnerScore !== undefined ? <div className="flex flex-col items-center gap-1"><ScoreBar value={t.winnerScore} color="bg-emerald-500" theme={theme} /><span className="text-[9px] text-neutral-400 font-mono">raw: {t.winnerRawScore?.toFixed(2) || '0.00'}</span></div> : <span className="text-neutral-400 text-[10px]">—</span>}</td>}
                                   {col('tauTissue') && <td className="p-4 text-center font-mono text-[11px]">{t.tauTissue !== undefined ? <ScoreBar value={t.tauTissue} color="bg-orange-400" theme={theme} /> : <span className="text-neutral-400 text-[10px]">—</span>}</td>}
                                   {col('tauSingleCell') && <td className="p-4 text-center font-mono text-[11px]">{t.tauSingleCell !== undefined ? <ScoreBar value={t.tauSingleCell} color="bg-red-400" theme={theme} /> : <span className="text-neutral-400 text-[10px]">—</span>}</td>}
+                                  {visibleBioTissues.length > 0 && (
+                                    <td className="p-4 text-center font-mono text-[11px]">
+                                      {t.bimodalityScores?._max_score !== undefined
+                                        ? <div className="flex flex-col items-center gap-0.5">
+                                            <ScoreBar value={t.bimodalityScores._max_score} color="bg-purple-500" theme={theme} />
+                                            <span className="text-[8px] text-purple-400">{bioTissueLabel(String(t.bimodalityScores._max_tissue ?? ''))}</span>
+                                          </div>
+                                        : <span className="text-neutral-400 text-[10px]">—</span>}
+                                    </td>
+                                  )}
+                                  {visibleBioTissues.map(tissue => (
+                                    <td key={tissue} className="p-4 text-center font-mono text-[11px]">
+                                      {t.bimodalityScores?.[tissue] !== undefined
+                                        ? <ScoreBar value={t.bimodalityScores[tissue]} color="bg-purple-400" theme={theme} />
+                                        : <span className="text-neutral-400 text-[10px]">—</span>}
+                                    </td>
+                                  ))}
                                   {col('finalScore') && <td className="p-4 pr-8 text-right">{t.finalScore !== undefined ? <ScoreBar value={t.finalScore} color="bg-blue-600" theme={theme} /> : <span className="text-blue-600 font-bold text-[12px] font-mono">{t.overallScore.toFixed(4)}</span>}</td>}
                                 </tr>
                               </React.Fragment>

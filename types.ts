@@ -67,6 +67,7 @@ export interface Target {
   tauTissue?: number;
   tauSingleCell?: number;
   finalScore?: number;
+  bimodalityScores?: Record<string, number>;  // tissue → score (0-1), _max_score, _max_tissue
   baselineExpression?: number; 
   combinedExpression?: number; 
   targetScore: number; 
