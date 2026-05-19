@@ -2442,22 +2442,27 @@ const App = () => {
     
     try {
       const PAGE_SIZE = 20;
-      const start = researchState.pubtatorPage * PAGE_SIZE;
+      // Initial batch always consumes first 30 genes from pool — start load-more after that
+      const INITIAL_BATCH = 30;
+      const start = INITIAL_BATCH + (researchState.pubtatorPage - 1) * PAGE_SIZE;
       const end = start + PAGE_SIZE;
       const nextGenes = researchState.pubtatorGenePool.slice(start, end);
-      
+
       if (nextGenes.length === 0) {
         alert("End of extracted gene pool reached.");
         return;
       }
-      
+
       const newResults = await api.getPubTatorVelocityBatch(nextGenes, researchState.activeDisease.name);
-      
-      setResearchState(prev => ({
-        ...prev,
-        pubtatorResults: [...(prev.pubtatorResults || []), ...newResults],
-        pubtatorPage: prev.pubtatorPage + 1
-      }));
+
+      setResearchState(prev => {
+        const existing = new Set((prev.pubtatorResults || []).map(r => r.gene.toUpperCase()));
+        const dedupedNew = newResults.filter(r => !existing.has(r.gene.toUpperCase()));
+        const combined = [...(prev.pubtatorResults || []), ...dedupedNew];
+        // Re-sort entire list by velocity so high-velocity genes always surface to top
+        combined.sort((a, b) => b.velocity - a.velocity);
+        return { ...prev, pubtatorResults: combined, pubtatorPage: prev.pubtatorPage + 1 };
+      });
       
       // Update network scores with new potential seeds
       performRWR(researchState.targets, newResults.map(r => r.gene));
