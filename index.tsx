@@ -857,11 +857,13 @@ const DualSlider = ({
   const trackRef = useRef<HTMLDivElement>(null);
   const dragging = useRef<'min' | 'max' | null>(null);
 
+  const THUMB_R = 7; // px — half of w-3.5 (14px)
   const clamp = (v: number) => Math.max(0, Math.min(1, v));
 
+  // Account for thumb radius so v=0 aligns with rail left, v=1 aligns with rail right
   const valueAt = (clientX: number): number => {
     const rect = trackRef.current!.getBoundingClientRect();
-    return clamp((clientX - rect.left) / rect.width);
+    return clamp((clientX - rect.left - THUMB_R) / (rect.width - THUMB_R * 2));
   };
 
   const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -889,8 +891,13 @@ const DualSlider = ({
 
   const onPointerUp = () => { dragging.current = null; };
 
-  const pct = (v: number) => `${(v * 100).toFixed(1)}%`;
-  const THUMB = `w-3.5 h-3.5 rounded-full border-2 border-white shadow-md absolute top-1/2 -translate-y-1/2 -translate-x-1/2 cursor-grab active:cursor-grabbing`;
+  // Thumb left edge: v*(W-14) so thumb CENTER sits at v*(W-14)+7 = v*(W-14)+THUMB_R
+  const thumbLeft = (v: number) => `calc(${(v * 100).toFixed(2)}% - ${(v * THUMB_R * 2).toFixed(2)}px)`;
+  // Fill: from center of min thumb to center of max thumb
+  const fillLeft = `calc(${(min * 100).toFixed(2)}% - ${(min * THUMB_R * 2).toFixed(2)}px + ${THUMB_R}px)`;
+  const fillWidth = `calc(${((max - min) * 100).toFixed(2)}% - ${((max - min) * THUMB_R * 2).toFixed(2)}px)`;
+  // Rail: inset by THUMB_R on each side so endpoints align with thumb centers
+  const THUMB = `w-3.5 h-3.5 rounded-full border-2 border-white shadow-md absolute top-1/2 -translate-y-1/2 cursor-grab active:cursor-grabbing`;
 
   return (
     <div className="space-y-1">
@@ -909,22 +916,25 @@ const DualSlider = ({
         onPointerUp={onPointerUp}
         onPointerLeave={onPointerUp}
       >
-        {/* Background rail */}
-        <div className={`absolute w-full h-1.5 rounded-full ${isDark ? 'bg-slate-700' : 'bg-slate-200'}`} />
-        {/* Filled range between thumbs */}
+        {/* Background rail — inset by THUMB_R so endpoints align with thumb centers */}
         <div
-          className="absolute h-1.5 rounded-full opacity-80"
-          style={{ background: accent, left: pct(min), width: `${(max - min) * 100}%` }}
+          className={`absolute h-1.5 rounded-full top-1/2 -translate-y-1/2 ${isDark ? 'bg-slate-700' : 'bg-slate-200'}`}
+          style={{ left: THUMB_R, right: THUMB_R }}
+        />
+        {/* Filled range between thumb centers */}
+        <div
+          className="absolute h-1.5 rounded-full opacity-80 top-1/2 -translate-y-1/2"
+          style={{ background: accent, left: fillLeft, width: fillWidth }}
         />
         {/* Min thumb */}
         <div
           className={THUMB}
-          style={{ background: accent, left: pct(min) }}
+          style={{ background: accent, left: thumbLeft(min) }}
         />
         {/* Max thumb */}
         <div
           className={THUMB}
-          style={{ background: accent, left: pct(max) }}
+          style={{ background: accent, left: thumbLeft(max) }}
         />
       </div>
     </div>
@@ -2868,8 +2878,18 @@ Return ONLY valid JSON.
     // Apply column sort from table header clicks
     if (tableSort) {
       result = [...result].sort((a, b) => {
-        const av = (a as any)[tableSort.key] ?? -Infinity;
-        const bv = (b as any)[tableSort.key] ?? -Infinity;
+        let av: any, bv: any;
+        if (tableSort.key === 'bimodality__max') {
+          av = a.bimodalityScores?._max_score ?? -Infinity;
+          bv = b.bimodalityScores?._max_score ?? -Infinity;
+        } else if (tableSort.key.startsWith('bimodality__')) {
+          const tissue = tableSort.key.slice('bimodality__'.length);
+          av = a.bimodalityScores?.[tissue] ?? -Infinity;
+          bv = b.bimodalityScores?.[tissue] ?? -Infinity;
+        } else {
+          av = (a as any)[tableSort.key] ?? -Infinity;
+          bv = (b as any)[tableSort.key] ?? -Infinity;
+        }
         if (typeof av === 'number' && typeof bv === 'number')
           return tableSort.dir === 'desc' ? bv - av : av - bv;
         return tableSort.dir === 'desc'
@@ -4033,9 +4053,61 @@ Return ONLY valid JSON.
                               {col('tauTissue') && <th className="p-4 text-center whitespace-nowrap text-orange-500">{sortTh('tauTissue', 'TAU Tissue')}</th>}
                               {col('tauSingleCell') && <th className="p-4 text-center whitespace-nowrap text-red-500">{sortTh('tauSingleCell', 'TAU Cell')}</th>}
                               {/* Bimodality columns — Max always first, then per-tissue */}
-                              {visibleBioTissues.length > 0 && <th className="p-4 text-center whitespace-nowrap text-purple-500 text-[9px] font-black uppercase tracking-wider">Max Bio</th>}
+                              {visibleBioTissues.length > 0 && (
+                                <th className="p-4 text-center whitespace-nowrap text-purple-500 text-[9px] font-black uppercase tracking-wider relative">
+                                  <div className="flex items-center justify-center gap-1.5">
+                                    {sortTh('bimodality__max', 'Max Bio')}
+                                    <button
+                                      onMouseEnter={() => setActiveTooltip('bimodality__max')}
+                                      onMouseLeave={() => setActiveTooltip(null)}
+                                      className="p-0.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors"
+                                    >
+                                      <Info className="w-3 h-3 text-purple-400" />
+                                    </button>
+                                  </div>
+                                  {activeTooltip === 'bimodality__max' && (
+                                    <div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-80 p-4 rounded-xl border bg-white dark:bg-[#1c1c1c] border-neutral-200 dark:border-neutral-800 shadow-2xl z-50 text-left normal-case tracking-normal">
+                                      <h5 className="text-[12px] font-bold mb-2 text-purple-500">Bimodality Score</h5>
+                                      <p className="text-[11px] text-neutral-400 leading-relaxed mb-2">Measures how selectively a gene is ON vs OFF across cells in a tissue. Highest score across all 36 tissues.</p>
+                                      <ol className="text-[10px] text-neutral-500 space-y-1 list-decimal list-inside">
+                                        <li>Log1p-transform raw expression counts</li>
+                                        <li>KMeans (k=2) splits cells into OFF / ON groups</li>
+                                        <li>Separation = distance between group centers</li>
+                                        <li>Balance = fraction in each group (50/50 = max)</li>
+                                        <li className="font-semibold text-purple-400">Score = Separation × Balance</li>
+                                        <li>Genes in &lt;10% of cells excluded per tissue</li>
+                                      </ol>
+                                    </div>
+                                  )}
+                                </th>
+                              )}
                               {visibleBioTissues.map(tissue => (
-                                <th key={tissue} className="p-4 text-center whitespace-nowrap text-purple-400 text-[9px] font-black uppercase tracking-wider">{bioTissueLabel(tissue)}</th>
+                                <th key={tissue} className="p-4 text-center whitespace-nowrap text-purple-400 text-[9px] font-black uppercase tracking-wider relative">
+                                  <div className="flex items-center justify-center gap-1.5">
+                                    {sortTh(`bimodality__${tissue}`, bioTissueLabel(tissue))}
+                                    <button
+                                      onMouseEnter={() => setActiveTooltip(`bimodality__${tissue}`)}
+                                      onMouseLeave={() => setActiveTooltip(null)}
+                                      className="p-0.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors"
+                                    >
+                                      <Info className="w-3 h-3 text-purple-400" />
+                                    </button>
+                                  </div>
+                                  {activeTooltip === `bimodality__${tissue}` && (
+                                    <div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-80 p-4 rounded-xl border bg-white dark:bg-[#1c1c1c] border-neutral-200 dark:border-neutral-800 shadow-2xl z-50 text-left normal-case tracking-normal">
+                                      <h5 className="text-[12px] font-bold mb-2 text-purple-500">Bimodality Score — {bioTissueLabel(tissue)}</h5>
+                                      <p className="text-[11px] text-neutral-400 leading-relaxed mb-2">Measures how selectively a gene is ON vs OFF across cells in this tissue.</p>
+                                      <ol className="text-[10px] text-neutral-500 space-y-1 list-decimal list-inside">
+                                        <li>Log1p-transform raw expression counts</li>
+                                        <li>KMeans (k=2) splits cells into OFF / ON groups</li>
+                                        <li>Separation = distance between group centers</li>
+                                        <li>Balance = fraction in each group (50/50 = max)</li>
+                                        <li className="font-semibold text-purple-400">Score = Separation × Balance</li>
+                                        <li>Genes in &lt;10% of cells excluded per tissue</li>
+                                      </ol>
+                                    </div>
+                                  )}
+                                </th>
                               ))}
                               {col('finalScore') && <th className="p-4 pr-8 text-right relative text-blue-600"><div className="flex items-center justify-end gap-1.5">{sortTh('finalScore', 'Final Score')}<button onMouseEnter={() => setActiveTooltip('overall')} onMouseLeave={() => setActiveTooltip(null)} onClick={() => setActiveScoreInfo('overall')} className="p-0.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors"><Info className="w-3 h-3 text-blue-400" /></button></div>{activeTooltip === 'overall' && (<div className="absolute top-full right-0 mt-2 w-64 p-4 rounded-xl border bg-white dark:bg-[#1c1c1c] border-neutral-200 dark:border-neutral-800 shadow-2xl z-50 text-left normal-case tracking-normal"><h5 className="text-[12px] font-bold mb-1">Final Score</h5><p className="text-[11px] text-neutral-400 leading-relaxed">(GET × 0.50) + (RP × 0.25) + (WINNER × 0.25)</p></div>)}</th>}
                             </tr>
