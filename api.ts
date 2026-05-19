@@ -624,7 +624,11 @@ export const api = {
     // so the initial display shows the 30 highest-velocity genes, not just the 30 most-mentioned
     const velocityPool = geneList.slice(0, 100);
     const allResults = await this.getPubTatorVelocityBatch(velocityPool, disease);
-    allResults.sort((a, b) => b.velocity - a.velocity);
+    // Sort by recentPapers × velocity — balances volume with recency trend
+    // Prevents low-volume genes (4 papers, 3 recent = 75%) from outranking
+    // high-signal genes (50 papers, 30 recent = 60%)
+    const weightedScore = (r: { recentPapers: number; velocity: number }) => r.recentPapers * (r.velocity / 100);
+    allResults.sort((a, b) => weightedScore(b) - weightedScore(a));
 
     // The pool for Load More starts after the top 100 (already velocity-ranked above the fold)
     return {
@@ -678,7 +682,8 @@ export const api = {
         await new Promise(resolve => setTimeout(resolve, 800));
       }
     }
-    return results.filter(r => r.totalPapers > 3);
+    // Require at least 10 total papers to filter out statistical noise
+    return results.filter(r => r.totalPapers >= 10);
   },
 
   async getAiSummary(symbol: string, diseaseName: string, drillDown: DrillDownData): Promise<string> {

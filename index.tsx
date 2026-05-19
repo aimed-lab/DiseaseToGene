@@ -2459,8 +2459,9 @@ const App = () => {
         const existing = new Set((prev.pubtatorResults || []).map(r => r.gene.toUpperCase()));
         const dedupedNew = newResults.filter(r => !existing.has(r.gene.toUpperCase()));
         const combined = [...(prev.pubtatorResults || []), ...dedupedNew];
-        // Re-sort entire list by velocity so high-velocity genes always surface to top
-        combined.sort((a, b) => b.velocity - a.velocity);
+        // Re-sort by weighted score (recentPapers × velocity) — same as initial sort
+        const ws = (r: { recentPapers: number; velocity: number }) => r.recentPapers * (r.velocity / 100);
+        combined.sort((a, b) => ws(b) - ws(a));
         return { ...prev, pubtatorResults: combined, pubtatorPage: prev.pubtatorPage + 1 };
       });
       
