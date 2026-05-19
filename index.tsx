@@ -411,16 +411,18 @@ const RawDataView = ({ targets, theme, cancerType }: { targets: Target[], theme:
   );
 };
 
-const PubTatorView = ({ results, isLoading, theme, onAddGene, onShowScoreInfo, onShowTooltip, activeTooltip, onLoadMore }: { 
-  results?: PubTatorResult[], 
-  isLoading?: boolean, 
-  theme: Theme, 
+const PubTatorView = ({ results, isLoading, theme, onAddGene, onShowScoreInfo, onShowTooltip, activeTooltip, onLoadMore, visibleColumns }: {
+  results?: (PubTatorResult & { otGeneticScore?: number; otExpressionScore?: number; otTargetScore?: number; otGetScore?: number })[],
+  isLoading?: boolean,
+  theme: Theme,
   onAddGene: (gene: { symbol: string, name: string }) => void,
   onShowScoreInfo?: (type: any) => void,
   onShowTooltip?: (id: string | null) => void,
   activeTooltip?: string | null,
-  onLoadMore?: () => void
+  onLoadMore?: () => void,
+  visibleColumns?: string[],
 }) => {
+  const col = (key: string) => visibleColumns?.includes(key) ?? false;
   if (isLoading) {
     return (
       <div className="h-full flex flex-col items-center justify-center p-20 text-center">
@@ -454,6 +456,11 @@ const PubTatorView = ({ results, isLoading, theme, onAddGene, onShowScoreInfo, o
             <th className="p-4 text-center">Total Papers</th>
             <th className="p-4 text-center">Last 3 Years</th>
             <th className="p-4 text-center">Velocity</th>
+            {col('pubTatorScore') && <th className="p-4 text-center whitespace-nowrap text-orange-500 text-[9px] font-black uppercase tracking-wider">PT Score</th>}
+            {col('geneticScore') && <th className="p-4 text-center whitespace-nowrap text-blue-500 text-[9px] font-black uppercase tracking-wider">Genetic (OT)</th>}
+            {col('combinedExpression') && <th className="p-4 text-center whitespace-nowrap text-emerald-500 text-[9px] font-black uppercase tracking-wider">Expression (OT)</th>}
+            {col('targetScore') && <th className="p-4 text-center whitespace-nowrap text-amber-500 text-[9px] font-black uppercase tracking-wider">Target (OT)</th>}
+            {col('getScore') && <th className="p-4 text-center whitespace-nowrap text-violet-500 text-[9px] font-black uppercase tracking-wider">GET Score (OT)</th>}
             <th className="p-4">Top Paper</th>
             <th className="p-4">Journal</th>
             <th className="p-4 text-center">Year</th>
@@ -519,6 +526,15 @@ const PubTatorView = ({ results, isLoading, theme, onAddGene, onShowScoreInfo, o
                   {r.velocity > 20 && <TrendingUp className="w-3 h-3 text-emerald-500" />}
                 </div>
               </td>
+              {col('pubTatorScore') && (() => {
+                const maxR = Math.max(...(results?.map(x => x.recentPapers) ?? []), 1);
+                const score = Math.min(1, (r.velocity / 100) * 0.6 + (r.recentPapers / maxR) * 0.4);
+                return <td className="p-4 text-center"><ScoreBar value={score} color="bg-orange-500" theme={theme} /></td>;
+              })()}
+              {col('geneticScore') && <td className="p-4 text-center font-mono text-[11px]">{r.otGeneticScore !== undefined ? <ScoreBar value={r.otGeneticScore} color="bg-blue-500" theme={theme} /> : <span className="text-neutral-400">—</span>}</td>}
+              {col('combinedExpression') && <td className="p-4 text-center font-mono text-[11px]">{r.otExpressionScore !== undefined ? <ScoreBar value={r.otExpressionScore} color="bg-emerald-500" theme={theme} /> : <span className="text-neutral-400">—</span>}</td>}
+              {col('targetScore') && <td className="p-4 text-center font-mono text-[11px]">{r.otTargetScore !== undefined ? <ScoreBar value={r.otTargetScore} color="bg-amber-500" theme={theme} /> : <span className="text-neutral-400">—</span>}</td>}
+              {col('getScore') && <td className="p-4 text-center font-mono text-[11px]">{r.otGetScore !== undefined ? <ScoreBar value={r.otGetScore} color="bg-violet-500" theme={theme} /> : <span className="text-neutral-400">—</span>}</td>}
               <td className="p-4 max-w-xs">
                 <a 
                   href={`https://pubmed.ncbi.nlm.nih.gov/${r.pmid}/`} 
@@ -810,8 +826,12 @@ const TABLE_COLUMNS = [
   { key: 'geneticScore',       label: 'Genetic',     accent: '#3b82f6', defaultOn: true  },
   { key: 'combinedExpression', label: 'Expression',  accent: '#10b981', defaultOn: true  },
   { key: 'targetScore',        label: 'Target',      accent: '#f59e0b', defaultOn: true  },
-  { key: 'literatureScore',    label: 'Literature',  accent: '#ec4899', defaultOn: false },
-  { key: 'getScore',           label: 'GET Score',   accent: '#8b5cf6', defaultOn: true  },
+  { key: 'literatureScore',      label: 'Literature',     accent: '#ec4899', defaultOn: false },
+  { key: 'pubTatorScore',        label: 'PT Score',       accent: '#f97316', defaultOn: false },
+  { key: 'pubTatorVelocity',     label: 'PT Velocity',    accent: '#f97316', defaultOn: false },
+  { key: 'pubTatorTotalPapers',  label: 'PT Total Papers',accent: '#f97316', defaultOn: false },
+  { key: 'pubTatorRecentPapers', label: 'PT Recent Papers',accent:'#f97316', defaultOn: false },
+  { key: 'getScore',             label: 'GET Score',      accent: '#8b5cf6', defaultOn: true  },
   { key: 'rpScore',            label: 'RP Score',    accent: '#6366f1', defaultOn: false },
   { key: 'winnerScore',        label: 'WINNER',      accent: '#06b6d4', defaultOn: false },
   { key: 'tauTissue',          label: 'TAU Tissue',  accent: '#f97316', defaultOn: false },
@@ -2676,6 +2696,47 @@ Return ONLY valid JSON.
     saveAs(blob, `Target_Prioritization_${(researchState.activeDisease?.name || 'Unknown').replace(/\s+/g, '_')}.csv`);
   };
 
+  const exportCombinedCsv = () => {
+    const disease = researchState.activeDisease?.name || 'Unknown';
+    const escape = (s: string) => `"${s.replace(/"/g, '""')}"`;
+    const visibleCols = TABLE_COLUMNS.filter(c => visibleColumns.includes(c.key));
+    const headers = ['Source', 'Gene', 'Gene Name', ...visibleCols.map(c => c.label)];
+    const otRows = displayTargets.map(t => {
+      const fixed = ['OT', t.symbol, t.name];
+      const scores = visibleCols.map(c => {
+        const v = (t as any)[c.key];
+        return v !== undefined && v !== null ? (typeof v === 'number' ? v.toFixed(4) : String(v)) : '—';
+      });
+      return [...fixed, ...scores];
+    });
+    const litRows = (researchState.pubtatorResults || []).map(r => {
+      const maxRecent = Math.max(...(researchState.pubtatorResults?.map(x => x.recentPapers) ?? []), 1);
+      const otTarget = researchState.targets.find(t => t.symbol.toUpperCase() === r.gene.toUpperCase());
+      const ptScore = Math.min(1, (r.velocity / 100) * 0.6 + (r.recentPapers / maxRecent) * 0.4);
+      const litVals: Record<string, string> = {
+        pubTatorScore: ptScore.toFixed(4),
+        pubTatorVelocity: r.velocity.toFixed(4),
+        pubTatorTotalPapers: String(r.totalPapers),
+        pubTatorRecentPapers: String(r.recentPapers),
+        geneticScore: otTarget?.geneticScore?.toFixed(4) ?? '—',
+        combinedExpression: otTarget?.combinedExpression?.toFixed(4) ?? '—',
+        targetScore: otTarget?.targetScore?.toFixed(4) ?? '—',
+        getScore: otTarget?.getScore?.toFixed(4) ?? '—',
+        literatureScore: otTarget?.literatureScore?.toFixed(4) ?? '—',
+      };
+      const scores = visibleCols.map(c => litVals[c.key] ?? '—');
+      return ['LIT', r.gene, '—', ...scores];
+    });
+    const blankRow = ['', '', '', ...visibleCols.map(() => '')];
+    const sectionHeader = [`# Literature genes (${litRows.length})`, '', '', ...visibleCols.map(() => '')];
+    const allRows = litRows.length
+      ? [...otRows, blankRow, sectionHeader, ...litRows]
+      : otRows;
+    const csv = [headers.map(escape).join(','), ...allRows.map(r => r.map(escape).join(','))].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    saveAs(blob, `Combined_OT_Literature_${disease.replace(/\s+/g, '_')}.csv`);
+  };
+
   const exportToDocx = async () => {
     if (!displayTargets.length) {
       alert("No data to export. Please search for a disease first.");
@@ -2973,6 +3034,24 @@ Return ONLY valid JSON.
       .catch(() => { bimodalityLoading.current = false; });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [researchState.targets.length]);
+
+  // After PubTator finishes, patch matching OT targets with pubTator scores — non-blocking
+  useEffect(() => {
+    if (!researchState.pubtatorResults?.length) return;
+    const results = researchState.pubtatorResults;
+    const maxRecent = Math.max(...results.map(r => r.recentPapers), 1);
+    const pubMap = new Map(results.map(r => [r.gene.toUpperCase(), r]));
+    setResearchState(prev => ({
+      ...prev,
+      targets: prev.targets.map(t => {
+        const pub = pubMap.get(t.symbol.toUpperCase());
+        if (!pub) return t;
+        const pubTatorScore = Math.min(1, (pub.velocity / 100) * 0.6 + (pub.recentPapers / maxRecent) * 0.4);
+        return { ...t, pubTatorScore, pubTatorVelocity: pub.velocity, pubTatorTotalPapers: pub.totalPapers, pubTatorRecentPapers: pub.recentPapers };
+      }),
+    }));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [researchState.pubtatorResults]);
 
   useEffect(() => {
     if (viewMode === 'pubtator' && researchState.activeDisease && !researchState.pubtatorResults && !researchState.isFetchingPubTator) {
@@ -3921,20 +4000,28 @@ Return ONLY valid JSON.
               ) : researchState.targets.length === 0 && !['raw', 'paper', 'pubtator'].includes(viewMode) ? (<div className="h-full flex flex-col items-center justify-center p-20 text-center animate-in zoom-in duration-500"><Search className="w-16 h-16 text-blue-500 mb-8 opacity-30" /><h2 className={`text-xl font-bold mb-2 tracking-tight ${theme === 'dark' ? 'text-neutral-200' : 'text-slate-950'}`}>System Ready for Research Focus</h2><p className={`text-sm max-w-sm leading-relaxed ${theme === 'dark' ? 'text-neutral-500' : 'text-slate-700'}`}>Search for a therapeutic area or disease in the terminal to begin multi-modal target discovery.</p></div>) : (viewMode === 'raw') && !activeCancerType ? (<div className="h-full flex flex-col items-center justify-center p-12 text-center"><div className="p-5 rounded-full bg-blue-50 dark:bg-blue-900/20 mb-6"><AlertCircle className="w-12 h-12 text-blue-600" /></div><h3 className="text-xl font-bold mb-2 text-neutral-800 dark:text-neutral-200">Optimized Context Required</h3><p className="text-sm max-w-md text-neutral-600 dark:text-neutral-500 leading-relaxed">Cohort analytics are currently specifically tuned for high-resolution TCGA (e.g. BRCA, KIRC, BLCA) studies.</p></div>) : (
                 <div className={`h-full rounded-2xl border overflow-hidden shadow-xl shadow-slate-950/5 ${theme === 'dark' ? 'bg-[#0b111c]/95 border-slate-800/80' : 'bg-white/95 border-slate-200'}`}>
                   {viewMode === 'pubtator' && (
-                    <PubTatorView 
-                      results={researchState.pubtatorResults?.map(r => ({
-                        ...r,
-                        rpScore: researchState.rpScores?.[r.gene],
-                        winnerScore: researchState.winnerScores?.[r.gene],
-                        winnerRawScore: researchState.winnerRawScores?.[r.gene]
-                      }))} 
-                      isLoading={researchState.isFetchingPubTator} 
-                      theme={theme} 
+                    <PubTatorView
+                      results={researchState.pubtatorResults?.map(r => {
+                        const otTarget = researchState.targets.find(t => t.symbol.toUpperCase() === r.gene.toUpperCase());
+                        return {
+                          ...r,
+                          rpScore: researchState.rpScores?.[r.gene],
+                          winnerScore: researchState.winnerScores?.[r.gene],
+                          winnerRawScore: researchState.winnerRawScores?.[r.gene],
+                          otGeneticScore: otTarget?.geneticScore,
+                          otExpressionScore: otTarget?.combinedExpression,
+                          otTargetScore: otTarget?.targetScore,
+                          otGetScore: otTarget?.getScore,
+                        };
+                      })}
+                      isLoading={researchState.isFetchingPubTator}
+                      theme={theme}
                       onAddGene={(g) => handleAddGeneFromPaper(g, 'LIT')}
                       onShowScoreInfo={setActiveScoreInfo}
                       onShowTooltip={setActiveTooltip}
                       activeTooltip={activeTooltip}
                       onLoadMore={handleLoadMoreLiterature}
+                      visibleColumns={visibleColumns}
                     />
                   )}
                   {viewMode === 'paper' && (
@@ -4014,9 +4101,13 @@ Return ONLY valid JSON.
                                   <div className="p-1.5 rounded-md bg-blue-50 dark:bg-blue-900/20"><FileDown className="w-3.5 h-3.5 text-blue-500" /></div>
                                   <span>Download DOCX</span>
                                 </button>
-                                <button onClick={() => { exportToCsv(); setIsExportDropdownOpen(false); }} className="w-full px-4 py-3 text-left text-[11px] font-semibold hover:bg-neutral-50 dark:hover:bg-neutral-800 flex items-center gap-3 transition-colors text-neutral-700 dark:text-neutral-300">
+                                <button onClick={() => { exportToCsv(); setIsExportDropdownOpen(false); }} className="w-full px-4 py-3 text-left text-[11px] font-semibold hover:bg-neutral-50 dark:hover:bg-neutral-800 flex items-center gap-3 border-b border-neutral-100 dark:border-neutral-800 transition-colors text-neutral-700 dark:text-neutral-300">
                                   <div className="p-1.5 rounded-md bg-emerald-50 dark:bg-emerald-900/20"><FileDown className="w-3.5 h-3.5 text-emerald-500" /></div>
-                                  <span>Download CSV</span>
+                                  <span>Download CSV (OT)</span>
+                                </button>
+                                <button onClick={() => { exportCombinedCsv(); setIsExportDropdownOpen(false); }} className="w-full px-4 py-3 text-left text-[11px] font-semibold hover:bg-neutral-50 dark:hover:bg-neutral-800 flex items-center gap-3 transition-colors text-neutral-700 dark:text-neutral-300">
+                                  <div className="p-1.5 rounded-md bg-orange-50 dark:bg-orange-900/20"><FileDown className="w-3.5 h-3.5 text-orange-500" /></div>
+                                  <span>Download Combined CSV</span>
                                 </button>
                               </div>
                             )}
@@ -4047,6 +4138,10 @@ Return ONLY valid JSON.
                               {col('combinedExpression') && <th className="p-4 text-center relative"><div className="flex items-center justify-center gap-1.5">{sortTh('combinedExpression', 'Expression')}<button onMouseEnter={() => setActiveTooltip('expression')} onMouseLeave={() => setActiveTooltip(null)} onClick={() => setActiveScoreInfo('expression')} className="p-0.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors"><Info className="w-3 h-3 text-neutral-400" /></button></div>{activeTooltip === 'expression' && (<div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-64 p-4 rounded-xl border bg-white dark:bg-[#1c1c1c] border-neutral-200 dark:border-neutral-800 shadow-2xl z-50 text-left normal-case tracking-normal"><h5 className="text-[12px] font-bold mb-1">Expression Score</h5><p className="text-[11px] text-neutral-400 leading-relaxed">Combines expression strength and tissue selectivity from Open Targets RNA data.</p></div>)}</th>}
                               {col('targetScore') && <th className="p-4 text-center relative"><div className="flex items-center justify-center gap-1.5">{sortTh('targetScore', 'Target')}<button onMouseEnter={() => setActiveTooltip('target')} onMouseLeave={() => setActiveTooltip(null)} onClick={() => setActiveScoreInfo('target')} className="p-0.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors"><Info className="w-3 h-3 text-neutral-400" /></button></div>{activeTooltip === 'target' && (<div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-64 p-4 rounded-xl border bg-white dark:bg-[#1c1c1c] border-neutral-200 dark:border-neutral-800 shadow-2xl z-50 text-left normal-case tracking-normal"><h5 className="text-[12px] font-bold mb-1">Target Score</h5><p className="text-[11px] text-neutral-400 leading-relaxed">Druggability from Open Targets tractability: Approved Drug (1.0) → Unknown (0.10).</p></div>)}</th>}
                               {col('literatureScore') && <th className="p-4 text-center relative"><div className="flex items-center justify-center gap-1.5">{sortTh('literatureScore', 'Literature')}<button onMouseEnter={() => setActiveTooltip('literature')} onMouseLeave={() => setActiveTooltip(null)} onClick={() => setActiveScoreInfo('literature')} className="p-0.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors"><Info className="w-3 h-3 text-neutral-400" /></button></div>{activeTooltip === 'literature' && (<div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-64 p-4 rounded-xl border bg-white dark:bg-[#1c1c1c] border-neutral-200 dark:border-neutral-800 shadow-2xl z-50 text-left normal-case tracking-normal"><h5 className="text-[12px] font-bold mb-1">Literature Score</h5><p className="text-[11px] text-neutral-400 leading-relaxed">Literature datatype score from Open Targets / Europe PMC text mining.</p></div>)}</th>}
+                              {col('pubTatorScore') && <th className="p-4 text-center whitespace-nowrap text-orange-500 relative"><div className="flex items-center justify-center gap-1.5">{sortTh('pubTatorScore', 'PT Score')}<button onMouseEnter={() => setActiveTooltip('pubTatorScore')} onMouseLeave={() => setActiveTooltip(null)} className="p-0.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors"><Info className="w-3 h-3 text-orange-400" /></button></div>{activeTooltip === 'pubTatorScore' && (<div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-72 p-4 rounded-xl border bg-white dark:bg-[#1c1c1c] border-neutral-200 dark:border-neutral-800 shadow-2xl z-50 text-left normal-case tracking-normal"><h5 className="text-[12px] font-bold mb-1 text-orange-500">PubTator Score</h5><p className="text-[11px] text-neutral-400 leading-relaxed">Velocity-weighted literature signal from PubTator3. Score = (Velocity×0.6) + (Recent Papers×0.4), normalised 0–1. High score = trending gene.</p></div>)}</th>}
+                              {col('pubTatorVelocity') && <th className="p-4 text-center whitespace-nowrap text-orange-500">{sortTh('pubTatorVelocity', 'PT Velocity')}</th>}
+                              {col('pubTatorTotalPapers') && <th className="p-4 text-center whitespace-nowrap text-orange-500">{sortTh('pubTatorTotalPapers', 'PT Total Papers')}</th>}
+                              {col('pubTatorRecentPapers') && <th className="p-4 text-center whitespace-nowrap text-orange-500">{sortTh('pubTatorRecentPapers', 'PT Recent Papers')}</th>}
                               {col('getScore') && <th className="p-4 text-center relative"><div className="flex items-center justify-center gap-1.5">{sortTh('getScore', 'GET Score')}<button onMouseEnter={() => setActiveTooltip('get_score')} onMouseLeave={() => setActiveTooltip(null)} onClick={() => setActiveScoreInfo('get_score')} className="p-0.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors"><Info className="w-3 h-3 text-neutral-400" /></button></div>{activeTooltip === 'get_score' && (<div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-64 p-4 rounded-xl border bg-white dark:bg-[#1c1c1c] border-neutral-200 dark:border-neutral-800 shadow-2xl z-50 text-left normal-case tracking-normal"><h5 className="text-[12px] font-bold mb-1">GET Score</h5><p className="text-[11px] text-neutral-400 leading-relaxed">Composite: G×0.50 + E×0.25 + T×0.25 with velocity bonus.</p></div>)}</th>}
                               {col('rpScore') && <th className="p-4 text-center relative"><div className="flex items-center justify-center gap-1.5">{sortTh('rpScore', 'RP Score')}<button onMouseEnter={() => setActiveTooltip('rp_score')} onMouseLeave={() => setActiveTooltip(null)} onClick={() => setActiveScoreInfo('rp_score')} className="p-0.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors"><Info className="w-3 h-3 text-neutral-400" /></button></div>{activeTooltip === 'rp_score' && (<div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-64 p-4 rounded-xl border bg-white dark:bg-[#1c1c1c] border-neutral-200 dark:border-neutral-800 shadow-2xl z-50 text-left normal-case tracking-normal"><h5 className="text-[12px] font-bold mb-1">RP Score</h5><p className="text-[11px] text-neutral-400 leading-relaxed">Random Walk with Restart — proximity to disease seeds in STRING network.</p></div>)}</th>}
                               {col('winnerScore') && <th className="p-4 text-center relative"><div className="flex items-center justify-center gap-1.5">{sortTh('winnerScore', 'WINNER')}<button onMouseEnter={() => setActiveTooltip('winner_score')} onMouseLeave={() => setActiveTooltip(null)} onClick={() => setActiveScoreInfo('winner_score')} className="p-0.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors"><Info className="w-3 h-3 text-emerald-400" /></button></div>{activeTooltip === 'winner_score' && (<div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-64 p-4 rounded-xl border bg-white dark:bg-[#1c1c1c] border-neutral-200 dark:border-neutral-800 shadow-2xl z-50 text-left normal-case tracking-normal"><h5 className="text-[12px] font-bold mb-1">WINNER Score</h5><p className="text-[11px] text-neutral-400 leading-relaxed">Weighted Iterative Network-based Score — central nodes in the interactome.</p></div>)}</th>}
@@ -4153,6 +4248,10 @@ Return ONLY valid JSON.
                                   {col('combinedExpression') && <td className={`p-4 text-center font-mono text-[11px] font-medium ${theme === 'dark' ? 'text-neutral-400' : 'text-slate-950'}`}>{t.combinedExpression?.toFixed(3)}</td>}
                                   {col('targetScore') && <td className={`p-4 text-center font-mono text-[11px] font-medium ${theme === 'dark' ? 'text-neutral-400' : 'text-slate-950'}`}>{t.targetScore.toFixed(3)}</td>}
                                   {col('literatureScore') && <td className={`p-4 text-center font-mono text-[11px] font-medium ${theme === 'dark' ? 'text-neutral-400' : 'text-slate-950'}`}>{t.literatureScore?.toFixed(3) ?? '—'}</td>}
+                                  {col('pubTatorScore') && <td className="p-4 text-center">{t.pubTatorScore !== undefined ? <ScoreBar value={t.pubTatorScore} color="bg-orange-500" theme={theme} /> : <span className="text-neutral-400 text-[10px]">—</span>}</td>}
+                                  {col('pubTatorVelocity') && <td className="p-4 text-center font-mono text-[11px]">{t.pubTatorVelocity !== undefined ? <span className={t.pubTatorVelocity > 20 ? 'text-emerald-500 font-bold' : 'text-neutral-400'}>{t.pubTatorVelocity.toFixed(1)}%</span> : <span className="text-neutral-400">—</span>}</td>}
+                                  {col('pubTatorTotalPapers') && <td className={`p-4 text-center font-mono text-[11px] ${theme === 'dark' ? 'text-neutral-400' : 'text-slate-700'}`}>{t.pubTatorTotalPapers?.toLocaleString() ?? '—'}</td>}
+                                  {col('pubTatorRecentPapers') && <td className={`p-4 text-center font-mono text-[11px] font-bold ${theme === 'dark' ? 'text-blue-400' : 'text-blue-700'}`}>{t.pubTatorRecentPapers?.toLocaleString() ?? '—'}</td>}
                                   {col('getScore') && <td className={`p-4 text-center font-mono text-[11px] font-medium ${theme === 'dark' ? 'text-indigo-400' : 'text-indigo-700'}`}>{t.getScore?.toFixed(3)}</td>}
                                   {col('rpScore') && <td className="p-4 text-center">{t.rpScore !== undefined ? <ScoreBar value={t.rpScore} color="bg-indigo-500" theme={theme} /> : <span className="text-neutral-400 text-[10px]">—</span>}</td>}
                                   {col('winnerScore') && <td className="p-4 text-center">{t.winnerScore !== undefined ? <div className="flex flex-col items-center gap-1"><ScoreBar value={t.winnerScore} color="bg-emerald-500" theme={theme} /><span className="text-[9px] text-neutral-400 font-mono">raw: {t.winnerRawScore?.toFixed(2) || '0.00'}</span></div> : <span className="text-neutral-400 text-[10px]">—</span>}</td>}

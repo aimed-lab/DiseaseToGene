@@ -68,8 +68,12 @@ export interface Target {
   tauSingleCell?: number;
   finalScore?: number;
   bimodalityScores?: Record<string, number>;  // tissue → score (0-1), _max_score, _max_tissue
-  baselineExpression?: number; 
-  combinedExpression?: number; 
+  baselineExpression?: number;
+  combinedExpression?: number;
+  pubTatorScore?: number;        // velocity-weighted PubTator score (0-1)
+  pubTatorVelocity?: number;     // % of papers in last 3 years
+  pubTatorTotalPapers?: number;  // total papers mentioning gene+disease
+  pubTatorRecentPapers?: number; // papers in last 3 years
   targetScore: number; 
   priorityScore?: number;
   pathways: Pathway[];
