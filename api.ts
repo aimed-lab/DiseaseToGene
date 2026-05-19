@@ -556,25 +556,7 @@ export const api = {
       'ECG','EEG','CEA','AFP','HCG','CA'
     ]);
 
-    // 1. Fetch PMIDs
-    // Relevant papers (established genes like APP, APOE)
-    for (let page = 1; page <= 5; page++) {
-      try {
-        const res = await fetchWithRetry(
-          `/api/pubtator/search?text=${encodeURIComponent(query)}&sort=score%20desc&type=Gene&page=${page}`
-        );
-        if (res.ok) {
-          const data = await res.json();
-          (data.results || []).forEach((r: any) => pmids.push(String(r.pmid)));
-        }
-      } catch (e) {
-        console.error(`PubTator search failed on page ${page}:`, e);
-      }
-      // Brief pause between search pages
-      await new Promise(resolve => setTimeout(resolve, 200));
-    }
-
-    // Recent papers (novel genes like PHGDH)
+    // 1. Fetch PMIDs — date-sorted only, to surface emerging/trending genes
     for (let page = 1; page <= 25; page++) {
       try {
         const res = await fetchWithRetry(
@@ -587,7 +569,6 @@ export const api = {
       } catch (e) {
         console.error(`PubTator search failed on page ${page}:`, e);
       }
-      // Brief pause between search pages
       await new Promise(resolve => setTimeout(resolve, 200));
     }
 
