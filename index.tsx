@@ -2442,8 +2442,8 @@ const App = () => {
     
     try {
       const PAGE_SIZE = 20;
-      // Initial batch always consumes first 30 genes from pool — start load-more after that
-      const INITIAL_BATCH = 30;
+      // Initial batch consumes first 100 genes from pool (velocity-ranked) — start load-more after that
+      const INITIAL_BATCH = 100;
       const start = INITIAL_BATCH + (researchState.pubtatorPage - 1) * PAGE_SIZE;
       const end = start + PAGE_SIZE;
       const nextGenes = researchState.pubtatorGenePool.slice(start, end);

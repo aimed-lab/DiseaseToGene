@@ -620,11 +620,15 @@ export const api = {
       .sort((a, b) => b[1] - a[1])
       .map(([gene]) => gene);
 
-    const initialBatch = geneList.slice(0, 30);
-    const results = await this.getPubTatorVelocityBatch(initialBatch, disease);
+    // Fetch velocity for top 100 by mention count, then re-sort by velocity
+    // so the initial display shows the 30 highest-velocity genes, not just the 30 most-mentioned
+    const velocityPool = geneList.slice(0, 100);
+    const allResults = await this.getPubTatorVelocityBatch(velocityPool, disease);
+    allResults.sort((a, b) => b.velocity - a.velocity);
 
+    // The pool for Load More starts after the top 100 (already velocity-ranked above the fold)
     return {
-      results: results.sort((a, b) => b.velocity - a.velocity),
+      results: allResults,
       pool: geneList
     };
   },
