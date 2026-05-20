@@ -2600,9 +2600,17 @@ Return ONLY valid JSON.
     const escape = (s: string) => `"${s.replace(/"/g, '""')}"`;
     const visibleCols = TABLE_COLUMNS.filter(c => visibleColumns.includes(c.key));
 
-    // Fixed score headers + all evidence/drill-down columns always included
+    // Helper: for a given gene symbol, find which enriched pathways it appears in
+    const getEnrichedPathways = (symbol: string) => {
+      const sym = symbol.toUpperCase();
+      return researchState.enrichment
+        .filter(e => e.genes.some(g => g.toUpperCase() === sym))
+        .sort((a, b) => a.adjustedPValue - b.adjustedPValue);
+    };
+
     const headers = [
       'Source', 'Gene', 'Gene Name',
+      // Score columns (user-selected)
       ...visibleCols.map(c => c.label),
       // Literature (PubMed)
       'Lit Total Papers', 'Lit Recent (3y)', 'Lit Velocity', 'Lit Top Paper',
@@ -2610,7 +2618,54 @@ Return ONLY valid JSON.
       'EPMC Total Papers', 'EPMC Recent (3y)', 'EPMC Velocity', 'EPMC Top Paper', 'EPMC Journal', 'EPMC Year',
       // Clinical Trials
       'CT Total Trials', 'CT Max Phase', 'CT Interventional', 'CT Active Trial', 'CT Global Trials',
+      // Pathway — OT annotations
+      'OT Pathway 1', 'OT Pathway 2', 'OT Pathway 3',
+      // Pathway — Enrichr enrichment membership
+      'Enriched Pathway 1', 'Enriched Pathway 1 (adj.p)', 'Enriched Pathway 1 Source',
+      'Enriched Pathway 2', 'Enriched Pathway 2 (adj.p)', 'Enriched Pathway 2 Source',
+      'Enriched Pathway 3', 'Enriched Pathway 3 (adj.p)', 'Enriched Pathway 3 Source',
+      // Bimodality
+      'Bimodality Max Score', 'Bimodality Max Tissue',
+      // Tissue specificity (TAU)
+      'TAU Tissue', 'TAU Single Cell',
     ];
+
+    const buildEvidenceCols = (t: Target, litTotal: string, litRecent: string, litVelocity: string, litTopPaper: string) => {
+      const dd = t.drillDown;
+      const ep = getEnrichedPathways(t.symbol);
+
+      return [
+        // Literature
+        litTotal, litRecent, litVelocity, litTopPaper,
+        // Europe PMC
+        String(dd?.paper_count ?? '—'),
+        String(dd?.recent_paper_count ?? '—'),
+        dd?.epmc_velocity ?? '—',
+        dd?.epmc_top_paper ?? '—',
+        dd?.epmc_journal ?? '—',
+        dd?.epmc_year ?? '—',
+        // Clinical Trials
+        String(dd?.trial_count ?? '—'),
+        dd?.max_phase ?? '—',
+        String(dd?.interventional_count ?? '—'),
+        dd?.active_trial_present !== undefined ? String(dd.active_trial_present) : '—',
+        String(dd?.total_trials_globally ?? '—'),
+        // OT pathways (top 3 labels)
+        t.pathways?.[0]?.label ?? '—',
+        t.pathways?.[1]?.label ?? '—',
+        t.pathways?.[2]?.label ?? '—',
+        // Enriched pathways (top 3 with adj.p and source)
+        ep[0]?.term ?? '—', ep[0] ? ep[0].adjustedPValue.toExponential(2) : '—', ep[0]?.source ?? '—',
+        ep[1]?.term ?? '—', ep[1] ? ep[1].adjustedPValue.toExponential(2) : '—', ep[1]?.source ?? '—',
+        ep[2]?.term ?? '—', ep[2] ? ep[2].adjustedPValue.toExponential(2) : '—', ep[2]?.source ?? '—',
+        // Bimodality
+        t.bimodalityScores?._max_score !== undefined ? t.bimodalityScores._max_score.toFixed(4) : '—',
+        t.bimodalityScores?._max_tissue !== undefined ? String(t.bimodalityScores._max_tissue) : '—',
+        // TAU
+        t.tauTissue !== undefined ? t.tauTissue.toFixed(4) : '—',
+        t.tauSingleCell !== undefined ? t.tauSingleCell.toFixed(4) : '—',
+      ];
+    };
 
     const otRows = displayTargets.map(t => {
       const scores = visibleCols.map(c => {
@@ -2621,24 +2676,13 @@ Return ONLY valid JSON.
       return [
         'OT', t.symbol, t.name,
         ...scores,
-        // Literature (PubMed via drillDown)
-        String(dd?.total_signals ?? '—'),
-        String(dd?.recent_signals ?? '—'),
-        dd?.signal_velocity ?? '—',
-        dd?.top_papers?.[0]?.title ?? '—',
-        // Europe PMC
-        String(dd?.paper_count ?? '—'),
-        String(dd?.recent_paper_count ?? '—'),
-        dd?.epmc_velocity ?? '—',
-        dd?.epmc_top_paper ?? '—',
-        dd?.epmc_journal ?? '—',
-        dd?.epmc_year ?? '—',
-        // Clinical Trials
-        String(dd?.trial_count ?? '—'),
-        dd?.max_phase ?? '—',
-        String(dd?.interventional_count ?? '—'),
-        dd?.active_trial_present !== undefined ? String(dd.active_trial_present) : '—',
-        String(dd?.total_trials_globally ?? '—'),
+        ...buildEvidenceCols(
+          t,
+          String(dd?.total_signals ?? '—'),
+          String(dd?.recent_signals ?? '—'),
+          dd?.signal_velocity ?? '—',
+          dd?.top_papers?.[0]?.title ?? '—',
+        ),
       ];
     });
 
@@ -2648,28 +2692,20 @@ Return ONLY valid JSON.
         const v = (ot as any)?.[c.key];
         return v !== undefined && v !== null ? (typeof v === 'number' ? v.toFixed(4) : String(v)) : '—';
       });
-      const dd = ot?.drillDown;
+      const targetForEvidence: Target = ot ?? {
+        id: r.gene, symbol: r.gene, name: '—', overallScore: 0,
+        geneticScore: 0, expressionScore: 0, targetScore: 0, pathways: [],
+      };
       return [
         'LIT', r.gene, ot?.name ?? '—',
         ...scores,
-        // Literature — PubTator data available directly on the result row
-        String(r.totalPapers),
-        String(r.recentPapers),
-        r.velocity.toFixed(1) + '%',
-        r.topPaper ?? '—',
-        // Europe PMC
-        String(dd?.paper_count ?? '—'),
-        String(dd?.recent_paper_count ?? '—'),
-        dd?.epmc_velocity ?? '—',
-        dd?.epmc_top_paper ?? '—',
-        dd?.epmc_journal ?? '—',
-        dd?.epmc_year ?? '—',
-        // Clinical Trials
-        String(dd?.trial_count ?? '—'),
-        dd?.max_phase ?? '—',
-        String(dd?.interventional_count ?? '—'),
-        dd?.active_trial_present !== undefined ? String(dd.active_trial_present) : '—',
-        String(dd?.total_trials_globally ?? '—'),
+        ...buildEvidenceCols(
+          targetForEvidence,
+          String(r.totalPapers),
+          String(r.recentPapers),
+          r.velocity.toFixed(1) + '%',
+          r.topPaper ?? '—',
+        ),
       ];
     });
 
