@@ -339,6 +339,16 @@ export const api = {
     };
 
     try {
+      // Shared disease name cleaning — strip OT ontology suffixes and clinical prefixes
+      // that would return 0 results from ClinicalTrials.gov and Europe PMC.
+      // e.g. "Alzheimer's disease biomarker measurement" → "Alzheimer disease"
+      const clinicalDiseaseName = diseaseName
+        .replace(/['"]/g, '')
+        .replace(/\b(biomarker measurement|measurement|pathology|disorder|syndrome)\b.*$/i, '')
+        .replace(/^(late|early)[- ]onset\s+/i, '')
+        .replace(/^(juvenile|familial|sporadic|idiopathic)\s+/i, '')
+        .trim();
+
       // ClinicalTrials.gov API v2
       try {
         const fields = [
@@ -352,7 +362,7 @@ export const api = {
         ].join(',');
 
         const ctUrl = `https://clinicaltrials.gov/api/v2/studies?query.cond=${encodeURIComponent(
-          diseaseName
+          clinicalDiseaseName
         )}&query.term=${encodeURIComponent(symbol)}&pageSize=100&countTotal=true&fields=${fields}`;
 
         const globalCtUrl = `https://clinicaltrials.gov/api/v2/studies?query.term=${encodeURIComponent(symbol)}&pageSize=0&countTotal=true`;
@@ -365,8 +375,8 @@ export const api = {
         let ctData = ctRes.ok ? await ctRes.json() : { studies: [], totalCount: 0 };
 
         if (ctData.totalCount === 0 || !ctData.studies || ctData.studies.length === 0) {
-          // Fallback: search by term only (broader)
-          const fallbackUrl = `https://clinicaltrials.gov/api/v2/studies?query.term=${encodeURIComponent(symbol)}+${encodeURIComponent(diseaseName)}&pageSize=100&countTotal=true&fields=${fields}`;
+          // Fallback: search by combined term (broader)
+          const fallbackUrl = `https://clinicaltrials.gov/api/v2/studies?query.term=${encodeURIComponent(symbol)}+${encodeURIComponent(clinicalDiseaseName)}&pageSize=100&countTotal=true&fields=${fields}`;
           const fallbackRes = await proxyFetch(fallbackUrl);
           if (fallbackRes.ok) {
             const fallbackData = await fallbackRes.json();
@@ -448,19 +458,27 @@ export const api = {
       try {
         const currentYear = new Date().getFullYear();
         const threeYearsAgo = currentYear - 3;
-        // Strip qualifiers (late-onset, early-onset etc.) and apostrophes so the
-        // disease term matches broadly — exact phrase was returning near-zero results
+
+        // Normalise the disease name into a clean phrase for Europe PMC:
+        //   1. Strip apostrophes/quotes (Europe PMC tokenises them inconsistently)
+        //   2. Strip OT ontology suffix terms that never appear in paper titles
+        //      e.g. "Alzheimer's disease biomarker measurement" → "Alzheimer disease"
+        //   3. Strip common clinical prefix qualifiers (late-onset, juvenile, etc.)
         const cleanDisease = diseaseName
-          .replace(/['"]/g, '')
-          .replace(/^(late|early)[- ]onset\s+/i, '')
-          .replace(/^(juvenile|familial|sporadic)\s+/i, '')
+          .replace(/['"]/g, '')                                                          // strip apostrophes
+          .replace(/\b(biomarker measurement|measurement|pathology|disorder|syndrome)\b.*$/i, '') // strip OT suffixes
+          .replace(/^(late|early)[- ]onset\s+/i, '')                                    // strip onset prefix
+          .replace(/^(juvenile|familial|sporadic|idiopathic)\s+/i, '')                  // strip clinical prefix
           .trim();
-        const epQuery = `${symbol} AND (${cleanDisease})`;
-        const epRecentQuery = `${symbol} AND (${cleanDisease}) AND FIRST_PDATE:[${threeYearsAgo}-01-01 TO ${currentYear}-12-31]`;
+
+        // Wrap in quotes for exact phrase matching — tested in Postman, returns correct hitCount
+        // Sort param must be sort_date:y (not sort=date which is ignored by the API)
+        const epQuery = `${symbol} AND "${cleanDisease}"`;
+        const epRecentQuery = `${symbol} AND "${cleanDisease}" AND FIRST_PDATE:[${threeYearsAgo}-01-01 TO ${currentYear}-12-31]`;
 
         const [epTotalRes, epRecentRes] = await Promise.all([
-          proxyFetch(`https://www.ebi.ac.uk/europepmc/webservices/rest/search?query=${encodeURIComponent(epQuery)}&format=json&pageSize=1&sort=date`),
-          proxyFetch(`https://www.ebi.ac.uk/europepmc/webservices/rest/search?query=${encodeURIComponent(epRecentQuery)}&format=json&pageSize=1&sort=date`)
+          proxyFetch(`https://www.ebi.ac.uk/europepmc/webservices/rest/search?query=${encodeURIComponent(epQuery)}&format=json&pageSize=1&sort_date:y`),
+          proxyFetch(`https://www.ebi.ac.uk/europepmc/webservices/rest/search?query=${encodeURIComponent(epRecentQuery)}&format=json&pageSize=1&sort_date:y`)
         ]);
 
         if (epTotalRes.ok) {
