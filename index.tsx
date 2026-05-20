@@ -2116,37 +2116,6 @@ const TargetDetailView = ({
                 </div>
               </div>
 
-              {/* WINNER Score Section */}
-              <div className={`p-6 rounded-2xl border ${theme === 'dark' ? 'bg-[#171717] border-neutral-800' : 'bg-white border-neutral-200 shadow-sm'}`}>
-                <div className="flex items-center justify-between mb-4">
-                  <div className="flex items-center gap-2">
-                    <div className="p-1.5 rounded-lg bg-emerald-50 dark:bg-emerald-900/20"><Zap className="w-4 h-4 text-emerald-500" /></div>
-                    <h4 className="text-[11px] font-bold uppercase text-neutral-500 tracking-wider">WINNER Score</h4>
-                  </div>
-                  <button onClick={() => onShowScoreInfo?.('winner_score')} className="p-1 rounded-full hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors">
-                    <Info className="w-3.5 h-3.5 text-neutral-400" />
-                  </button>
-                </div>
-                <div className="space-y-3">
-                  <div className="flex justify-between items-end">
-                    <span className="text-[10px] font-bold text-neutral-400 uppercase">Network Density</span>
-                                      {target.winnerScore !== undefined ? (
-                        <div className="flex flex-col gap-0.5">
-                          <span className="text-xl font-black text-emerald-600">{target.winnerScore.toFixed(3)}</span>
-                          <span className="text-[10px] font-mono text-neutral-400">raw: {target.winnerRawScore?.toFixed(2) || "0.00"}</span>
-                        </div>
-                      ) : "N/A"}
-                  </div>
-                  <div className="pt-2 border-t border-neutral-100 dark:border-neutral-800">
-                    <span className="text-[9px] font-bold text-neutral-400 uppercase block mb-2">Algorithm Status</span>
-                    <div className="flex items-center gap-2">
-                      <div className={`w-2 h-2 rounded-full ${target.winnerScore !== undefined ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]' : 'bg-neutral-300'}`} />
-                      <span className="text-[10px] font-bold text-neutral-600 dark:text-neutral-400 uppercase">{target.winnerScore !== undefined ? "Analysis Complete" : "Pending Network sync"}</span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
               {/* Europe PMC Section */}
               <div className={`p-6 rounded-2xl border ${theme === 'dark' ? 'bg-[#171717] border-neutral-800' : 'bg-white border-neutral-200 shadow-sm'}`}>
                 <div className="flex items-center justify-between mb-4">
