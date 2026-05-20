@@ -448,14 +448,19 @@ export const api = {
       try {
         const currentYear = new Date().getFullYear();
         const threeYearsAgo = currentYear - 3;
-        // Clean disease name for search
-        const cleanDisease = diseaseName.replace(/['"]/g, '');
-        const epQuery = `${symbol} AND "${cleanDisease}"`;
-        const epRecentQuery = `${symbol} AND "${cleanDisease}" AND FIRST_PDATE:[${threeYearsAgo}-01-01 TO ${currentYear}-12-31]`;
-        
+        // Strip qualifiers (late-onset, early-onset etc.) and apostrophes so the
+        // disease term matches broadly — exact phrase was returning near-zero results
+        const cleanDisease = diseaseName
+          .replace(/['"]/g, '')
+          .replace(/^(late|early)[- ]onset\s+/i, '')
+          .replace(/^(juvenile|familial|sporadic)\s+/i, '')
+          .trim();
+        const epQuery = `${symbol} AND (${cleanDisease})`;
+        const epRecentQuery = `${symbol} AND (${cleanDisease}) AND FIRST_PDATE:[${threeYearsAgo}-01-01 TO ${currentYear}-12-31]`;
+
         const [epTotalRes, epRecentRes] = await Promise.all([
-          proxyFetch(`https://www.ebi.ac.uk/europepmc/webservices/rest/search?query=${encodeURIComponent(epQuery)}&format=json&pageSize=1&sort_date:y`),
-          proxyFetch(`https://www.ebi.ac.uk/europepmc/webservices/rest/search?query=${encodeURIComponent(epRecentQuery)}&format=json&pageSize=1`)
+          proxyFetch(`https://www.ebi.ac.uk/europepmc/webservices/rest/search?query=${encodeURIComponent(epQuery)}&format=json&pageSize=1&sort=date`),
+          proxyFetch(`https://www.ebi.ac.uk/europepmc/webservices/rest/search?query=${encodeURIComponent(epRecentQuery)}&format=json&pageSize=1&sort=date`)
         ]);
 
         if (epTotalRes.ok) {
@@ -491,11 +496,19 @@ export const api = {
       try {
         const apiKeyParam = process.env.NCBI_API_KEY ? `&api_key=${process.env.NCBI_API_KEY}` : '';
         const toolEmail = `&tool=GeneInsightExplorer&email=kurmachalamnikhil@gmail.com`;
-        const baseQuery = `("${diseaseName}"[Title/Abstract]) AND ("${symbol}"[Title/Abstract])`;
-        
+        // Use broad field search — [Title/Abstract] was too restrictive, missed most papers
+        // Strip qualifiers so "late-onset Alzheimer's disease" → "Alzheimers disease"
+        const cleanDiseaseForPubmed = diseaseName
+          .replace(/['"]/g, '')
+          .replace(/^(late|early)[- ]onset\s+/i, '')
+          .replace(/^(juvenile|familial|sporadic)\s+/i, '')
+          .trim();
+        const baseQuery = `${symbol}[Gene Name] AND ${cleanDiseaseForPubmed}`;
+
         const currentYear = new Date().getFullYear();
-        const prevYear = currentYear - 1;
-        const recentQuery = `${baseQuery} AND ("${prevYear}"[Date - Publication] : "${currentYear}"[Date - Publication])`;
+        const threeYearsAgoPubmed = currentYear - 3;
+        // Correct PubMed date filter syntax uses [pdat]
+        const recentQuery = `${baseQuery} AND ${threeYearsAgoPubmed}:${currentYear}[pdat]`;
 
         const [totalRes, recentRes] = await Promise.all([
           proxyFetch(`${PUBMED_API}/esearch.fcgi?db=pubmed&term=${encodeURIComponent(baseQuery)}&retmode=json${apiKeyParam}${toolEmail}`),
