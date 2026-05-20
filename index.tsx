@@ -2230,13 +2230,15 @@ const App = () => {
   const [theme, setTheme] = useState<Theme>('light');
   const [isAuthenticated, setIsAuthenticated] = useState(!!localStorage.getItem('pharm_user'));
   const [viewMode, setViewMode] = useState<ViewMode>('list');
+  const OT_PAGE_SIZE = 50; // Open Targets max safe page size (API hard-caps at 50)
+
   const [loading, setLoading] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState("Mapping Intelligence...");
-  const [researchState, setResearchState] = useState<ResearchContext>({ 
-    activeDisease: null, 
-    targets: [], 
-    enrichment: [], 
-    limit: 10, 
+  const [researchState, setResearchState] = useState<ResearchContext>({
+    activeDisease: null,
+    targets: [],
+    enrichment: [],
+    limit: OT_PAGE_SIZE,
     currentPage: 0, 
     focusSymbol: null,
     filters: [],
@@ -3163,7 +3165,7 @@ Return ONLY valid JSON.
           if (filteredOpts.length === 1) {
             const opt = filteredOpts[0];
             setLoadingMessage("Fetching top gene associations...");
-            const genes = await api.getGenes(opt.id, 10, 0);
+            const genes = await api.getGenes(opt.id, OT_PAGE_SIZE, 0);
             
             const batchSize = 3;
             const updatedGenes = [...genes];
@@ -3223,7 +3225,7 @@ Return ONLY valid JSON.
         }
         case 'get_genes': {
           setLoadingMessage("Fetching top gene associations...");
-          const genes = await api.getGenes(args.id, 10, 0);
+          const genes = await api.getGenes(args.id, OT_PAGE_SIZE, 0);
           
           const batchSize = 3;
           const updatedGenes = [...genes];
@@ -3514,8 +3516,8 @@ Return ONLY valid JSON.
         case 'load_more': {
           if (!researchState.activeDisease) return "No active condition to load more data for.";
           const nextPage = researchState.currentPage + 1;
-          setLoadingMessage(`Fetching next ${researchState.limit} gene associations...`);
-          const newGenes = await api.getGenes(researchState.activeDisease.id, researchState.limit, nextPage * researchState.limit);
+          setLoadingMessage(`Fetching next ${OT_PAGE_SIZE} gene associations...`);
+          const newGenes = await api.getGenes(researchState.activeDisease.id, OT_PAGE_SIZE, nextPage);
           if (newGenes.length === 0) return "No more additional evidence found for this condition.";
           
           const batchSize = 3;
@@ -4216,7 +4218,7 @@ Return ONLY valid JSON.
                               </div>
                             )}
                             <button onClick={() => handleToolExecution('load_more', {})} disabled={loading} className={`group px-10 py-4 rounded-2xl bg-blue-600 text-white text-[12px] font-bold uppercase tracking-widest hover:bg-blue-700 active:scale-95 transition-all flex items-center gap-3 shadow-lg shadow-blue-600/25 disabled:opacity-50`}>{loading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Plus className="w-5 h-5 group-hover:rotate-90 transition-transform" />} Load More Analysis</button>
-                            <p className="text-[10px] font-bold text-neutral-500 dark:text-neutral-500 uppercase tracking-tighter">Cohort Depth: {researchState.currentPage + 1} | Buffer: 30 Targets | Showing: {displayTargets.length}</p>
+                            <p className="text-[10px] font-bold text-neutral-500 dark:text-neutral-500 uppercase tracking-tighter">Cohort Depth: {researchState.currentPage + 1} | Page Size: {OT_PAGE_SIZE} | Showing: {displayTargets.length}</p>
                           </div>
                         )}
                       </div>
