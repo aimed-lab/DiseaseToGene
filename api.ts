@@ -612,9 +612,11 @@ export const api = {
                 const identifier = anno.infons?.identifier;
                 if (!identifier || !/^\d+$/.test(identifier)) continue; 
                 
-                const geneName = anno.text || anno.infons?.name;
+                // Prefer infons.name (normalized HGNC symbol) over raw anno.text
+                // anno.text often contains non-gene terms like "tau", "CSF", "amyloid"
+                const geneName = anno.infons?.name || anno.text;
                 if (!geneName) continue;
-                if (!/^[A-Za-z][A-Za-z0-9]{1,9}$/.test(geneName)) continue; 
+                if (!/^[A-Za-z][A-Za-z0-9]{1,9}$/.test(geneName)) continue;
                 if (BLACKLIST.has(geneName.toUpperCase())) continue;
                 
                 const g = geneName.toUpperCase();

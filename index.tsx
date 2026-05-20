@@ -456,7 +456,6 @@ const PubTatorView = ({ results, isLoading, theme, onAddGene, onShowScoreInfo, o
             <th className="p-4 text-center">Total Papers</th>
             <th className="p-4 text-center">Last 3 Years</th>
             <th className="p-4 text-center">Velocity</th>
-            {col('pubTatorScore') && <th className="p-4 text-center whitespace-nowrap text-orange-500 text-[9px] font-black uppercase tracking-wider">PT Score</th>}
             {col('geneticScore') && <th className="p-4 text-center whitespace-nowrap text-blue-500 text-[9px] font-black uppercase tracking-wider">Genetic (OT)</th>}
             {col('combinedExpression') && <th className="p-4 text-center whitespace-nowrap text-emerald-500 text-[9px] font-black uppercase tracking-wider">Expression (OT)</th>}
             {col('targetScore') && <th className="p-4 text-center whitespace-nowrap text-amber-500 text-[9px] font-black uppercase tracking-wider">Target (OT)</th>}
@@ -464,52 +463,6 @@ const PubTatorView = ({ results, isLoading, theme, onAddGene, onShowScoreInfo, o
             <th className="p-4">Top Paper</th>
             <th className="p-4">Journal</th>
             <th className="p-4 text-center">Year</th>
-            <th className="p-4 text-center relative">
-              <div className="flex items-center justify-center gap-1.5">
-                RP Score
-                <button 
-                  onMouseEnter={() => onShowTooltip?.('rp_score_lit')} 
-                  onMouseLeave={() => onShowTooltip?.(null)}
-                  onClick={() => onShowScoreInfo?.('rp_score')}
-                  className="p-0.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors"
-                >
-                  <Info className="w-3 h-3 text-neutral-400" />
-                </button>
-              </div>
-              {activeTooltip === 'rp_score_lit' && (
-                <div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-64 p-4 rounded-xl border bg-white dark:bg-[#1c1c1c] border-neutral-200 dark:border-neutral-800 shadow-2xl z-50 text-left normal-case tracking-normal animate-in fade-in slide-in-from-top-2 duration-200">
-                  <div className="flex items-center gap-2 mb-2">
-                    <div className="p-1.5 rounded-lg bg-indigo-50 dark:bg-indigo-900/20"><Info className="w-3.5 h-3.5 text-indigo-500" /></div>
-                    <h5 className="text-[12px] font-bold text-black dark:text-white">RP Score</h5>
-                  </div>
-                  <p className="text-[11px] text-black dark:text-neutral-400 leading-relaxed mb-3">Random Walk with Restart score. Reflects the connectivity of this gene to high-confidence disease seeds within the STRING interactome.</p>
-                  <button onClick={() => onShowScoreInfo?.('rp_score')} className="text-[10px] font-bold text-indigo-600 hover:underline flex items-center gap-1">Methodology <ChevronRight className="w-3 h-3" /></button>
-                </div>
-              )}
-            </th>
-            <th className="p-4 text-center relative">
-              <div className="flex items-center justify-center gap-1.5 whitespace-nowrap">
-                WINNER
-                <button 
-                  onMouseEnter={() => onShowTooltip?.('winner_score_lit')} 
-                  onMouseLeave={() => onShowTooltip?.(null)}
-                  onClick={() => onShowScoreInfo?.('winner_score')}
-                  className="p-0.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors"
-                >
-                  <Info className="w-3 h-3 text-emerald-400" />
-                </button>
-              </div>
-              {activeTooltip === 'winner_score_lit' && (
-                <div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-64 p-4 rounded-xl border bg-white dark:bg-[#1c1c1c] border-neutral-200 dark:border-neutral-800 shadow-2xl z-50 text-left normal-case tracking-normal animate-in fade-in slide-in-from-top-2 duration-200">
-                  <div className="flex items-center gap-2 mb-2">
-                    <div className="p-1.5 rounded-lg bg-emerald-50 dark:bg-emerald-900/20"><Info className="w-3.5 h-3.5 text-emerald-500" /></div>
-                    <h5 className="text-[12px] font-bold text-black dark:text-white">WINNER Score</h5>
-                  </div>
-                  <p className="text-[11px] text-black dark:text-neutral-400 leading-relaxed mb-3">Weighted Iterative neighbor-based Score. Identifies central nodes in the STRING protein interactome based on connection density.</p>
-                  <button onClick={() => onShowScoreInfo?.('winner_score')} className="text-[10px] font-bold text-emerald-600 hover:underline flex items-center gap-1">Methodology <ChevronRight className="w-3 h-3" /></button>
-                </div>
-              )}
-            </th>
           </tr>
         </thead>
         <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80">
@@ -526,11 +479,6 @@ const PubTatorView = ({ results, isLoading, theme, onAddGene, onShowScoreInfo, o
                   {r.velocity > 20 && <TrendingUp className="w-3 h-3 text-emerald-500" />}
                 </div>
               </td>
-              {col('pubTatorScore') && (() => {
-                const maxR = Math.max(...(results?.map(x => x.recentPapers) ?? []), 1);
-                const score = Math.min(1, (r.velocity / 100) * 0.6 + (r.recentPapers / maxR) * 0.4);
-                return <td className="p-4 text-center"><ScoreBar value={score} color="bg-orange-500" theme={theme} /></td>;
-              })()}
               {col('geneticScore') && <td className="p-4 text-center font-mono text-[11px]">{r.otGeneticScore !== undefined ? <ScoreBar value={r.otGeneticScore} color="bg-blue-500" theme={theme} /> : <span className="text-neutral-400">—</span>}</td>}
               {col('combinedExpression') && <td className="p-4 text-center font-mono text-[11px]">{r.otExpressionScore !== undefined ? <ScoreBar value={r.otExpressionScore} color="bg-emerald-500" theme={theme} /> : <span className="text-neutral-400">—</span>}</td>}
               {col('targetScore') && <td className="p-4 text-center font-mono text-[11px]">{r.otTargetScore !== undefined ? <ScoreBar value={r.otTargetScore} color="bg-amber-500" theme={theme} /> : <span className="text-neutral-400">—</span>}</td>}
@@ -547,24 +495,6 @@ const PubTatorView = ({ results, isLoading, theme, onAddGene, onShowScoreInfo, o
               </td>
               <td className={`p-4 text-[10px] font-bold uppercase tracking-tight ${theme === 'dark' ? 'text-slate-400' : 'text-slate-800'}`}>{r.journal}</td>
               <td className={`p-4 font-mono text-[11px] ${theme === 'dark' ? 'text-slate-400' : 'text-slate-800'}`}>{r.year}</td>
-              <td className="p-4">
-                {r.rpScore !== undefined ? (
-                  <ScoreBar value={r.rpScore} color="bg-indigo-500" theme={theme} />
-                ) : (
-                  <div className="text-center text-neutral-400 text-[10px] font-mono">N/A</div>
-                )}
-              </td>
-              <td className="p-4 text-center">
-                {r.winnerScore !== undefined ? (
-                  <div className="flex flex-col items-center gap-1">
-                    <ScoreBar value={r.winnerScore} color="bg-emerald-500" theme={theme} />
-                    <span className="text-[9px] text-neutral-400 dark:text-neutral-500 font-mono">raw: {r.winnerRawScore?.toFixed(2) || "0.00"}</span>
-                  </div>
-                ) : (
-                  <div className="text-center text-neutral-400 text-[10px] font-mono">N/A</div>
-                )}
-              </td>
-
             </tr>
           ))}
         </tbody>
@@ -810,8 +740,6 @@ const SCORE_SLIDERS = [
   { key: 'targetScore',     label: 'T Score',      accent: '#f59e0b' },
   { key: 'literatureScore', label: 'L Score',      accent: '#ec4899' },
   { key: 'getScore',        label: 'GET Score',    accent: '#8b5cf6' },
-  { key: 'rpScore',         label: 'RP Score',     accent: '#6366f1' },
-  { key: 'winnerScore',     label: 'WINNER',       accent: '#06b6d4' },
   { key: 'tauTissue',       label: 'TAU Tissue',   accent: '#f97316' },
   { key: 'tauSingleCell',   label: 'TAU Cell',     accent: '#ef4444' },
 ] as const;
@@ -826,14 +754,8 @@ const TABLE_COLUMNS = [
   { key: 'geneticScore',       label: 'Genetic',     accent: '#3b82f6', defaultOn: true  },
   { key: 'combinedExpression', label: 'Expression',  accent: '#10b981', defaultOn: true  },
   { key: 'targetScore',        label: 'Target',      accent: '#f59e0b', defaultOn: true  },
-  { key: 'literatureScore',      label: 'Literature',     accent: '#ec4899', defaultOn: false },
-  { key: 'pubTatorScore',        label: 'PT Score',       accent: '#f97316', defaultOn: false },
-  { key: 'pubTatorVelocity',     label: 'PT Velocity',    accent: '#f97316', defaultOn: false },
-  { key: 'pubTatorTotalPapers',  label: 'PT Total Papers',accent: '#f97316', defaultOn: false },
-  { key: 'pubTatorRecentPapers', label: 'PT Recent Papers',accent:'#f97316', defaultOn: false },
-  { key: 'getScore',             label: 'GET Score',      accent: '#8b5cf6', defaultOn: true  },
-  { key: 'rpScore',            label: 'RP Score',    accent: '#6366f1', defaultOn: false },
-  { key: 'winnerScore',        label: 'WINNER',      accent: '#06b6d4', defaultOn: false },
+  { key: 'literatureScore',    label: 'Literature',  accent: '#ec4899', defaultOn: false },
+  { key: 'getScore',           label: 'GET Score',   accent: '#8b5cf6', defaultOn: true  },
   { key: 'tauTissue',          label: 'TAU Tissue',  accent: '#f97316', defaultOn: false },
   { key: 'tauSingleCell',      label: 'TAU Cell',    accent: '#ef4444', defaultOn: false },
   { key: 'finalScore',         label: 'Final Score', accent: '#2563eb', defaultOn: false },
@@ -2716,14 +2638,8 @@ Return ONLY valid JSON.
       return [...fixed, ...scores];
     });
     const litRows = (researchState.pubtatorResults || []).map(r => {
-      const maxRecent = Math.max(...(researchState.pubtatorResults?.map(x => x.recentPapers) ?? []), 1);
       const otTarget = researchState.targets.find(t => t.symbol.toUpperCase() === r.gene.toUpperCase());
-      const ptScore = Math.min(1, (r.velocity / 100) * 0.6 + (r.recentPapers / maxRecent) * 0.4);
       const litVals: Record<string, string> = {
-        pubTatorScore: ptScore.toFixed(4),
-        pubTatorVelocity: r.velocity.toFixed(4),
-        pubTatorTotalPapers: String(r.totalPapers),
-        pubTatorRecentPapers: String(r.recentPapers),
         geneticScore: otTarget?.geneticScore?.toFixed(4) ?? '—',
         combinedExpression: otTarget?.combinedExpression?.toFixed(4) ?? '—',
         targetScore: otTarget?.targetScore?.toFixed(4) ?? '—',
@@ -3041,23 +2957,6 @@ Return ONLY valid JSON.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [researchState.targets.length]);
 
-  // After PubTator finishes, patch matching OT targets with pubTator scores — non-blocking
-  useEffect(() => {
-    if (!researchState.pubtatorResults?.length) return;
-    const results = researchState.pubtatorResults;
-    const maxRecent = Math.max(...results.map(r => r.recentPapers), 1);
-    const pubMap = new Map(results.map(r => [r.gene.toUpperCase(), r]));
-    setResearchState(prev => ({
-      ...prev,
-      targets: prev.targets.map(t => {
-        const pub = pubMap.get(t.symbol.toUpperCase());
-        if (!pub) return t;
-        const pubTatorScore = Math.min(1, (pub.velocity / 100) * 0.6 + (pub.recentPapers / maxRecent) * 0.4);
-        return { ...t, pubTatorScore, pubTatorVelocity: pub.velocity, pubTatorTotalPapers: pub.totalPapers, pubTatorRecentPapers: pub.recentPapers };
-      }),
-    }));
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [researchState.pubtatorResults]);
 
   useEffect(() => {
     if (viewMode === 'pubtator' && researchState.activeDisease && !researchState.pubtatorResults && !researchState.isFetchingPubTator) {
@@ -4144,13 +4043,7 @@ Return ONLY valid JSON.
                               {col('combinedExpression') && <th className="p-4 text-center relative"><div className="flex items-center justify-center gap-1.5">{sortTh('combinedExpression', 'Expression')}<button onMouseEnter={() => setActiveTooltip('expression')} onMouseLeave={() => setActiveTooltip(null)} onClick={() => setActiveScoreInfo('expression')} className="p-0.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors"><Info className="w-3 h-3 text-neutral-400" /></button></div>{activeTooltip === 'expression' && (<div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-64 p-4 rounded-xl border bg-white dark:bg-[#1c1c1c] border-neutral-200 dark:border-neutral-800 shadow-2xl z-50 text-left normal-case tracking-normal"><h5 className="text-[12px] font-bold mb-1">Expression Score</h5><p className="text-[11px] text-neutral-400 leading-relaxed">Combines expression strength and tissue selectivity from Open Targets RNA data.</p></div>)}</th>}
                               {col('targetScore') && <th className="p-4 text-center relative"><div className="flex items-center justify-center gap-1.5">{sortTh('targetScore', 'Target')}<button onMouseEnter={() => setActiveTooltip('target')} onMouseLeave={() => setActiveTooltip(null)} onClick={() => setActiveScoreInfo('target')} className="p-0.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors"><Info className="w-3 h-3 text-neutral-400" /></button></div>{activeTooltip === 'target' && (<div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-64 p-4 rounded-xl border bg-white dark:bg-[#1c1c1c] border-neutral-200 dark:border-neutral-800 shadow-2xl z-50 text-left normal-case tracking-normal"><h5 className="text-[12px] font-bold mb-1">Target Score</h5><p className="text-[11px] text-neutral-400 leading-relaxed">Druggability from Open Targets tractability: Approved Drug (1.0) → Unknown (0.10).</p></div>)}</th>}
                               {col('literatureScore') && <th className="p-4 text-center relative"><div className="flex items-center justify-center gap-1.5">{sortTh('literatureScore', 'Literature')}<button onMouseEnter={() => setActiveTooltip('literature')} onMouseLeave={() => setActiveTooltip(null)} onClick={() => setActiveScoreInfo('literature')} className="p-0.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors"><Info className="w-3 h-3 text-neutral-400" /></button></div>{activeTooltip === 'literature' && (<div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-64 p-4 rounded-xl border bg-white dark:bg-[#1c1c1c] border-neutral-200 dark:border-neutral-800 shadow-2xl z-50 text-left normal-case tracking-normal"><h5 className="text-[12px] font-bold mb-1">Literature Score</h5><p className="text-[11px] text-neutral-400 leading-relaxed">Literature datatype score from Open Targets / Europe PMC text mining.</p></div>)}</th>}
-                              {col('pubTatorScore') && <th className="p-4 text-center whitespace-nowrap text-orange-500 relative"><div className="flex items-center justify-center gap-1.5">{sortTh('pubTatorScore', 'PT Score')}<button onMouseEnter={() => setActiveTooltip('pubTatorScore')} onMouseLeave={() => setActiveTooltip(null)} className="p-0.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors"><Info className="w-3 h-3 text-orange-400" /></button></div>{activeTooltip === 'pubTatorScore' && (<div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-72 p-4 rounded-xl border bg-white dark:bg-[#1c1c1c] border-neutral-200 dark:border-neutral-800 shadow-2xl z-50 text-left normal-case tracking-normal"><h5 className="text-[12px] font-bold mb-1 text-orange-500">PubTator Score</h5><p className="text-[11px] text-neutral-400 leading-relaxed">Velocity-weighted literature signal from PubTator3. Score = (Velocity×0.6) + (Recent Papers×0.4), normalised 0–1. High score = trending gene.</p></div>)}</th>}
-                              {col('pubTatorVelocity') && <th className="p-4 text-center whitespace-nowrap text-orange-500">{sortTh('pubTatorVelocity', 'PT Velocity')}</th>}
-                              {col('pubTatorTotalPapers') && <th className="p-4 text-center whitespace-nowrap text-orange-500">{sortTh('pubTatorTotalPapers', 'PT Total Papers')}</th>}
-                              {col('pubTatorRecentPapers') && <th className="p-4 text-center whitespace-nowrap text-orange-500">{sortTh('pubTatorRecentPapers', 'PT Recent Papers')}</th>}
                               {col('getScore') && <th className="p-4 text-center relative"><div className="flex items-center justify-center gap-1.5">{sortTh('getScore', 'GET Score')}<button onMouseEnter={() => setActiveTooltip('get_score')} onMouseLeave={() => setActiveTooltip(null)} onClick={() => setActiveScoreInfo('get_score')} className="p-0.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors"><Info className="w-3 h-3 text-neutral-400" /></button></div>{activeTooltip === 'get_score' && (<div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-64 p-4 rounded-xl border bg-white dark:bg-[#1c1c1c] border-neutral-200 dark:border-neutral-800 shadow-2xl z-50 text-left normal-case tracking-normal"><h5 className="text-[12px] font-bold mb-1">GET Score</h5><p className="text-[11px] text-neutral-400 leading-relaxed">Composite: G×0.50 + E×0.25 + T×0.25 with velocity bonus.</p></div>)}</th>}
-                              {col('rpScore') && <th className="p-4 text-center relative"><div className="flex items-center justify-center gap-1.5">{sortTh('rpScore', 'RP Score')}<button onMouseEnter={() => setActiveTooltip('rp_score')} onMouseLeave={() => setActiveTooltip(null)} onClick={() => setActiveScoreInfo('rp_score')} className="p-0.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors"><Info className="w-3 h-3 text-neutral-400" /></button></div>{activeTooltip === 'rp_score' && (<div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-64 p-4 rounded-xl border bg-white dark:bg-[#1c1c1c] border-neutral-200 dark:border-neutral-800 shadow-2xl z-50 text-left normal-case tracking-normal"><h5 className="text-[12px] font-bold mb-1">RP Score</h5><p className="text-[11px] text-neutral-400 leading-relaxed">Random Walk with Restart — proximity to disease seeds in STRING network.</p></div>)}</th>}
-                              {col('winnerScore') && <th className="p-4 text-center relative"><div className="flex items-center justify-center gap-1.5">{sortTh('winnerScore', 'WINNER')}<button onMouseEnter={() => setActiveTooltip('winner_score')} onMouseLeave={() => setActiveTooltip(null)} onClick={() => setActiveScoreInfo('winner_score')} className="p-0.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors"><Info className="w-3 h-3 text-emerald-400" /></button></div>{activeTooltip === 'winner_score' && (<div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-64 p-4 rounded-xl border bg-white dark:bg-[#1c1c1c] border-neutral-200 dark:border-neutral-800 shadow-2xl z-50 text-left normal-case tracking-normal"><h5 className="text-[12px] font-bold mb-1">WINNER Score</h5><p className="text-[11px] text-neutral-400 leading-relaxed">Weighted Iterative Network-based Score — central nodes in the interactome.</p></div>)}</th>}
                               {col('tauTissue') && <th className="p-4 text-center whitespace-nowrap text-orange-500">{sortTh('tauTissue', 'TAU Tissue')}</th>}
                               {col('tauSingleCell') && <th className="p-4 text-center whitespace-nowrap text-red-500">{sortTh('tauSingleCell', 'TAU Cell')}</th>}
                               {/* Bimodality columns — Max always first, then per-tissue */}
@@ -4254,13 +4147,7 @@ Return ONLY valid JSON.
                                   {col('combinedExpression') && <td className={`p-4 text-center font-mono text-[11px] font-medium ${theme === 'dark' ? 'text-neutral-400' : 'text-slate-950'}`}>{t.combinedExpression?.toFixed(3)}</td>}
                                   {col('targetScore') && <td className={`p-4 text-center font-mono text-[11px] font-medium ${theme === 'dark' ? 'text-neutral-400' : 'text-slate-950'}`}>{t.targetScore.toFixed(3)}</td>}
                                   {col('literatureScore') && <td className={`p-4 text-center font-mono text-[11px] font-medium ${theme === 'dark' ? 'text-neutral-400' : 'text-slate-950'}`}>{t.literatureScore?.toFixed(3) ?? '—'}</td>}
-                                  {col('pubTatorScore') && <td className="p-4 text-center">{t.pubTatorScore !== undefined ? <ScoreBar value={t.pubTatorScore} color="bg-orange-500" theme={theme} /> : <span className="text-neutral-400 text-[10px]">—</span>}</td>}
-                                  {col('pubTatorVelocity') && <td className="p-4 text-center font-mono text-[11px]">{t.pubTatorVelocity !== undefined ? <span className={t.pubTatorVelocity > 20 ? 'text-emerald-500 font-bold' : 'text-neutral-400'}>{t.pubTatorVelocity.toFixed(1)}%</span> : <span className="text-neutral-400">—</span>}</td>}
-                                  {col('pubTatorTotalPapers') && <td className={`p-4 text-center font-mono text-[11px] ${theme === 'dark' ? 'text-neutral-400' : 'text-slate-700'}`}>{t.pubTatorTotalPapers?.toLocaleString() ?? '—'}</td>}
-                                  {col('pubTatorRecentPapers') && <td className={`p-4 text-center font-mono text-[11px] font-bold ${theme === 'dark' ? 'text-blue-400' : 'text-blue-700'}`}>{t.pubTatorRecentPapers?.toLocaleString() ?? '—'}</td>}
                                   {col('getScore') && <td className={`p-4 text-center font-mono text-[11px] font-medium ${theme === 'dark' ? 'text-indigo-400' : 'text-indigo-700'}`}>{t.getScore?.toFixed(3)}</td>}
-                                  {col('rpScore') && <td className="p-4 text-center">{t.rpScore !== undefined ? <ScoreBar value={t.rpScore} color="bg-indigo-500" theme={theme} /> : <span className="text-neutral-400 text-[10px]">—</span>}</td>}
-                                  {col('winnerScore') && <td className="p-4 text-center">{t.winnerScore !== undefined ? <div className="flex flex-col items-center gap-1"><ScoreBar value={t.winnerScore} color="bg-emerald-500" theme={theme} /><span className="text-[9px] text-neutral-400 font-mono">raw: {t.winnerRawScore?.toFixed(2) || '0.00'}</span></div> : <span className="text-neutral-400 text-[10px]">—</span>}</td>}
                                   {col('tauTissue') && <td className="p-4 text-center font-mono text-[11px]">{t.tauTissue !== undefined ? <ScoreBar value={t.tauTissue} color="bg-orange-400" theme={theme} /> : <span className="text-neutral-400 text-[10px]">—</span>}</td>}
                                   {col('tauSingleCell') && <td className="p-4 text-center font-mono text-[11px]">{t.tauSingleCell !== undefined ? <ScoreBar value={t.tauSingleCell} color="bg-red-400" theme={theme} /> : <span className="text-neutral-400 text-[10px]">—</span>}</td>}
                                   {visibleBioTissues.length > 0 && (
