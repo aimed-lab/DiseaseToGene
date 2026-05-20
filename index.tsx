@@ -2597,29 +2597,83 @@ Return ONLY valid JSON.
     const disease = researchState.activeDisease?.name || 'Unknown';
     const escape = (s: string) => `"${s.replace(/"/g, '""')}"`;
     const visibleCols = TABLE_COLUMNS.filter(c => visibleColumns.includes(c.key));
-    const headers = ['Source', 'Gene', 'Gene Name', ...visibleCols.map(c => c.label)];
+
+    // Fixed score headers + all evidence/drill-down columns always included
+    const headers = [
+      'Source', 'Gene', 'Gene Name',
+      ...visibleCols.map(c => c.label),
+      // Literature (PubMed)
+      'Lit Total Papers', 'Lit Recent (3y)', 'Lit Velocity', 'Lit Top Paper',
+      // Europe PMC
+      'EPMC Total Papers', 'EPMC Recent (3y)', 'EPMC Velocity', 'EPMC Top Paper', 'EPMC Journal', 'EPMC Year',
+      // Clinical Trials
+      'CT Total Trials', 'CT Max Phase', 'CT Interventional', 'CT Active Trial', 'CT Global Trials',
+    ];
+
     const otRows = displayTargets.map(t => {
-      const fixed = ['OT', t.symbol, t.name];
       const scores = visibleCols.map(c => {
         const v = (t as any)[c.key];
         return v !== undefined && v !== null ? (typeof v === 'number' ? v.toFixed(4) : String(v)) : '—';
       });
-      return [...fixed, ...scores];
+      const dd = t.drillDown;
+      return [
+        'OT', t.symbol, t.name,
+        ...scores,
+        // Literature (PubMed via drillDown)
+        String(dd?.total_signals ?? '—'),
+        String(dd?.recent_signals ?? '—'),
+        dd?.signal_velocity ?? '—',
+        dd?.top_papers?.[0]?.title ?? '—',
+        // Europe PMC
+        String(dd?.paper_count ?? '—'),
+        String(dd?.recent_paper_count ?? '—'),
+        dd?.epmc_velocity ?? '—',
+        dd?.epmc_top_paper ?? '—',
+        dd?.epmc_journal ?? '—',
+        dd?.epmc_year ?? '—',
+        // Clinical Trials
+        String(dd?.trial_count ?? '—'),
+        dd?.max_phase ?? '—',
+        String(dd?.interventional_count ?? '—'),
+        dd?.active_trial_present !== undefined ? String(dd.active_trial_present) : '—',
+        String(dd?.total_trials_globally ?? '—'),
+      ];
     });
+
     const litRows = (researchState.pubtatorResults || []).map(r => {
-      const otTarget = researchState.targets.find(t => t.symbol.toUpperCase() === r.gene.toUpperCase());
-      const litVals: Record<string, string> = {
-        geneticScore: otTarget?.geneticScore?.toFixed(4) ?? '—',
-        combinedExpression: otTarget?.combinedExpression?.toFixed(4) ?? '—',
-        targetScore: otTarget?.targetScore?.toFixed(4) ?? '—',
-        getScore: otTarget?.getScore?.toFixed(4) ?? '—',
-        literatureScore: otTarget?.literatureScore?.toFixed(4) ?? '—',
-      };
-      const scores = visibleCols.map(c => litVals[c.key] ?? '—');
-      return ['LIT', r.gene, '—', ...scores];
+      const ot = researchState.targets.find(t => t.symbol.toUpperCase() === r.gene.toUpperCase());
+      const scores = visibleCols.map(c => {
+        const v = (ot as any)?.[c.key];
+        return v !== undefined && v !== null ? (typeof v === 'number' ? v.toFixed(4) : String(v)) : '—';
+      });
+      const dd = ot?.drillDown;
+      return [
+        'LIT', r.gene, ot?.name ?? '—',
+        ...scores,
+        // Literature — PubTator data available directly on the result row
+        String(r.totalPapers),
+        String(r.recentPapers),
+        r.velocity.toFixed(1) + '%',
+        r.topPaper ?? '—',
+        // Europe PMC
+        String(dd?.paper_count ?? '—'),
+        String(dd?.recent_paper_count ?? '—'),
+        dd?.epmc_velocity ?? '—',
+        dd?.epmc_top_paper ?? '—',
+        dd?.epmc_journal ?? '—',
+        dd?.epmc_year ?? '—',
+        // Clinical Trials
+        String(dd?.trial_count ?? '—'),
+        dd?.max_phase ?? '—',
+        String(dd?.interventional_count ?? '—'),
+        dd?.active_trial_present !== undefined ? String(dd.active_trial_present) : '—',
+        String(dd?.total_trials_globally ?? '—'),
+      ];
     });
-    const blankRow = ['', '', '', ...visibleCols.map(() => '')];
-    const sectionHeader = [`# Literature genes (${litRows.length})`, '', '', ...visibleCols.map(() => '')];
+
+    const emptyExtra = Array(headers.length - 3).fill('');
+    const blankRow = ['', '', '', ...emptyExtra];
+    const sectionHeader = [`# Literature genes (${litRows.length})`, '', '', ...emptyExtra];
     const allRows = litRows.length
       ? [...otRows, blankRow, sectionHeader, ...litRows]
       : otRows;
@@ -2947,25 +3001,16 @@ Return ONLY valid JSON.
     return targets.map(t => {
       const g = t.geneticScore || 0;
       const e = t.combinedExpression || t.expressionScore || 0;
-      const ot_tractability = t.targetScore || 0;
-      
-      const interventional = t.drillDown?.interventional_count || 0;
-      const trial_signal = 1 - Math.exp(-interventional / 3);
-      
-      const t_new = (ot_tractability * 0.65) + (trial_signal * 0.35);
-      
-      const baseline = (g * weights.genetic) + (e * weights.expression) + (t_new * weights.target);
-      
-      const vStr = t.drillDown?.signal_velocity || "0%";
-      const velocity_pct = parseFloat(vStr.replace('%', '')) || 0;
-      const v_norm = Math.min(velocity_pct, 100) / 100;
-      
-      const getScore = (baseline * (1 - weights.velocity)) + (v_norm * weights.velocity);
+      const tr = t.targetScore || 0;
+
+      // GET = 0.45·G + 0.25·E + 0.30·T  (pure OT scores, no lazy drill-down dependency)
+      const getScore = (g * 0.45) + (e * 0.25) + (tr * 0.30);
       const overallScore = getScore;
 
       const clinical_flags: string[] = [];
       if (t.drillDown) {
         const dd = t.drillDown;
+        const interventional = dd.interventional_count || 0;
         const total_trials_globally = dd.total_trials_globally || 0;
         const max_phase = dd.max_phase || 'N/A';
 
