@@ -2,16 +2,252 @@ import express from "express";
 import { createServer as createViteServer } from "vite";
 import { Client } from "@notionhq/client";
 import path from "path";
+import fs from "fs";
 import { fileURLToPath } from "url";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// ── Wiki vault path — folder next to server.ts ─────────────────────────────
+const VAULT_PATH = process.env.WIKI_VAULT_PATH
+  || path.join(__dirname, "wiki-vault");
+
+const sanitizeFolder = (name: string) =>
+  name.replace(/['"]/g, '').replace(/[^a-zA-Z0-9\s-]/g, '').replace(/\s+/g, '-').trim();
+
+const signalEmoji = (val: number | undefined, thresholds = [0.7, 0.4]) => {
+  if (val === undefined || val === null) return '—';
+  if (val >= thresholds[0]) return '🟢';
+  if (val >= thresholds[1]) return '🟡';
+  return '🔴';
+};
+
+function buildWikiMarkdown(payload: any): string {
+  const { diseaseId, diseaseName, gene, evidence, aiSummary, relatedGenes } = payload;
+  const now = new Date().toISOString().split('T')[0];
+  const diseaseFolderName = sanitizeFolder(diseaseName);
+
+  // ── YAML frontmatter — shows as Properties panel in Obsidian ──────────────
+  const tags = ['disease2target'];
+  if ((evidence.getScore ?? 0) >= 0.7) tags.push('high-priority');
+  if ((evidence.litVelocityNum ?? 0) >= 30) tags.push('emerging');
+  if (!evidence.ctTrials || evidence.ctTrials === 0) tags.push('no-trials');
+  else tags.push(`phase-${(evidence.maxPhase ?? 'unknown').toLowerCase().replace(/_/g, '-')}`);
+  tags.push(diseaseFolderName.toLowerCase());
+
+  const frontmatter = `---
+disease: "${diseaseName}"
+disease_id: "${diseaseId}"
+gene: "${gene.symbol}"
+gene_name: "${gene.name}"
+get_score: ${evidence.getScore?.toFixed(4) ?? 'N/A'}
+genetic: ${evidence.geneticScore?.toFixed(4) ?? 'N/A'}
+expression: ${evidence.expressionScore?.toFixed(4) ?? 'N/A'}
+target: ${evidence.targetScore?.toFixed(4) ?? 'N/A'}
+lit_velocity: "${evidence.litVelocity ?? '—'}"
+lit_total_papers: ${evidence.litTotal ?? 0}
+lit_recent_papers: ${evidence.litRecent ?? 0}
+ct_trials: ${evidence.ctTrials ?? 0}
+ct_max_phase: "${evidence.maxPhase ?? 'N/A'}"
+ct_active: ${evidence.ctActive ?? false}
+epmc_total: ${evidence.epmcTotal ?? 0}
+epmc_recent: ${evidence.epmcRecent ?? 0}
+epmc_velocity: "${evidence.epmcVelocity ?? '—'}"
+tau_tissue: ${evidence.tauTissue?.toFixed(4) ?? 'N/A'}
+tau_single_cell: ${evidence.tauSingleCell?.toFixed(4) ?? 'N/A'}
+bimodality_score: ${evidence.bimodalityScore?.toFixed(4) ?? 'N/A'}
+bimodality_tissue: "${evidence.bimodalityTissue ?? '—'}"
+status: draft
+tags: [${tags.join(', ')}]
+saved: "${now}"
+---`;
+
+  // ── Score table with signal emoji ─────────────────────────────────────────
+  const scoreTable = `| Metric | Value | Signal |
+|--------|-------|--------|
+| **GET Score** | ${evidence.getScore?.toFixed(4) ?? '—'} | ${signalEmoji(evidence.getScore)} |
+| Genetic (G) | ${evidence.geneticScore?.toFixed(4) ?? '—'} | ${signalEmoji(evidence.geneticScore)} |
+| Expression (E) | ${evidence.expressionScore?.toFixed(4) ?? '—'} | ${signalEmoji(evidence.expressionScore)} |
+| Target (T) | ${evidence.targetScore?.toFixed(4) ?? '—'} | ${signalEmoji(evidence.targetScore)} |
+| Lit Velocity | ${evidence.litVelocity ?? '—'} | ${signalEmoji(evidence.litVelocityNum, [30, 10])} |
+| Lit Total Papers | ${evidence.litTotal ?? '—'} | |
+| Lit Recent (3y) | ${evidence.litRecent ?? '—'} | |
+| EPMC Total | ${evidence.epmcTotal ?? '—'} | |
+| EPMC Recent (3y) | ${evidence.epmcRecent ?? '—'} | |
+| EPMC Velocity | ${evidence.epmcVelocity ?? '—'} | |
+| CT Trials | ${evidence.ctTrials ?? '—'} | ${evidence.ctTrials > 0 ? '🟢' : '🔴'} |
+| CT Max Phase | ${evidence.maxPhase ?? 'N/A'} | |
+| CT Active Trial | ${evidence.ctActive ? '✅ Yes' : '—'} | |
+| TAU Tissue | ${evidence.tauTissue?.toFixed(4) ?? '—'} | ${signalEmoji(evidence.tauTissue)} |
+| TAU Single Cell | ${evidence.tauSingleCell?.toFixed(4) ?? '—'} | ${signalEmoji(evidence.tauSingleCell)} |
+| Bimodality | ${evidence.bimodalityScore?.toFixed(4) ?? '—'} (${evidence.bimodalityTissue ?? '—'}) | ${signalEmoji(evidence.bimodalityScore)} |`;
+
+  // ── OT pathways as Obsidian wikilinks ─────────────────────────────────────
+  const pathwayLinks = (evidence.pathways ?? []).length > 0
+    ? (evidence.pathways as string[]).map((p: string) => `- [[${p}]]`).join('\n')
+    : '- None loaded';
+
+  // ── Enriched pathways with p-value ────────────────────────────────────────
+  const enrichedLinks = (evidence.enrichedPathways ?? []).length > 0
+    ? (evidence.enrichedPathways as any[])
+        .map((p: any) => `- [[${p.term}]] — ${p.source} (adj.p = \`${p.adjP}\`)`)
+        .join('\n')
+    : '- None';
+
+  // ── Related genes as wikilinks ────────────────────────────────────────────
+  const relatedLinks = (relatedGenes ?? []).length > 0
+    ? (relatedGenes as string[]).map((g: string) => `[[${g}]]`).join(' · ')
+    : '—';
+
+  return `${frontmatter}
+
+# ${gene.symbol} — [[${diseaseFolderName}/_Index|${diseaseName}]]
+
+> [!info] Evidence Snapshot
+> **GET Score:** ${evidence.getScore?.toFixed(4) ?? '—'} &nbsp;|&nbsp; **Genetic:** ${evidence.geneticScore?.toFixed(4) ?? '—'} &nbsp;|&nbsp; **Expression:** ${evidence.expressionScore?.toFixed(4) ?? '—'} &nbsp;|&nbsp; **Target:** ${evidence.targetScore?.toFixed(4) ?? '—'}
+> **Lit Velocity:** ${evidence.litVelocity ?? '—'} &nbsp;|&nbsp; **CT Trials:** ${evidence.ctTrials ?? 0} &nbsp;|&nbsp; **Max Phase:** ${evidence.maxPhase ?? 'N/A'}
+
+## Scores
+
+${scoreTable}
+
+## Pathways (Open Targets)
+
+${pathwayLinks}
+
+## Enriched Pathways (Enrichr)
+
+${enrichedLinks}
+
+## Related Genes (shared pathways)
+
+${relatedLinks}
+
+---
+
+## AI Summary
+
+${aiSummary || '_Not yet generated — open the gene in Disease2Target and generate AI summary first._'}
+
+---
+
+## Human Notes
+
+> [!note] Interpretation
+> _Write your interpretation here_
+
+## Evidence Gaps
+
+- [ ]
+- [ ]
+
+## Next Steps
+
+- [ ]
+- [ ]
+
+## Case Study Notes
+
+_Write case study narrative here_
+
+---
+*Saved from [Disease2Target](http://localhost:3000) on ${now}*
+`;
+}
+
+function updateIndexFile(filePath: string, gene: { symbol: string; name: string }, getScore: number) {
+  let content = '';
+  const entry = `| [[${gene.symbol}]] | ${gene.name} | ${getScore.toFixed(4)} |`;
+
+  if (fs.existsSync(filePath)) {
+    content = fs.readFileSync(filePath, 'utf-8');
+    // Already listed — update score
+    const lineRegex = new RegExp(`^\\| \\[\\[${gene.symbol}\\]\\].*$`, 'm');
+    if (lineRegex.test(content)) {
+      content = content.replace(lineRegex, entry);
+      fs.writeFileSync(filePath, content, 'utf-8');
+      return;
+    }
+    // Append to table
+    const tableEnd = content.lastIndexOf('\n| ');
+    if (tableEnd !== -1) {
+      const insertAt = content.indexOf('\n', tableEnd + 1);
+      content = content.slice(0, insertAt) + '\n' + entry + content.slice(insertAt);
+    } else {
+      content += '\n' + entry;
+    }
+  } else {
+    const folder = path.dirname(filePath);
+    const diseaseName = path.basename(folder).replace(/-/g, ' ');
+    content = `# ${diseaseName} — Target Wiki
+
+> [!tip] Usage
+> Click any gene link to open its evidence page. Sort by GET Score to prioritize targets.
+
+## Saved Targets
+
+| Gene | Name | GET Score |
+|------|------|-----------|
+${entry}
+`;
+  }
+  fs.writeFileSync(filePath, content, 'utf-8');
+}
 
 async function startServer() {
   const app = express();
   const PORT = 3000;
 
   app.use(express.json({ limit: '50mb' }));
+
+  // ── Wiki Endpoints ─────────────────────────────────────────────────────────
+
+  // POST /api/wiki/save — write gene page + update disease index
+  app.post("/api/wiki/save", (req, res) => {
+    try {
+      const payload = req.body;
+      const { diseaseName, gene, evidence } = payload;
+      const diseaseFolderName = sanitizeFolder(diseaseName);
+      const diseaseFolder = path.join(VAULT_PATH, diseaseFolderName);
+
+      if (!fs.existsSync(diseaseFolder)) {
+        fs.mkdirSync(diseaseFolder, { recursive: true });
+      }
+
+      // Write gene page
+      const filePath = path.join(diseaseFolder, `${gene.symbol}.md`);
+      const md = buildWikiMarkdown(payload);
+      fs.writeFileSync(filePath, md, 'utf-8');
+
+      // Update disease _Index.md
+      const indexPath = path.join(diseaseFolder, '_Index.md');
+      updateIndexFile(indexPath, gene, evidence.getScore ?? 0);
+
+      console.log(`[Wiki] Saved: ${diseaseFolderName}/${gene.symbol}.md`);
+      res.json({ success: true, path: filePath });
+    } catch (err: any) {
+      console.error('[Wiki] Save error:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // GET /api/wiki/exists/:disease/:gene — check if page already saved
+  app.get("/api/wiki/exists/:disease/:gene", (req, res) => {
+    const folder = sanitizeFolder(decodeURIComponent(req.params.disease));
+    const filePath = path.join(VAULT_PATH, folder, `${req.params.gene}.md`);
+    res.json({ exists: fs.existsSync(filePath) });
+  });
+
+  // GET /api/wiki/list/:disease — list saved genes for a disease
+  app.get("/api/wiki/list/:disease", (req, res) => {
+    const folder = sanitizeFolder(decodeURIComponent(req.params.disease));
+    const diseaseFolder = path.join(VAULT_PATH, folder);
+    if (!fs.existsSync(diseaseFolder)) return res.json({ genes: [] });
+    const files = fs.readdirSync(diseaseFolder)
+      .filter(f => f.endsWith('.md') && !f.startsWith('_'))
+      .map(f => f.replace('.md', ''));
+    res.json({ genes: files });
+  });
 
   // Notion Export Endpoint
   app.post("/api/export/notion", async (req, res) => {

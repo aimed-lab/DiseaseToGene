@@ -1683,12 +1683,15 @@ Be concise, scientific, and use markdown. Max 350 words.`;
 
 const TargetDetailView = ({ 
   target, 
-  theme, 
+  theme,
   diseaseName,
   subPage = 'main',
   onToggleUsefulness,
   onNavigateSubPage,
   onSave,
+  onSaveToWiki,
+  wikiSaved,
+  wikiSaving,
   onBack,
   onLoadAiSummary,
   aiSummaryLoading,
@@ -1701,6 +1704,9 @@ const TargetDetailView = ({
   onToggleUsefulness: (symbol: string, source: string, status: 'useful' | 'not-useful' | 'pinned' | null) => void;
   onNavigateSubPage: (page: 'main' | 'literature' | 'clinical') => void;
   onSave?: () => void;
+  onSaveToWiki?: () => void;
+  wikiSaved?: boolean;
+  wikiSaving?: boolean;
   onBack: () => void;
   onLoadAiSummary: (symbol: string) => void;
   aiSummaryLoading: boolean;
@@ -2031,14 +2037,32 @@ const TargetDetailView = ({
             <p className={`text-[12px] font-bold uppercase tracking-wide ${theme === 'dark' ? 'text-neutral-500' : 'text-black'}`}>{target.name}</p>
           </div>
         </div>
-        <div className="flex items-center gap-4">
-          <UsefulnessControls 
-            symbol={target.symbol} 
-            source="overall" 
-            currentStatus={target.usefulness?.['overall']} 
-            onToggle={onToggleUsefulness} 
+        <div className="flex items-center gap-3">
+          {/* Save to Obsidian Wiki button */}
+          <button
+            onClick={onSaveToWiki}
+            disabled={wikiSaving}
+            title={wikiSaved ? 'Update Wiki page' : 'Save to Obsidian Wiki'}
+            className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-[10px] font-bold uppercase tracking-wider transition-all ${
+              wikiSaved
+                ? 'bg-purple-50 border-purple-300 text-purple-700 dark:bg-purple-900/20 dark:border-purple-700 dark:text-purple-300 hover:bg-purple-100 dark:hover:bg-purple-900/40'
+                : 'bg-neutral-50 border-neutral-200 text-neutral-500 dark:bg-neutral-800 dark:border-neutral-700 dark:text-neutral-400 hover:border-purple-400 hover:text-purple-600 dark:hover:border-purple-600 dark:hover:text-purple-400'
+            } disabled:opacity-50`}
+          >
+            {wikiSaving ? (
+              <Loader2 className="w-3 h-3 animate-spin" />
+            ) : (
+              <BookOpen className="w-3 h-3" />
+            )}
+            {wikiSaving ? 'Saving…' : wikiSaved ? '✓ Wiki Saved' : 'Save to Wiki'}
+          </button>
+          <UsefulnessControls
+            symbol={target.symbol}
+            source="overall"
+            currentStatus={target.usefulness?.['overall']}
+            onToggle={onToggleUsefulness}
             onSave={onSave}
-            theme={theme} 
+            theme={theme}
           />
         </div>
       </div>
@@ -2231,6 +2255,82 @@ const App = () => {
   const [isAuthenticated, setIsAuthenticated] = useState(!!localStorage.getItem('pharm_user'));
   const [viewMode, setViewMode] = useState<ViewMode>('list');
   const OT_PAGE_SIZE = 50; // Open Targets max safe page size (API hard-caps at 50)
+
+  const [wikiSavedGenes, setWikiSavedGenes] = useState<Set<string>>(new Set());
+  const [wikiSaving, setWikiSaving] = useState<string | null>(null); // symbol currently saving
+  const [wikiToast, setWikiToast] = useState<{ symbol: string; ok: boolean } | null>(null);
+
+  const handleSaveToWiki = async (target: Target) => {
+    if (!researchState.activeDisease) return;
+    setWikiSaving(target.symbol);
+    try {
+      const dd = target.drillDown;
+
+      // Enriched pathways for this gene
+      const enrichedPathways = researchState.enrichment
+        .filter(e => e.genes.some(g => g.toUpperCase() === target.symbol.toUpperCase()))
+        .sort((a, b) => a.adjustedPValue - b.adjustedPValue)
+        .slice(0, 5)
+        .map(e => ({ term: e.term, source: e.source, adjP: e.adjustedPValue.toExponential(2) }));
+
+      // Related genes — other top-GET targets that share enriched pathway membership
+      const enrichedTerms = new Set(enrichedPathways.map(e => e.term));
+      const relatedGenes = researchState.targets
+        .filter(t => t.symbol !== target.symbol)
+        .filter(t => researchState.enrichment.some(
+          e => enrichedTerms.has(e.term) && e.genes.some(g => g.toUpperCase() === t.symbol.toUpperCase())
+        ))
+        .sort((a, b) => (b.getScore ?? 0) - (a.getScore ?? 0))
+        .slice(0, 6)
+        .map(t => t.symbol);
+
+      const litVelocityNum = dd?.signal_velocity
+        ? parseFloat(dd.signal_velocity.replace('%', ''))
+        : undefined;
+
+      await fetch('/api/wiki/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          diseaseId: researchState.activeDisease.id,
+          diseaseName: researchState.activeDisease.name,
+          gene: { symbol: target.symbol, name: target.name, id: target.id },
+          evidence: {
+            getScore: target.getScore,
+            geneticScore: target.geneticScore,
+            expressionScore: target.combinedExpression,
+            targetScore: target.targetScore,
+            litVelocity: dd?.signal_velocity,
+            litVelocityNum,
+            litTotal: dd?.total_signals,
+            litRecent: dd?.recent_signals,
+            ctTrials: dd?.trial_count,
+            maxPhase: dd?.max_phase,
+            ctActive: dd?.active_trial_present,
+            epmcTotal: dd?.paper_count,
+            epmcRecent: dd?.recent_paper_count,
+            epmcVelocity: dd?.epmc_velocity,
+            tauTissue: target.tauTissue,
+            tauSingleCell: target.tauSingleCell,
+            bimodalityScore: target.bimodalityScores?._max_score,
+            bimodalityTissue: target.bimodalityScores?._max_tissue,
+            pathways: target.pathways?.slice(0, 5).map(p => p.label) ?? [],
+            enrichedPathways,
+          },
+          aiSummary: dd?.clinical_summary ?? '',
+          relatedGenes,
+        }),
+      });
+
+      setWikiSavedGenes(prev => new Set(prev).add(target.symbol));
+      setWikiToast({ symbol: target.symbol, ok: true });
+    } catch {
+      setWikiToast({ symbol: target.symbol, ok: false });
+    } finally {
+      setWikiSaving(null);
+      setTimeout(() => setWikiToast(null), 3000);
+    }
+  };
 
   const [loading, setLoading] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState("Mapping Intelligence...");
@@ -3937,7 +4037,7 @@ Return ONLY valid JSON.
               
               {researchState.focusSymbol ? (
                 <div className={`h-full rounded-2xl border overflow-hidden shadow-xl shadow-slate-950/5 ${theme === 'dark' ? 'bg-[#0b111c]/95 border-slate-800/80' : 'bg-white/95 border-slate-200'}`}>
-                  <TargetDetailView 
+                  <TargetDetailView
                     target={researchState.targets.find(t => t.symbol === researchState.focusSymbol)!}
                     theme={theme}
                     diseaseName={researchState.activeDisease?.name || "Evidence"}
@@ -3945,6 +4045,12 @@ Return ONLY valid JSON.
                     onToggleUsefulness={toggleUsefulness}
                     onNavigateSubPage={setFocusSubPage}
                     onSave={exportToDocx}
+                    onSaveToWiki={() => {
+                      const t = researchState.targets.find(t => t.symbol === researchState.focusSymbol);
+                      if (t) handleSaveToWiki(t);
+                    }}
+                    wikiSaved={wikiSavedGenes.has(researchState.focusSymbol ?? '')}
+                    wikiSaving={wikiSaving === researchState.focusSymbol}
                     onBack={() => {
                       setResearchState(p => ({ ...p, focusSymbol: null }));
                       setFocusSubPage('main');
@@ -3953,6 +4059,19 @@ Return ONLY valid JSON.
                     aiSummaryLoading={aiSummaryLoading === researchState.focusSymbol}
                     onShowScoreInfo={setActiveScoreInfo}
                   />
+                  {/* Wiki save toast */}
+                  {wikiToast && (
+                    <div className={`absolute bottom-6 right-6 z-50 flex items-center gap-2 px-4 py-2.5 rounded-xl shadow-xl border text-[11px] font-bold animate-in slide-in-from-bottom-4 duration-300 ${
+                      wikiToast.ok
+                        ? 'bg-purple-600 border-purple-500 text-white'
+                        : 'bg-red-600 border-red-500 text-white'
+                    }`}>
+                      <BookOpen className="w-3.5 h-3.5" />
+                      {wikiToast.ok
+                        ? `✓ ${wikiToast.symbol} saved to Obsidian Wiki`
+                        : `✗ Failed to save ${wikiToast.symbol}`}
+                    </div>
+                  )}
                 </div>
               ) : researchState.targets.length === 0 && !['raw', 'paper', 'pubtator'].includes(viewMode) ? (<div className="h-full flex flex-col items-center justify-center p-20 text-center animate-in zoom-in duration-500"><Search className="w-16 h-16 text-blue-500 mb-8 opacity-30" /><h2 className={`text-xl font-bold mb-2 tracking-tight ${theme === 'dark' ? 'text-neutral-200' : 'text-slate-950'}`}>System Ready for Research Focus</h2><p className={`text-sm max-w-sm leading-relaxed ${theme === 'dark' ? 'text-neutral-500' : 'text-slate-700'}`}>Search for a therapeutic area or disease in the terminal to begin multi-modal target discovery.</p></div>) : (viewMode === 'raw') && !activeCancerType ? (<div className="h-full flex flex-col items-center justify-center p-12 text-center"><div className="p-5 rounded-full bg-blue-50 dark:bg-blue-900/20 mb-6"><AlertCircle className="w-12 h-12 text-blue-600" /></div><h3 className="text-xl font-bold mb-2 text-neutral-800 dark:text-neutral-200">Optimized Context Required</h3><p className="text-sm max-w-md text-neutral-600 dark:text-neutral-500 leading-relaxed">Cohort analytics are currently specifically tuned for high-resolution TCGA (e.g. BRCA, KIRC, BLCA) studies.</p></div>) : (
                 <div className={`h-full rounded-2xl border overflow-hidden shadow-xl shadow-slate-950/5 ${theme === 'dark' ? 'bg-[#0b111c]/95 border-slate-800/80' : 'bg-white/95 border-slate-200'}`}>
