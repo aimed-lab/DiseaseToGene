@@ -249,6 +249,44 @@ async function startServer() {
     res.json({ genes: files });
   });
 
+  // POST /api/wiki/save-batch — save all genes for a disease in one call
+  app.post("/api/wiki/save-batch", (req, res) => {
+    const { pages } = req.body as { pages: any[] };
+    if (!Array.isArray(pages) || pages.length === 0) {
+      return res.status(400).json({ error: 'pages array required' });
+    }
+    const saved: string[] = [];
+    const errors: string[] = [];
+
+    console.log(`[Wiki] Batch saving ${pages.length} pages to: ${VAULT_PATH}`);
+
+    for (const payload of pages) {
+      try {
+        const { diseaseName, gene, evidence } = payload;
+        const diseaseFolderName = sanitizeFolder(diseaseName);
+        const diseaseFolder = path.join(VAULT_PATH, diseaseFolderName);
+
+        if (!fs.existsSync(diseaseFolder)) {
+          fs.mkdirSync(diseaseFolder, { recursive: true });
+        }
+
+        const filePath = path.join(diseaseFolder, `${gene.symbol}.md`);
+        fs.writeFileSync(filePath, buildWikiMarkdown(payload), 'utf-8');
+
+        const indexPath = path.join(diseaseFolder, '_Index.md');
+        updateIndexFile(indexPath, gene, evidence.getScore ?? 0);
+
+        saved.push(gene.symbol);
+      } catch (err: any) {
+        errors.push(`${payload?.gene?.symbol}: ${err.message}`);
+        console.error(`[Wiki] Failed ${payload?.gene?.symbol}:`, err.message);
+      }
+    }
+
+    console.log(`[Wiki] Batch done — saved: ${saved.length}, errors: ${errors.length}`);
+    res.json({ saved, errors });
+  });
+
   // Notion Export Endpoint
   app.post("/api/export/notion", async (req, res) => {
     const { targets, disease } = req.body;

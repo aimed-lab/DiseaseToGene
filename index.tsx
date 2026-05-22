@@ -2260,71 +2260,111 @@ const App = () => {
   const [wikiSaving, setWikiSaving] = useState<string | null>(null); // symbol currently saving
   const [wikiToast, setWikiToast] = useState<{ symbol: string; ok: boolean } | null>(null);
 
+  // Build the payload for a single gene — shared by manual and auto-save
+  const buildWikiPayload = (
+    target: Target,
+    diseaseId: string,
+    diseaseName: string,
+    enrichment: typeof researchState.enrichment,
+    allTargets: Target[]
+  ) => {
+    const dd = target.drillDown;
+    const enrichedPathways = enrichment
+      .filter(e => e.genes.some(g => g.toUpperCase() === target.symbol.toUpperCase()))
+      .sort((a, b) => a.adjustedPValue - b.adjustedPValue)
+      .slice(0, 5)
+      .map(e => ({ term: e.term, source: e.source, adjP: e.adjustedPValue.toExponential(2) }));
+
+    const enrichedTerms = new Set(enrichedPathways.map(e => e.term));
+    const relatedGenes = allTargets
+      .filter(t => t.symbol !== target.symbol)
+      .filter(t => enrichment.some(
+        e => enrichedTerms.has(e.term) && e.genes.some(g => g.toUpperCase() === t.symbol.toUpperCase())
+      ))
+      .sort((a, b) => (b.getScore ?? 0) - (a.getScore ?? 0))
+      .slice(0, 6)
+      .map(t => t.symbol);
+
+    const litVelocityNum = dd?.signal_velocity
+      ? parseFloat(dd.signal_velocity.replace('%', ''))
+      : undefined;
+
+    return {
+      diseaseId,
+      diseaseName,
+      gene: { symbol: target.symbol, name: target.name, id: target.id },
+      evidence: {
+        getScore: target.getScore,
+        geneticScore: target.geneticScore,
+        expressionScore: target.combinedExpression,
+        targetScore: target.targetScore,
+        litVelocity: dd?.signal_velocity,
+        litVelocityNum,
+        litTotal: dd?.total_signals,
+        litRecent: dd?.recent_signals,
+        ctTrials: dd?.trial_count,
+        maxPhase: dd?.max_phase,
+        ctActive: dd?.active_trial_present,
+        epmcTotal: dd?.paper_count,
+        epmcRecent: dd?.recent_paper_count,
+        epmcVelocity: dd?.epmc_velocity,
+        tauTissue: target.tauTissue,
+        tauSingleCell: target.tauSingleCell,
+        bimodalityScore: target.bimodalityScores?._max_score,
+        bimodalityTissue: target.bimodalityScores?._max_tissue,
+        pathways: target.pathways?.slice(0, 5).map(p => p.label) ?? [],
+        enrichedPathways,
+      },
+      aiSummary: dd?.clinical_summary ?? '',
+      relatedGenes,
+    };
+  };
+
+  // Silent batch auto-save — fires after disease loads, no toast
+  const autoSaveAllToWiki = async (
+    targets: Target[],
+    disease: { id: string; name: string },
+    enrichment: typeof researchState.enrichment
+  ) => {
+    try {
+      const pages = targets.map(t =>
+        buildWikiPayload(t, disease.id, disease.name, enrichment, targets)
+      );
+      const res = await fetch('/api/wiki/save-batch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pages }),
+      });
+      const data = await res.json();
+      console.log(`[Wiki] Auto-saved ${data.saved?.length ?? 0} pages for "${disease.name}"`);
+      // Mark all as saved
+      setWikiSavedGenes(new Set(targets.map(t => t.symbol)));
+    } catch (err) {
+      console.warn('[Wiki] Auto-save failed:', err);
+    }
+  };
+
   const handleSaveToWiki = async (target: Target) => {
     if (!researchState.activeDisease) return;
     setWikiSaving(target.symbol);
     try {
-      const dd = target.drillDown;
-
-      // Enriched pathways for this gene
-      const enrichedPathways = researchState.enrichment
-        .filter(e => e.genes.some(g => g.toUpperCase() === target.symbol.toUpperCase()))
-        .sort((a, b) => a.adjustedPValue - b.adjustedPValue)
-        .slice(0, 5)
-        .map(e => ({ term: e.term, source: e.source, adjP: e.adjustedPValue.toExponential(2) }));
-
-      // Related genes — other top-GET targets that share enriched pathway membership
-      const enrichedTerms = new Set(enrichedPathways.map(e => e.term));
-      const relatedGenes = researchState.targets
-        .filter(t => t.symbol !== target.symbol)
-        .filter(t => researchState.enrichment.some(
-          e => enrichedTerms.has(e.term) && e.genes.some(g => g.toUpperCase() === t.symbol.toUpperCase())
-        ))
-        .sort((a, b) => (b.getScore ?? 0) - (a.getScore ?? 0))
-        .slice(0, 6)
-        .map(t => t.symbol);
-
-      const litVelocityNum = dd?.signal_velocity
-        ? parseFloat(dd.signal_velocity.replace('%', ''))
-        : undefined;
-
-      await fetch('/api/wiki/save', {
+      const payload = buildWikiPayload(
+        target,
+        researchState.activeDisease.id,
+        researchState.activeDisease.name,
+        researchState.enrichment,
+        researchState.targets
+      );
+      const res = await fetch('/api/wiki/save', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          diseaseId: researchState.activeDisease.id,
-          diseaseName: researchState.activeDisease.name,
-          gene: { symbol: target.symbol, name: target.name, id: target.id },
-          evidence: {
-            getScore: target.getScore,
-            geneticScore: target.geneticScore,
-            expressionScore: target.combinedExpression,
-            targetScore: target.targetScore,
-            litVelocity: dd?.signal_velocity,
-            litVelocityNum,
-            litTotal: dd?.total_signals,
-            litRecent: dd?.recent_signals,
-            ctTrials: dd?.trial_count,
-            maxPhase: dd?.max_phase,
-            ctActive: dd?.active_trial_present,
-            epmcTotal: dd?.paper_count,
-            epmcRecent: dd?.recent_paper_count,
-            epmcVelocity: dd?.epmc_velocity,
-            tauTissue: target.tauTissue,
-            tauSingleCell: target.tauSingleCell,
-            bimodalityScore: target.bimodalityScores?._max_score,
-            bimodalityTissue: target.bimodalityScores?._max_tissue,
-            pathways: target.pathways?.slice(0, 5).map(p => p.label) ?? [],
-            enrichedPathways,
-          },
-          aiSummary: dd?.clinical_summary ?? '',
-          relatedGenes,
-        }),
+        body: JSON.stringify(payload),
       });
-
+      if (!res.ok) throw new Error(await res.text());
       setWikiSavedGenes(prev => new Set(prev).add(target.symbol));
       setWikiToast({ symbol: target.symbol, ok: true });
-    } catch {
+    } catch (err) {
+      console.error('[Wiki] Save failed:', err);
       setWikiToast({ symbol: target.symbol, ok: false });
     } finally {
       setWikiSaving(null);
@@ -3334,24 +3374,27 @@ Return ONLY valid JSON.
             setLoadingMessage("Ranking targets by composite evidence...");
             const finalGenes = calculatePriorityScores(updatedGenes, researchState.weights);
             const enr = await api.getEnrichment(finalGenes.map(g => g.symbol));
-            
+
             // Literature initial load
             setLoadingMessage("Synthesizing publication intelligence...");
             const litData = await api.getPubTatorLiterature(opt.name);
 
-            setResearchState(prev => ({ 
-              ...prev, 
-              targets: finalGenes, 
-              enrichment: enr, 
-              activeDisease: opt, 
-              focusSymbol: null, 
-              currentPage: 0, 
-              pubtatorResults: litData.results, 
+            setResearchState(prev => ({
+              ...prev,
+              targets: finalGenes,
+              enrichment: enr,
+              activeDisease: opt,
+              focusSymbol: null,
+              currentPage: 0,
+              pubtatorResults: litData.results,
               pubtatorGenePool: litData.pool,
               pubtatorPage: 1,
-              isFetchingPubTator: false 
+              isFetchingPubTator: false
             }));
-            
+
+            // Auto-save all genes to Obsidian wiki (silent, background)
+            autoSaveAllToWiki(finalGenes, opt, enr);
+
             // Trigger RWR extension asynchronously but track it
             performRWR(finalGenes, litData.results.map(r => r.gene));
 
@@ -3412,6 +3455,9 @@ Return ONLY valid JSON.
             isFetchingPubTator: false 
           }));
           
+          // Auto-save all genes to Obsidian wiki (silent, background)
+          autoSaveAllToWiki(finalGenes, { id: args.id, name: args.name }, enr);
+
           // Trigger RWR extension
           performRWR(finalGenes, litData.results.map(r => r.gene));
 
