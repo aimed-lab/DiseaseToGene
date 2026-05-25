@@ -489,6 +489,66 @@ async function startServer() {
     }
   });
 
+  // ── Paperclip Deep Literature ─────────────────────────────────────────────
+  const PAPERCLIP_API_KEY = 'gxl_NQ88ZL_0CIcCO0LGNepamJeHqhwy_v-i1rt7MoSjzDs7Oo2BW8X-0xdA-zrvx44n';
+
+  async function callPaperclip(command: string): Promise<string> {
+    const resp = await fetch('https://paperclip.gxl.ai/mcp', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': PAPERCLIP_API_KEY },
+      body: JSON.stringify({
+        jsonrpc: '2.0', id: Date.now(), method: 'tools/call',
+        params: { name: 'paperclip', arguments: { command } }
+      })
+    });
+    const data = await resp.json() as any;
+    return data?.result?.content?.[0]?.text || '';
+  }
+
+  function parsePaperclipText(text: string): { title: string; source: string; year: string; url: string; summary: string }[] {
+    const results: { title: string; source: string; year: string; url: string; summary: string }[] = [];
+    // Split on numbered list entries "  1. Title"
+    const chunks = text.split(/\n\s{2}\d+\.\s+/).slice(1);
+    for (const chunk of chunks) {
+      const lines = chunk.split('\n').map((l: string) => l.trim()).filter(Boolean);
+      const title = lines[0] || '';
+      let source = '', year = '', url = '', summary = '';
+      for (const line of lines) {
+        if (line.includes(' · ')) {
+          const parts = line.split(' · ');
+          source = parts[1]?.trim() || '';
+          year = (parts[2]?.trim() || '').slice(0, 4);
+        } else if (line.startsWith('http')) {
+          url = line.trim();
+        } else if (line.startsWith('"') || line.startsWith('“')) {
+          summary = line.replace(/^[“""]|[”""]$/g, '').trim();
+        }
+      }
+      if (title) results.push({ title, source, year, url, summary });
+    }
+    return results;
+  }
+
+  app.post('/api/paperclip/search', async (req, res) => {
+    const { gene, disease } = req.body as { gene: string; disease: string };
+    if (!gene || !disease) return res.status(400).json({ error: 'gene and disease required' });
+    try {
+      const query = `${gene} ${disease}`;
+      console.log(`[Paperclip] Searching: "${query}"`);
+      const [papersText, trialsText] = await Promise.all([
+        callPaperclip(`search "${query}" -n 5`),
+        callPaperclip(`search -s trials "${query}" -n 3`)
+      ]);
+      const papers = parsePaperclipText(papersText);
+      const trials = parsePaperclipText(trialsText);
+      console.log(`[Paperclip] Found ${papers.length} papers, ${trials.length} trials`);
+      res.json({ papers, trials });
+    } catch (err: any) {
+      console.error('[Paperclip] Error:', err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({

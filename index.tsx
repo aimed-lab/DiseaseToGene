@@ -1712,6 +1712,34 @@ const TargetDetailView = ({
   aiSummaryLoading: boolean;
   onShowScoreInfo?: (type: 'genetic' | 'expression' | 'target' | 'overall' | 'literature' | 'get_score' | 'priority' | 'rp_score' | 'winner_score') => void;
 }) => {
+  // ── Paperclip deep-literature state (local to this component) ─────────────
+  const [paperclipData, setPaperclipData] = React.useState<{
+    papers: { title: string; source: string; year: string; url: string; summary: string }[];
+    trials: { title: string; source: string; year: string; url: string; summary: string }[];
+  } | null>(null);
+  const [paperclipLoading, setPaperclipLoading] = React.useState(false);
+  const [paperclipError, setPaperclipError] = React.useState<string | null>(null);
+
+  const handlePaperclipSearch = async () => {
+    if (paperclipLoading || paperclipData) return;
+    setPaperclipLoading(true);
+    setPaperclipError(null);
+    try {
+      const resp = await fetch('/api/paperclip/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ gene: target.symbol, disease: diseaseName })
+      });
+      if (!resp.ok) throw new Error(`Server error ${resp.status}`);
+      const data = await resp.json();
+      setPaperclipData(data);
+    } catch (e: any) {
+      setPaperclipError(e.message || 'Failed to fetch');
+    } finally {
+      setPaperclipLoading(false);
+    }
+  };
+
   if (subPage === 'literature') {
     return (
       <div className="h-full flex flex-col overflow-hidden animate-in fade-in slide-in-from-right-4 duration-500">
@@ -2216,6 +2244,131 @@ const TargetDetailView = ({
                 </div>
               </div>
             )}
+
+            {/* ── Paperclip Deep Literature ──────────────────────────────── */}
+            <div className={`mt-6 rounded-2xl border overflow-hidden ${theme === 'dark' ? 'bg-[#171717] border-neutral-800' : 'bg-white border-neutral-200 shadow-sm'}`}>
+              {/* Header */}
+              <div className={`px-6 py-4 border-b flex items-center justify-between ${theme === 'dark' ? 'border-neutral-800 bg-cyan-900/10' : 'border-neutral-100 bg-cyan-50/60'}`}>
+                <div className="flex items-center gap-2">
+                  <div className="p-1.5 rounded-lg bg-cyan-100 dark:bg-cyan-900/30">
+                    <BookOpen className="w-4 h-4 text-cyan-600" />
+                  </div>
+                  <div>
+                    <h4 className="text-[11px] font-bold uppercase text-neutral-500 tracking-wider">Paperclip Deep Literature</h4>
+                    <p className="text-[9px] text-neutral-400 mt-0.5">150M+ papers · PMC · bioRxiv · medRxiv · ClinicalTrials</p>
+                  </div>
+                </div>
+                {!paperclipData && (
+                  <button
+                    onClick={handlePaperclipSearch}
+                    disabled={paperclipLoading}
+                    className="px-4 py-1.5 rounded-xl bg-cyan-600 text-white text-[10px] font-bold uppercase tracking-widest hover:bg-cyan-700 transition-all flex items-center gap-1.5 disabled:opacity-50"
+                  >
+                    {paperclipLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Search className="w-3 h-3" />}
+                    {paperclipLoading ? 'Searching...' : 'Search'}
+                  </button>
+                )}
+                {paperclipData && (
+                  <div className="px-2 py-0.5 rounded bg-cyan-500/10 text-[9px] font-black text-cyan-600 uppercase">
+                    {paperclipData.papers.length} papers · {paperclipData.trials.length} trials
+                  </div>
+                )}
+              </div>
+
+              {/* Body */}
+              <div className="px-6 py-4">
+                {/* Not yet searched */}
+                {!paperclipData && !paperclipLoading && !paperclipError && (
+                  <p className="text-[10px] text-neutral-400 text-center py-4">
+                    Click <strong>Search</strong> to pull full-text papers and trials for <strong>{target.symbol}</strong> in {diseaseName}
+                  </p>
+                )}
+
+                {/* Loading */}
+                {paperclipLoading && (
+                  <div className="flex flex-col items-center gap-2 py-6">
+                    <Loader2 className="w-6 h-6 animate-spin text-cyan-500" />
+                    <p className="text-[10px] font-bold uppercase text-neutral-400 tracking-widest">Querying 150M papers…</p>
+                  </div>
+                )}
+
+                {/* Error */}
+                {paperclipError && (
+                  <div className="flex items-center gap-2 py-4 text-rose-500">
+                    <AlertCircle className="w-4 h-4 shrink-0" />
+                    <p className="text-[10px]">{paperclipError}</p>
+                  </div>
+                )}
+
+                {/* Results */}
+                {paperclipData && (
+                  <div className="space-y-5">
+                    {/* Papers */}
+                    {paperclipData.papers.length > 0 && (
+                      <div>
+                        <h5 className="text-[9px] font-bold uppercase text-cyan-600 tracking-widest mb-2">Research Papers</h5>
+                        <div className="space-y-2">
+                          {paperclipData.papers.map((p, i) => (
+                            <div key={i} className={`p-3 rounded-xl border ${theme === 'dark' ? 'bg-neutral-900 border-neutral-800' : 'bg-neutral-50 border-neutral-100'}`}>
+                              <div className="flex items-start gap-2">
+                                <span className="text-[9px] font-black text-cyan-500 mt-0.5 shrink-0">#{i + 1}</span>
+                                <div className="min-w-0">
+                                  {p.url ? (
+                                    <a href={p.url} target="_blank" rel="noopener noreferrer"
+                                      className="text-[11px] font-semibold text-cyan-700 dark:text-cyan-400 hover:underline line-clamp-2 leading-tight block">
+                                      {p.title}
+                                    </a>
+                                  ) : (
+                                    <p className="text-[11px] font-semibold text-neutral-800 dark:text-neutral-200 line-clamp-2 leading-tight">{p.title}</p>
+                                  )}
+                                  {p.summary && (
+                                    <p className="text-[10px] text-neutral-500 dark:text-neutral-400 line-clamp-2 mt-1 italic">{p.summary}</p>
+                                  )}
+                                  <div className="flex items-center gap-2 mt-1.5">
+                                    {p.source && <span className="px-1.5 py-0.5 rounded bg-cyan-100 dark:bg-cyan-900/30 text-[8px] font-bold text-cyan-700 dark:text-cyan-400 uppercase">{p.source}</span>}
+                                    {p.year && <span className="text-[9px] text-neutral-400">{p.year}</span>}
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Trials */}
+                    {paperclipData.trials.length > 0 && (
+                      <div>
+                        <h5 className="text-[9px] font-bold uppercase text-teal-600 tracking-widest mb-2">Clinical Trials (Paperclip)</h5>
+                        <div className="space-y-2">
+                          {paperclipData.trials.map((t, i) => (
+                            <div key={i} className={`p-3 rounded-xl border ${theme === 'dark' ? 'bg-neutral-900 border-neutral-800' : 'bg-teal-50/50 border-teal-100'}`}>
+                              <div className="flex items-start gap-2">
+                                <span className="text-[9px] font-black text-teal-500 mt-0.5 shrink-0">#{i + 1}</span>
+                                <div className="min-w-0">
+                                  <p className="text-[11px] font-semibold text-neutral-800 dark:text-neutral-200 line-clamp-2 leading-tight">{t.title}</p>
+                                  {t.summary && (
+                                    <p className="text-[10px] text-neutral-500 dark:text-neutral-400 line-clamp-2 mt-1 italic">{t.summary}</p>
+                                  )}
+                                  <div className="flex items-center gap-2 mt-1.5">
+                                    {t.source && <span className="px-1.5 py-0.5 rounded bg-teal-100 dark:bg-teal-900/30 text-[8px] font-bold text-teal-700 dark:text-teal-400 uppercase">{t.source}</span>}
+                                    {t.year && <span className="text-[9px] text-neutral-400">{t.year}</span>}
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {paperclipData.papers.length === 0 && paperclipData.trials.length === 0 && (
+                      <p className="text-[10px] text-neutral-400 text-center py-4">No results found for {target.symbol} in {diseaseName}</p>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
 
             {/* Clinical Pipeline Section */}
             <div className="pt-10 border-t border-neutral-100 dark:border-neutral-800">
