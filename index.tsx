@@ -1714,10 +1714,10 @@ const TargetDetailView = ({
 }) => {
   // ── Paperclip metrics (auto-fetch on open) ───────────────────────────────
   type PcMetrics = {
-    papers:    { total: number; recent: number; capped?: boolean };
-    preprints: { total: number; recent: number; capped?: boolean };
-    fda:       { total: number; recent: number; capped?: boolean };
-    trials:    { total: number; recent: number; capped?: boolean };
+    papers:    { total: number; recent: number };
+    preprints: { total: number; recent: number };
+    fda:       { total: number; recent: number };
+    trials:    { total: number; recent: number };
     trend:     { year: number; count: number }[];
   };
   const [pcMetrics, setPcMetrics] = React.useState<PcMetrics | null>(null);
@@ -2339,7 +2339,7 @@ const TargetDetailView = ({
                               <div className="flex items-end justify-between">
                                 <div>
                                   <div className={`text-2xl font-black leading-none ${nCls}`}>
-                                    {sec.total.toLocaleString()}{sec.capped ? '+' : ''}
+                                    {sec.total.toLocaleString()}
                                   </div>
                                   <div className="text-[7px] text-neutral-400 uppercase mt-0.5">Total</div>
                                 </div>

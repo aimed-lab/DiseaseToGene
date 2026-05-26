@@ -543,60 +543,108 @@ async function startServer() {
 
   // ── SQL helpers ────────────────────────────────────────────────────────────
 
-  // Extract year (YYYY) from a Paperclip paper date string: "2023-09-30", "2023-09", "2023" etc.
-  function extractYear(dateStr: string): number {
-    const m = dateStr?.match(/(\d{4})/);
-    return m ? parseInt(m[1], 10) : 0;
-  }
+  // ── SQL helpers ────────────────────────────────────────────────────────────
 
-  // Build trend array from parsed paper objects — count papers per year
-  function buildTrend(papers: ReturnType<typeof parsePaperclipText>): { year: number; count: number }[] {
-    const counts: Record<number, number> = {};
-    const currentYear = new Date().getFullYear();
-    for (const p of papers) {
-      const yr = extractYear(p.year);
-      if (yr >= 2010 && yr <= currentYear) counts[yr] = (counts[yr] || 0) + 1;
+  // sql is a subcommand of the paperclip MCP tool: sql "SELECT ..."
+  async function callPaperclipSQL(sql: string): Promise<string> {
+    try {
+      const resp = await fetch('https://paperclip.gxl.ai/mcp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': PAPERCLIP_API_KEY },
+        body: JSON.stringify({
+          jsonrpc: '2.0', id: Date.now(), method: 'tools/call',
+          params: { name: 'paperclip', arguments: { command: `sql "${sql}"` } }
+        })
+      });
+      const raw = await resp.text();
+      let data: any;
+      try { data = JSON.parse(raw); } catch { return ''; }
+      const text = data?.result?.content?.[0]?.text || '';
+      console.log(`[SQL] ${sql.slice(0, 80)} => ${text.slice(0, 80)}`);
+      return text;
+    } catch (e: any) {
+      console.error('[SQL error]', e.message);
+      return '';
     }
-    return Object.entries(counts)
-      .map(([y, c]) => ({ year: parseInt(y, 10), count: c }))
-      .sort((a, b) => a.year - b.year);
   }
 
-  // Counts via search tool with -n 500: "Found X papers" = true count when X < 500, else "500+"
-  // SQL ILIKE on gene symbols is unreliable — short symbols match random words; semantic search is better
+  // Response format: "total\n-----\n1\n0\n(2 rows, Xms) [...]"
+  // Sum all numeric data rows (each shard — bioRxiv, PMC — returns its own row)
+  function parseSQLCount(text: string): number {
+    if (!text || text.startsWith('ERR:')) return 0;
+    let afterSep = false, total = 0;
+    for (const line of text.split('\n')) {
+      const t = line.trim();
+      if (!t) continue;
+      if (t.startsWith('-')) { afterSep = true; continue; }
+      if (!afterSep) continue;
+      if (t.startsWith('(')) break;
+      const n = parseInt(t.split(/\s+/)[0], 10);
+      if (!isNaN(n)) total += n;
+    }
+    return total;
+  }
+
+  // Response format: "yr   | count\n-----+------\n2020 | 45\n..."
+  function parseSQLTrend(text: string): { year: number; count: number }[] {
+    if (!text || text.startsWith('ERR:')) return [];
+    const currentYear = new Date().getFullYear();
+    let afterSep = false;
+    const results: { year: number; count: number }[] = [];
+    for (const line of text.split('\n')) {
+      const t = line.trim();
+      if (!t) continue;
+      if (t.startsWith('-')) { afterSep = true; continue; }
+      if (!afterSep) continue;
+      if (t.startsWith('(')) break;
+      const parts = t.split('|').map((p: string) => p.trim());
+      if (parts.length >= 2) {
+        const year = parseInt(parts[0], 10);
+        const count = parseInt(parts[1], 10);
+        if (!isNaN(year) && !isNaN(count) && year >= 2000 && year <= currentYear)
+          results.push({ year, count });
+      }
+    }
+    return results;
+  }
+
+  // Strict SQL COUNT(*) — papers where gene AND disease appear in title or abstract
+  // More precise than semantic search (no false positives from tangential mentions)
   app.post('/api/paperclip/metrics', async (req, res) => {
     const { gene, disease } = req.body as { gene: string; disease: string };
     if (!gene || !disease) return res.status(400).json({ error: 'gene and disease required' });
-    const q = `"${gene}" "${disease}"`;
-    const LIMIT = 500;
+    // Escape single quotes for SQL; strip double-quotes (used as outer delimiter in sql "...")
+    const g = gene.replace(/"/g, '').replace(/'/g, "''");
+    const d = disease.replace(/"/g, '').replace(/'/g, "''");
+    const gf = `(title ILIKE '%${g}%' OR abstract_text ILIKE '%${g}%')`;
+    const df = `(title ILIKE '%${d}%' OR abstract_text ILIKE '%${d}%')`;
+    const base = `${gf} AND ${df}`;
     const oneYearAgo = new Date(); oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
-    const sinceFmt = `${oneYearAgo.getFullYear()}-${String(oneYearAgo.getMonth()+1).padStart(2,'0')}-${String(oneYearAgo.getDate()).padStart(2,'0')}`;
+    const since = oneYearAgo.toISOString().slice(0, 10);
     try {
-      // 4 parallel searches × 2 time windows = 8 calls total
-      const [pmcAll, pmcRec, preAll, preRec, fdaAll, fdaRec, triAll, triRec] = await Promise.all([
-        callPaperclip(`search --all -s pmc ${q} -n ${LIMIT}`),
-        callPaperclip(`search --since 1y -s pmc ${q} -n ${LIMIT}`),
-        callPaperclip(`search --all -s biorxiv ${q} -n ${LIMIT}`),
-        callPaperclip(`search --since 1y -s biorxiv ${q} -n ${LIMIT}`),
-        callPaperclip(`search --all -s fda "${disease}" -n ${LIMIT}`),
-        callPaperclip(`search --since 1y -s fda "${disease}" -n ${LIMIT}`),
-        callPaperclip(`search --all -s trials ${q} -n ${LIMIT}`),
-        callPaperclip(`search --since 1y -s trials ${q} -n ${LIMIT}`),
+      const [pmcAll, pmcRec, preAll, preRec, fdaAll, fdaRec, triAll, triRec, trendRaw] = await Promise.all([
+        callPaperclipSQL(`SELECT COUNT(*) as total FROM documents WHERE ${base} AND source='pmc'`),
+        callPaperclipSQL(`SELECT COUNT(*) as total FROM documents WHERE ${base} AND source='pmc' AND pub_date >= '${since}'`),
+        callPaperclipSQL(`SELECT COUNT(*) as total FROM documents WHERE ${base} AND source IN ('biorxiv','medrxiv','arxiv')`),
+        callPaperclipSQL(`SELECT COUNT(*) as total FROM documents WHERE ${base} AND source IN ('biorxiv','medrxiv','arxiv') AND pub_date >= '${since}'`),
+        callPaperclipSQL(`SELECT COUNT(*) as total FROM documents WHERE ${base} AND source='fda'`),
+        callPaperclipSQL(`SELECT COUNT(*) as total FROM documents WHERE ${base} AND source='fda' AND pub_date >= '${since}'`),
+        callPaperclipSQL(`SELECT COUNT(*) as total FROM documents WHERE ${base} AND source='trials'`),
+        callPaperclipSQL(`SELECT COUNT(*) as total FROM documents WHERE ${base} AND source='trials' AND pub_date >= '${since}'`),
+        // Trend: PMC only — LEFT(pub_date,4) extracts year; bioRxiv schema differs and errors on GROUP BY
+        callPaperclipSQL(`SELECT LEFT(pub_date,4) as yr, COUNT(*) as count FROM documents WHERE ${base} AND source='pmc' AND pub_date >= '2015' GROUP BY yr ORDER BY yr`),
       ]);
-      // Build trend from the all-time PMC results (has date data; parse year from each paper)
-      const pmcPapers = parsePaperclipText(pmcAll);
-      const trend = buildTrend(pmcPapers);
       const metrics = {
-        papers:    { total: parsePaperclipCount(pmcAll),  recent: parsePaperclipCount(pmcRec),  capped: parsePaperclipCount(pmcAll)  >= LIMIT },
-        preprints: { total: parsePaperclipCount(preAll),  recent: parsePaperclipCount(preRec),  capped: parsePaperclipCount(preAll)  >= LIMIT },
-        fda:       { total: parsePaperclipCount(fdaAll),  recent: parsePaperclipCount(fdaRec),  capped: parsePaperclipCount(fdaAll)  >= LIMIT },
-        trials:    { total: parsePaperclipCount(triAll),  recent: parsePaperclipCount(triRec),  capped: parsePaperclipCount(triAll)  >= LIMIT },
-        trend,
+        papers:    { total: parseSQLCount(pmcAll),  recent: parseSQLCount(pmcRec)  },
+        preprints: { total: parseSQLCount(preAll),  recent: parseSQLCount(preRec)  },
+        fda:       { total: parseSQLCount(fdaAll),  recent: parseSQLCount(fdaRec)  },
+        trials:    { total: parseSQLCount(triAll),  recent: parseSQLCount(triRec)  },
+        trend:     parseSQLTrend(trendRaw),
       };
-      console.log(`[Paperclip metrics] ${gene}+${disease}: papers=${metrics.papers.total}${metrics.papers.capped?'+':''} pre=${metrics.preprints.total} fda=${metrics.fda.total} trials=${metrics.trials.total} trend=${trend.length}pts`);
+      console.log(`[Paperclip SQL] ${gene}+${disease}: papers=${metrics.papers.total} pre=${metrics.preprints.total} fda=${metrics.fda.total} trials=${metrics.trials.total} trend=${metrics.trend.length}pts`);
       res.json(metrics);
     } catch (err: any) {
-      console.error('[Paperclip metrics]', err.message);
+      console.error('[Paperclip SQL metrics]', err.message);
       res.status(500).json({ error: err.message });
     }
   });
