@@ -543,97 +543,60 @@ async function startServer() {
 
   // ── SQL helpers ────────────────────────────────────────────────────────────
 
-  async function callPaperclipSQL(query: string): Promise<string> {
-    try {
-      const resp = await fetch('https://paperclip.gxl.ai/mcp', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-API-Key': PAPERCLIP_API_KEY },
-        body: JSON.stringify({
-          jsonrpc: '2.0', id: Date.now(), method: 'tools/call',
-          params: { name: 'sql', arguments: { query } }   // sql tool uses 'query', not 'command'
-        })
-      });
-      const raw = await resp.text();
-      let data: any;
-      try { data = JSON.parse(raw); } catch { return ''; }
-      const text = data?.result?.content?.[0]?.text || '';
-      if (text) console.log(`[SQL] ${query.slice(0, 80)}... => ${text.slice(0, 120)}`);
-      return text;
-    } catch (e: any) {
-      console.error('[SQL error]', e.message);
-      return '';
-    }
-  }
-
-  function parseSQLCount(text: string): number {
-    if (!text) return 0;
-    try {
-      const cleaned = text.trim();
-      if (cleaned.startsWith('[')) {
-        const arr = JSON.parse(cleaned);
-        if (Array.isArray(arr) && arr.length > 0) {
-          const row = arr[0];
-          const val = row.total ?? row.count ?? row['COUNT(*)'] ?? row['count(*)'] ?? Object.values(row)[0];
-          return typeof val === 'number' ? val : (parseInt(String(val), 10) || 0);
-        }
-      }
-    } catch {}
-    const m = text.match(/\b(\d+)\b/);
+  // Extract year (YYYY) from a Paperclip paper date string: "2023-09-30", "2023-09", "2023" etc.
+  function extractYear(dateStr: string): number {
+    const m = dateStr?.match(/(\d{4})/);
     return m ? parseInt(m[1], 10) : 0;
   }
 
-  function parseSQLTrend(text: string): { year: number; count: number }[] {
-    if (!text) return [];
-    try {
-      const cleaned = text.trim();
-      if (cleaned.startsWith('[')) {
-        const arr = JSON.parse(cleaned);
-        if (Array.isArray(arr)) {
-          const currentYear = new Date().getFullYear();
-          return arr.map((row: any) => ({
-            year:  parseInt(String(row.pub_year ?? row.year ?? ''), 10),
-            count: parseInt(String(row.count ?? row['count(*)'] ?? row['COUNT(*)'] ?? Object.values(row)[1] ?? '0'), 10) || 0,
-          })).filter(r => r.year >= 2000 && r.year <= currentYear);
-        }
-      }
-    } catch {}
-    return [];
+  // Build trend array from parsed paper objects — count papers per year
+  function buildTrend(papers: ReturnType<typeof parsePaperclipText>): { year: number; count: number }[] {
+    const counts: Record<number, number> = {};
+    const currentYear = new Date().getFullYear();
+    for (const p of papers) {
+      const yr = extractYear(p.year);
+      if (yr >= 2010 && yr <= currentYear) counts[yr] = (counts[yr] || 0) + 1;
+    }
+    return Object.entries(counts)
+      .map(([y, c]) => ({ year: parseInt(y, 10), count: c }))
+      .sort((a, b) => a.year - b.year);
   }
 
-  // Exact counts via SQL COUNT(*) + publication trend via GROUP BY pub_year
+  // Counts via search tool with -n 500: "Found X papers" = true count when X < 500, else "500+"
+  // SQL ILIKE on gene symbols is unreliable — short symbols match random words; semantic search is better
   app.post('/api/paperclip/metrics', async (req, res) => {
     const { gene, disease } = req.body as { gene: string; disease: string };
     if (!gene || !disease) return res.status(400).json({ error: 'gene and disease required' });
-    // Escape single quotes for SQL safety
-    const g = gene.replace(/'/g, "''");
-    const d = disease.replace(/'/g, "''");
-    const gf = `(abstract_text ILIKE '%${g}%' OR title ILIKE '%${g}%')`;
-    const df = `(abstract_text ILIKE '%${d}%' OR title ILIKE '%${d}%')`;
-    const base = `${gf} AND ${df}`;
-    const yr1 = `AND pub_date >= NOW() - INTERVAL '1 year'`;
+    const q = `"${gene}" "${disease}"`;
+    const LIMIT = 500;
+    const oneYearAgo = new Date(); oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
+    const sinceFmt = `${oneYearAgo.getFullYear()}-${String(oneYearAgo.getMonth()+1).padStart(2,'0')}-${String(oneYearAgo.getDate()).padStart(2,'0')}`;
     try {
-      const [pmcAll, pmcRec, preAll, preRec, fdaAll, fdaRec, triAll, triRec, trendRaw] = await Promise.all([
-        callPaperclipSQL(`SELECT COUNT(*) as total FROM documents WHERE ${base} AND source='pmc'`),
-        callPaperclipSQL(`SELECT COUNT(*) as total FROM documents WHERE ${base} AND source='pmc' ${yr1}`),
-        callPaperclipSQL(`SELECT COUNT(*) as total FROM documents WHERE ${base} AND source IN ('biorxiv','medrxiv','arxiv')`),
-        callPaperclipSQL(`SELECT COUNT(*) as total FROM documents WHERE ${base} AND source IN ('biorxiv','medrxiv','arxiv') ${yr1}`),
-        callPaperclipSQL(`SELECT COUNT(*) as total FROM documents WHERE ${base} AND source='fda'`),
-        callPaperclipSQL(`SELECT COUNT(*) as total FROM documents WHERE ${base} AND source='fda' ${yr1}`),
-        callPaperclipSQL(`SELECT COUNT(*) as total FROM documents WHERE ${base} AND source='trials'`),
-        callPaperclipSQL(`SELECT COUNT(*) as total FROM documents WHERE ${base} AND source='trials' ${yr1}`),
-        callPaperclipSQL(`SELECT pub_year, COUNT(*) as count FROM documents WHERE ${base} AND pub_year >= 2015 GROUP BY pub_year ORDER BY pub_year`),
+      // 4 parallel searches × 2 time windows = 8 calls total
+      const [pmcAll, pmcRec, preAll, preRec, fdaAll, fdaRec, triAll, triRec] = await Promise.all([
+        callPaperclip(`search --all -s pmc ${q} -n ${LIMIT}`),
+        callPaperclip(`search --since 1y -s pmc ${q} -n ${LIMIT}`),
+        callPaperclip(`search --all -s biorxiv ${q} -n ${LIMIT}`),
+        callPaperclip(`search --since 1y -s biorxiv ${q} -n ${LIMIT}`),
+        callPaperclip(`search --all -s fda "${disease}" -n ${LIMIT}`),
+        callPaperclip(`search --since 1y -s fda "${disease}" -n ${LIMIT}`),
+        callPaperclip(`search --all -s trials ${q} -n ${LIMIT}`),
+        callPaperclip(`search --since 1y -s trials ${q} -n ${LIMIT}`),
       ]);
+      // Build trend from the all-time PMC results (has date data; parse year from each paper)
+      const pmcPapers = parsePaperclipText(pmcAll);
+      const trend = buildTrend(pmcPapers);
       const metrics = {
-        papers:    { total: parseSQLCount(pmcAll),  recent: parseSQLCount(pmcRec)  },
-        preprints: { total: parseSQLCount(preAll),  recent: parseSQLCount(preRec)  },
-        fda:       { total: parseSQLCount(fdaAll),  recent: parseSQLCount(fdaRec)  },
-        trials:    { total: parseSQLCount(triAll),  recent: parseSQLCount(triRec)  },
-        trend:     parseSQLTrend(trendRaw),
+        papers:    { total: parsePaperclipCount(pmcAll),  recent: parsePaperclipCount(pmcRec),  capped: parsePaperclipCount(pmcAll)  >= LIMIT },
+        preprints: { total: parsePaperclipCount(preAll),  recent: parsePaperclipCount(preRec),  capped: parsePaperclipCount(preAll)  >= LIMIT },
+        fda:       { total: parsePaperclipCount(fdaAll),  recent: parsePaperclipCount(fdaRec),  capped: parsePaperclipCount(fdaAll)  >= LIMIT },
+        trials:    { total: parsePaperclipCount(triAll),  recent: parsePaperclipCount(triRec),  capped: parsePaperclipCount(triAll)  >= LIMIT },
+        trend,
       };
-      console.log(`[Paperclip SQL] ${gene}+${disease}: papers=${metrics.papers.total} preprints=${metrics.preprints.total} fda=${metrics.fda.total} trials=${metrics.trials.total} trend_pts=${metrics.trend.length}`);
+      console.log(`[Paperclip metrics] ${gene}+${disease}: papers=${metrics.papers.total}${metrics.papers.capped?'+':''} pre=${metrics.preprints.total} fda=${metrics.fda.total} trials=${metrics.trials.total} trend=${trend.length}pts`);
       res.json(metrics);
     } catch (err: any) {
-      console.error('[Paperclip SQL metrics]', err.message);
+      console.error('[Paperclip metrics]', err.message);
       res.status(500).json({ error: err.message });
     }
   });

@@ -1712,12 +1712,12 @@ const TargetDetailView = ({
   aiSummaryLoading: boolean;
   onShowScoreInfo?: (type: 'genetic' | 'expression' | 'target' | 'overall' | 'literature' | 'get_score' | 'priority' | 'rp_score' | 'winner_score') => void;
 }) => {
-  // ── Paperclip SQL metrics (auto-fetch on open) ───────────────────────────
+  // ── Paperclip metrics (auto-fetch on open) ───────────────────────────────
   type PcMetrics = {
-    papers:    { total: number; recent: number };
-    preprints: { total: number; recent: number };
-    fda:       { total: number; recent: number };
-    trials:    { total: number; recent: number };
+    papers:    { total: number; recent: number; capped?: boolean };
+    preprints: { total: number; recent: number; capped?: boolean };
+    fda:       { total: number; recent: number; capped?: boolean };
+    trials:    { total: number; recent: number; capped?: boolean };
     trend:     { year: number; count: number }[];
   };
   const [pcMetrics, setPcMetrics] = React.useState<PcMetrics | null>(null);
@@ -2338,7 +2338,9 @@ const TargetDetailView = ({
                               <div className={`text-[8px] ${sCls} opacity-60 mb-2`}>{c.sub}</div>
                               <div className="flex items-end justify-between">
                                 <div>
-                                  <div className={`text-2xl font-black leading-none ${nCls}`}>{sec.total.toLocaleString()}</div>
+                                  <div className={`text-2xl font-black leading-none ${nCls}`}>
+                                    {sec.total.toLocaleString()}{sec.capped ? '+' : ''}
+                                  </div>
                                   <div className="text-[7px] text-neutral-400 uppercase mt-0.5">Total</div>
                                 </div>
                                 <div className="text-right">
