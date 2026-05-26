@@ -493,16 +493,22 @@ async function startServer() {
   const PAPERCLIP_API_KEY = 'gxl_NQ88ZL_0CIcCO0LGNepamJeHqhwy_v-i1rt7MoSjzDs7Oo2BW8X-0xdA-zrvx44n';
 
   async function callPaperclip(command: string): Promise<string> {
-    const resp = await fetch('https://paperclip.gxl.ai/mcp', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-API-Key': PAPERCLIP_API_KEY },
-      body: JSON.stringify({
-        jsonrpc: '2.0', id: Date.now(), method: 'tools/call',
-        params: { name: 'paperclip', arguments: { command } }
-      })
-    });
-    const data = await resp.json() as any;
-    return data?.result?.content?.[0]?.text || '';
+    try {
+      const resp = await fetch('https://paperclip.gxl.ai/mcp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': PAPERCLIP_API_KEY },
+        body: JSON.stringify({
+          jsonrpc: '2.0', id: Date.now(), method: 'tools/call',
+          params: { name: 'paperclip', arguments: { command } }
+        })
+      });
+      const text = await resp.text();
+      let data: any;
+      try { data = JSON.parse(text); } catch { return ''; }
+      return data?.result?.content?.[0]?.text || '';
+    } catch {
+      return '';
+    }
   }
 
   function parsePaperclipText(text: string): { title: string; source: string; year: string; url: string; summary: string }[] {

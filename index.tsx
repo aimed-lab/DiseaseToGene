@@ -1732,7 +1732,7 @@ const TargetDetailView = ({
       body: JSON.stringify({ gene: target.symbol, disease: diseaseName }),
     })
       .then(r => r.json())
-      .then(d => { if (!cancelled) setPcMetrics(d); })
+      .then(d => { if (!cancelled && d?.papers && d?.preprints && d?.fda && d?.trials) setPcMetrics(d); })
       .catch(() => {})
       .finally(() => { if (!cancelled) setPcMetricsLoading(false); });
     return () => { cancelled = true; };
@@ -2294,11 +2294,11 @@ const TargetDetailView = ({
                       <div className="text-[8px] font-black uppercase text-cyan-600 tracking-widest mb-2">Full-Text Papers</div>
                       <div className="flex items-end justify-between">
                         <div>
-                          <div className="text-xl font-black text-cyan-700 dark:text-cyan-400">{pcMetrics.papers.total.toLocaleString()}</div>
+                          <div className="text-xl font-black text-cyan-700 dark:text-cyan-400">{(pcMetrics.papers?.total ?? 0).toLocaleString()}</div>
                           <div className="text-[8px] text-neutral-400 uppercase">Total</div>
                         </div>
                         <div className="text-right">
-                          <div className="text-base font-bold text-cyan-600 dark:text-cyan-300">{pcMetrics.papers.recent.toLocaleString()}</div>
+                          <div className="text-base font-bold text-cyan-600 dark:text-cyan-300">{(pcMetrics.papers?.recent ?? 0).toLocaleString()}</div>
                           <div className="text-[8px] text-neutral-400 uppercase">Last 12m</div>
                         </div>
                       </div>
@@ -2308,11 +2308,11 @@ const TargetDetailView = ({
                       <div className="text-[8px] font-black uppercase text-violet-600 tracking-widest mb-2">Preprints (bioRxiv)</div>
                       <div className="flex items-end justify-between">
                         <div>
-                          <div className="text-xl font-black text-violet-700 dark:text-violet-400">{pcMetrics.preprints.total.toLocaleString()}</div>
+                          <div className="text-xl font-black text-violet-700 dark:text-violet-400">{(pcMetrics.preprints?.total ?? 0).toLocaleString()}</div>
                           <div className="text-[8px] text-neutral-400 uppercase">Total</div>
                         </div>
                         <div className="text-right">
-                          <div className="text-base font-bold text-violet-600 dark:text-violet-300">{pcMetrics.preprints.recent.toLocaleString()}</div>
+                          <div className="text-base font-bold text-violet-600 dark:text-violet-300">{(pcMetrics.preprints?.recent ?? 0).toLocaleString()}</div>
                           <div className="text-[8px] text-neutral-400 uppercase">Last 12m</div>
                         </div>
                       </div>
@@ -2322,11 +2322,11 @@ const TargetDetailView = ({
                       <div className="text-[8px] font-black uppercase text-rose-600 tracking-widest mb-2">FDA Documents</div>
                       <div className="flex items-end justify-between">
                         <div>
-                          <div className="text-xl font-black text-rose-700 dark:text-rose-400">{pcMetrics.fda.total.toLocaleString()}</div>
+                          <div className="text-xl font-black text-rose-700 dark:text-rose-400">{(pcMetrics.fda?.total ?? 0).toLocaleString()}</div>
                           <div className="text-[8px] text-neutral-400 uppercase">Total</div>
                         </div>
                         <div className="text-right">
-                          <div className="text-base font-bold text-rose-600 dark:text-rose-300">{pcMetrics.fda.recent.toLocaleString()}</div>
+                          <div className="text-base font-bold text-rose-600 dark:text-rose-300">{(pcMetrics.fda?.recent ?? 0).toLocaleString()}</div>
                           <div className="text-[8px] text-neutral-400 uppercase">Last 12m</div>
                         </div>
                       </div>
@@ -2336,11 +2336,11 @@ const TargetDetailView = ({
                       <div className="text-[8px] font-black uppercase text-teal-600 tracking-widest mb-2">Trial Documents</div>
                       <div className="flex items-end justify-between">
                         <div>
-                          <div className="text-xl font-black text-teal-700 dark:text-teal-400">{pcMetrics.trials.total.toLocaleString()}</div>
+                          <div className="text-xl font-black text-teal-700 dark:text-teal-400">{(pcMetrics.trials?.total ?? 0).toLocaleString()}</div>
                           <div className="text-[8px] text-neutral-400 uppercase">Total</div>
                         </div>
                         <div className="text-right">
-                          <div className="text-base font-bold text-teal-600 dark:text-teal-300">{pcMetrics.trials.recent.toLocaleString()}</div>
+                          <div className="text-base font-bold text-teal-600 dark:text-teal-300">{(pcMetrics.trials?.recent ?? 0).toLocaleString()}</div>
                           <div className="text-[8px] text-neutral-400 uppercase">Last 12m</div>
                         </div>
                       </div>
