@@ -1712,7 +1712,33 @@ const TargetDetailView = ({
   aiSummaryLoading: boolean;
   onShowScoreInfo?: (type: 'genetic' | 'expression' | 'target' | 'overall' | 'literature' | 'get_score' | 'priority' | 'rp_score' | 'winner_score') => void;
 }) => {
-  // ── Paperclip deep-literature state (local to this component) ─────────────
+  // ── Paperclip metrics (auto-fetch on open) ───────────────────────────────
+  type PcMetrics = {
+    papers:    { total: number; recent: number };
+    preprints: { total: number; recent: number };
+    fda:       { total: number; recent: number };
+    trials:    { total: number; recent: number };
+  };
+  const [pcMetrics, setPcMetrics] = React.useState<PcMetrics | null>(null);
+  const [pcMetricsLoading, setPcMetricsLoading] = React.useState(false);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    setPcMetrics(null);
+    setPcMetricsLoading(true);
+    fetch('/api/paperclip/metrics', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ gene: target.symbol, disease: diseaseName }),
+    })
+      .then(r => r.json())
+      .then(d => { if (!cancelled) setPcMetrics(d); })
+      .catch(() => {})
+      .finally(() => { if (!cancelled) setPcMetricsLoading(false); });
+    return () => { cancelled = true; };
+  }, [target.symbol, diseaseName]);
+
+  // ── Paperclip deep-literature state (on-demand search) ───────────────────
   const [paperclipData, setPaperclipData] = React.useState<{
     papers: { title: string; source: string; year: string; url: string; summary: string }[];
     trials: { title: string; source: string; year: string; url: string; summary: string }[];
@@ -2244,6 +2270,85 @@ const TargetDetailView = ({
                 </div>
               </div>
             )}
+
+            {/* ── Paperclip Metrics Strip ────────────────────────────────── */}
+            <div className={`mt-6 rounded-2xl border overflow-hidden ${theme === 'dark' ? 'bg-[#171717] border-neutral-800' : 'bg-white border-neutral-200 shadow-sm'}`}>
+              <div className={`px-6 py-3 border-b flex items-center gap-2 ${theme === 'dark' ? 'border-neutral-800 bg-cyan-900/10' : 'border-neutral-100 bg-cyan-50/60'}`}>
+                <div className="p-1 rounded-lg bg-cyan-100 dark:bg-cyan-900/30">
+                  <BookOpen className="w-3.5 h-3.5 text-cyan-600" />
+                </div>
+                <h4 className="text-[10px] font-bold uppercase text-neutral-500 tracking-wider">Paperclip Literature Intelligence</h4>
+                <span className="text-[8px] text-neutral-400 ml-auto">150M+ papers · PMC · bioRxiv · FDA · Trials</span>
+              </div>
+              <div className="px-6 py-4">
+                {pcMetricsLoading && (
+                  <div className="flex items-center gap-2 py-2">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin text-cyan-500" />
+                    <span className="text-[10px] text-neutral-400">Querying Paperclip…</span>
+                  </div>
+                )}
+                {pcMetrics && (
+                  <div className="grid grid-cols-2 gap-3">
+                    {/* Papers */}
+                    <div className={`p-3 rounded-xl border ${theme === 'dark' ? 'bg-cyan-950/20 border-cyan-900/30' : 'bg-cyan-50 border-cyan-100'}`}>
+                      <div className="text-[8px] font-black uppercase text-cyan-600 tracking-widest mb-2">Full-Text Papers</div>
+                      <div className="flex items-end justify-between">
+                        <div>
+                          <div className="text-xl font-black text-cyan-700 dark:text-cyan-400">{pcMetrics.papers.total.toLocaleString()}</div>
+                          <div className="text-[8px] text-neutral-400 uppercase">Total</div>
+                        </div>
+                        <div className="text-right">
+                          <div className="text-base font-bold text-cyan-600 dark:text-cyan-300">{pcMetrics.papers.recent.toLocaleString()}</div>
+                          <div className="text-[8px] text-neutral-400 uppercase">Last 12m</div>
+                        </div>
+                      </div>
+                    </div>
+                    {/* Preprints */}
+                    <div className={`p-3 rounded-xl border ${theme === 'dark' ? 'bg-violet-950/20 border-violet-900/30' : 'bg-violet-50 border-violet-100'}`}>
+                      <div className="text-[8px] font-black uppercase text-violet-600 tracking-widest mb-2">Preprints (bioRxiv)</div>
+                      <div className="flex items-end justify-between">
+                        <div>
+                          <div className="text-xl font-black text-violet-700 dark:text-violet-400">{pcMetrics.preprints.total.toLocaleString()}</div>
+                          <div className="text-[8px] text-neutral-400 uppercase">Total</div>
+                        </div>
+                        <div className="text-right">
+                          <div className="text-base font-bold text-violet-600 dark:text-violet-300">{pcMetrics.preprints.recent.toLocaleString()}</div>
+                          <div className="text-[8px] text-neutral-400 uppercase">Last 12m</div>
+                        </div>
+                      </div>
+                    </div>
+                    {/* FDA */}
+                    <div className={`p-3 rounded-xl border ${theme === 'dark' ? 'bg-rose-950/20 border-rose-900/30' : 'bg-rose-50 border-rose-100'}`}>
+                      <div className="text-[8px] font-black uppercase text-rose-600 tracking-widest mb-2">FDA Documents</div>
+                      <div className="flex items-end justify-between">
+                        <div>
+                          <div className="text-xl font-black text-rose-700 dark:text-rose-400">{pcMetrics.fda.total.toLocaleString()}</div>
+                          <div className="text-[8px] text-neutral-400 uppercase">Total</div>
+                        </div>
+                        <div className="text-right">
+                          <div className="text-base font-bold text-rose-600 dark:text-rose-300">{pcMetrics.fda.recent.toLocaleString()}</div>
+                          <div className="text-[8px] text-neutral-400 uppercase">Last 12m</div>
+                        </div>
+                      </div>
+                    </div>
+                    {/* Trials */}
+                    <div className={`p-3 rounded-xl border ${theme === 'dark' ? 'bg-teal-950/20 border-teal-900/30' : 'bg-teal-50 border-teal-100'}`}>
+                      <div className="text-[8px] font-black uppercase text-teal-600 tracking-widest mb-2">Trial Documents</div>
+                      <div className="flex items-end justify-between">
+                        <div>
+                          <div className="text-xl font-black text-teal-700 dark:text-teal-400">{pcMetrics.trials.total.toLocaleString()}</div>
+                          <div className="text-[8px] text-neutral-400 uppercase">Total</div>
+                        </div>
+                        <div className="text-right">
+                          <div className="text-base font-bold text-teal-600 dark:text-teal-300">{pcMetrics.trials.recent.toLocaleString()}</div>
+                          <div className="text-[8px] text-neutral-400 uppercase">Last 12m</div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
 
             {/* ── Paperclip Deep Literature ──────────────────────────────── */}
             <div className={`mt-6 rounded-2xl border overflow-hidden ${theme === 'dark' ? 'bg-[#171717] border-neutral-800' : 'bg-white border-neutral-200 shadow-sm'}`}>
@@ -3907,6 +4012,24 @@ Return ONLY valid JSON.
 
           return `Loaded ${updatedNewGenes.length} more targets for ${researchState.activeDisease.name}.`;
         }
+        case 'search_paperclip': {
+          try {
+            const resp = await fetch('/api/paperclip/ask', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ query: args.query, source: args.source }),
+            });
+            const data = await resp.json();
+            if (!data.results?.length) return `No Paperclip results found for: "${args.query}"`;
+            const lines = data.results.map((p: any, i: number) => {
+              const src = [p.source, p.year].filter(Boolean).join(' · ');
+              return `**${i + 1}. ${p.title}**\n${src}${p.url ? ` · [link](${p.url})` : ''}\n${p.summary || ''}`;
+            });
+            return `Paperclip found ${data.total ?? data.results.length} results for **"${args.query}"**:\n\n${lines.join('\n\n')}`;
+          } catch (e: any) {
+            return `Paperclip search failed: ${e.message}`;
+          }
+        }
         default: return "Acknowledged.";
       }
     } catch (err) { return "Operation error."; } finally { setLoading(false); }
@@ -4004,16 +4127,27 @@ Return ONLY valid JSON.
         { name: 'explain_target', parameters: { type: Type.OBJECT, properties: { symbol: { type: Type.STRING } }, required: ['symbol'] } },
         { name: 'get_target_details', parameters: { type: Type.OBJECT, properties: { symbol: { type: Type.STRING } }, required: ['symbol'] } },
         { name: 'suggest_filters', parameters: { type: Type.OBJECT, properties: { query: { type: Type.STRING } }, required: ['query'] } },
-        { name: 'rank_targets', parameters: { type: Type.OBJECT, properties: { priorities: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { field: { type: Type.STRING }, weight: { type: Type.NUMBER } }, required: ['field'] } } }, required: ['priorities'] } }
+        { name: 'rank_targets', parameters: { type: Type.OBJECT, properties: { priorities: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { field: { type: Type.STRING }, weight: { type: Type.NUMBER } }, required: ['field'] } } }, required: ['priorities'] } },
+        { name: 'search_paperclip', parameters: { type: Type.OBJECT, properties: { query: { type: Type.STRING, description: 'Free-form literature query, e.g. "TREM2 microglial phagocytosis mechanism"' }, source: { type: Type.STRING, enum: ['pmc', 'biorxiv', 'medrxiv', 'arxiv', 'fda', 'trials'], description: 'Optional: restrict to a specific source' } }, required: ['query'] } }
       ];
 
-      const systemInstruction = `You are the DiseaseToTarget AI Assistant, an intelligent terminal for Target List exploration.
-      
+      const systemInstruction = `You are the DiseaseToTarget AI Assistant, an intelligent terminal for Target List exploration and literature discovery.
+
       Core Capabilities:
       - You operate on a Target List of genes associated with a disease.
       - You use MCP-style tools to filter, sort, compare, and explain targets.
       - You interpret natural-language requests into precise tool calls.
       - You manage a persistent filter state for the Target List.
+      - You can search 150M+ biomedical papers, preprints, FDA documents, and clinical trials via Paperclip using 'search_paperclip'.
+
+      Paperclip Usage:
+      - Use 'search_paperclip' whenever the user asks about mechanisms, evidence, recent findings, drug history, or wants literature on a gene/disease.
+      - Construct specific queries: gene name + disease + mechanism keyword (e.g. "TREM2 Alzheimer microglial phagocytosis").
+      - Use source='fda' for regulatory/drug approval questions.
+      - Use source='trials' for clinical trial protocol questions.
+      - Use source='biorxiv' for cutting-edge unpublished findings.
+      - After getting results, synthesize them into a clear answer — don't just list papers.
+      - Cite paper titles and sources briefly when relevant.
       
       Filter State Management:
       - Maintain active filters across the session.

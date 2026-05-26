@@ -529,6 +529,56 @@ async function startServer() {
     return results;
   }
 
+  // Parse "Found X papers" / "Found X documents" from Paperclip text
+  function parsePaperclipCount(text: string): number {
+    const m = text.match(/Found\s+([\d,]+)\s+(papers|documents)/i);
+    return m ? parseInt(m[1].replace(/,/g, ''), 10) : 0;
+  }
+
+  // Metrics: total + last-12m counts for papers, preprints, FDA, trials
+  app.post('/api/paperclip/metrics', async (req, res) => {
+    const { gene, disease } = req.body as { gene: string; disease: string };
+    if (!gene || !disease) return res.status(400).json({ error: 'gene and disease required' });
+    const q = `"${gene}" "${disease}"`;
+    try {
+      const [allP, recP, allPre, recPre, allFda, recFda, allTri, recTri] = await Promise.all([
+        callPaperclip(`search --all -n 1 ${q}`),
+        callPaperclip(`search --since 1y -n 1 ${q}`),
+        callPaperclip(`search --all -s biorxiv -n 1 ${q}`),
+        callPaperclip(`search --since 1y -s biorxiv -n 1 ${q}`),
+        callPaperclip(`search --all -s fda -n 1 ${disease}`),
+        callPaperclip(`search --since 1y -s fda -n 1 ${disease}`),
+        callPaperclip(`search --all -s trials -n 1 ${q}`),
+        callPaperclip(`search --since 1y -s trials -n 1 ${q}`),
+      ]);
+      res.json({
+        papers:    { total: parsePaperclipCount(allP),   recent: parsePaperclipCount(recP)   },
+        preprints: { total: parsePaperclipCount(allPre), recent: parsePaperclipCount(recPre) },
+        fda:       { total: parsePaperclipCount(allFda), recent: parsePaperclipCount(recFda) },
+        trials:    { total: parsePaperclipCount(allTri), recent: parsePaperclipCount(recTri) },
+      });
+    } catch (err: any) {
+      console.error('[Paperclip metrics]', err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Ask: free-form query → top results with summaries (for chat interface)
+  app.post('/api/paperclip/ask', async (req, res) => {
+    const { query, source } = req.body as { query: string; source?: string };
+    if (!query) return res.status(400).json({ error: 'query required' });
+    const srcFlag = source ? `-s ${source}` : '';
+    try {
+      const text = await callPaperclip(`search ${srcFlag} "${query}" -n 5 --sort date`);
+      const results = parsePaperclipText(text);
+      // Extract count
+      const total = parsePaperclipCount(text);
+      res.json({ results, total, raw: text });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.post('/api/paperclip/search', async (req, res) => {
     const { gene, disease } = req.body as { gene: string; disease: string };
     if (!gene || !disease) return res.status(400).json({ error: 'gene and disease required' });
