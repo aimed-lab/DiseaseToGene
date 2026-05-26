@@ -537,7 +537,8 @@ async function startServer() {
 
   // Parse "Found X papers" / "Found X documents" from Paperclip text
   function parsePaperclipCount(text: string): number {
-    const m = text.match(/Found\s+([\d,]+)\s+(papers|documents)/i);
+    // Match "Found X papers", "Found X documents", "Found X results" etc.
+    const m = text.match(/Found\s+([\d,]+)\s+\w+/i);
     return m ? parseInt(m[1].replace(/,/g, ''), 10) : 0;
   }
 
@@ -548,21 +549,23 @@ async function startServer() {
     const q = `"${gene}" "${disease}"`;
     try {
       const [allP, recP, allPre, recPre, allFda, recFda, allTri, recTri] = await Promise.all([
-        callPaperclip(`search --all -n 1 ${q}`),
-        callPaperclip(`search --since 1y -n 1 ${q}`),
-        callPaperclip(`search --all -s biorxiv -n 1 ${q}`),
-        callPaperclip(`search --since 1y -s biorxiv -n 1 ${q}`),
-        callPaperclip(`search --all -s fda -n 1 ${disease}`),
-        callPaperclip(`search --since 1y -s fda -n 1 ${disease}`),
-        callPaperclip(`search --all -s trials -n 1 ${q}`),
-        callPaperclip(`search --since 1y -s trials -n 1 ${q}`),
+        callPaperclip(`search --all ${q}`),
+        callPaperclip(`search --since 1y ${q}`),
+        callPaperclip(`search --all -s biorxiv ${q}`),
+        callPaperclip(`search --since 1y -s biorxiv ${q}`),
+        callPaperclip(`search --all -s fda "${disease}"`),
+        callPaperclip(`search --since 1y -s fda "${disease}"`),
+        callPaperclip(`search --all -s trials ${q}`),
+        callPaperclip(`search --since 1y -s trials ${q}`),
       ]);
-      res.json({
+      const metrics = {
         papers:    { total: parsePaperclipCount(allP),   recent: parsePaperclipCount(recP)   },
         preprints: { total: parsePaperclipCount(allPre), recent: parsePaperclipCount(recPre) },
         fda:       { total: parsePaperclipCount(allFda), recent: parsePaperclipCount(recFda) },
         trials:    { total: parsePaperclipCount(allTri), recent: parsePaperclipCount(recTri) },
-      });
+      };
+      console.log(`[Paperclip metrics] ${gene}+${disease}:`, JSON.stringify(metrics));
+      res.json(metrics);
     } catch (err: any) {
       console.error('[Paperclip metrics]', err.message);
       res.status(500).json({ error: err.message });
@@ -574,8 +577,10 @@ async function startServer() {
     const { query, source } = req.body as { query: string; source?: string };
     if (!query) return res.status(400).json({ error: 'query required' });
     const srcFlag = source ? `-s ${source}` : '';
+    // Strip any quotes the AI may have added inside the query string to avoid double-quoting
+    const cleanQuery = query.replace(/["""]/g, '').replace(/'/g, '').trim();
     try {
-      const text = await callPaperclip(`search ${srcFlag} "${query}" -n 5 --sort date`);
+      const text = await callPaperclip(`search ${srcFlag} "${cleanQuery}" -n 5 --sort date`);
       const results = parsePaperclipText(text);
       // Extract count
       const total = parsePaperclipCount(text);
