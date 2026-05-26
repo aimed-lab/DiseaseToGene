@@ -3426,13 +3426,13 @@ Return ONLY valid JSON.
           if (rp === undefined && winnerNorm === 0) return t;
 
           const final = (get * 0.50) + ((rp || 0) * 0.25) + (winnerNorm * 0.25);
-          return { 
-            ...t, 
-            rpScore: rp, 
+          return {
+            ...t,
+            rpScore: rp,
             winnerScore: winnerNorm,
             winnerRawScore: winnerRaw,
             finalScore: final,
-            overallScore: final 
+            // overallScore kept as original OT score — prevents list re-sort when RWR completes
           };
         });
 
