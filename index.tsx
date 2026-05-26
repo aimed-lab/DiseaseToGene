@@ -3526,30 +3526,38 @@ Return ONLY valid JSON.
             
             setLoadingMessage("Ranking targets by composite evidence...");
             const finalGenes = calculatePriorityScores(updatedGenes, researchState.weights);
-            const enr = await api.getEnrichment(finalGenes.map(g => g.symbol));
 
-            // Literature initial load
-            setLoadingMessage("Synthesizing publication intelligence...");
-            const litData = await api.getPubTatorLiterature(opt.name);
-
+            // ── Show genes immediately — don't block on enrichment or literature ──
             setResearchState(prev => ({
               ...prev,
               targets: finalGenes,
-              enrichment: enr,
               activeDisease: opt,
               focusSymbol: null,
               currentPage: 0,
-              pubtatorResults: litData.results,
-              pubtatorGenePool: litData.pool,
+            }));
+
+            // Load enrichment + literature in parallel, update state when ready
+            const [enr, litData] = await Promise.allSettled([
+              api.getEnrichment(finalGenes.map(g => g.symbol)),
+              api.getPubTatorLiterature(opt.name),
+            ]);
+            const resolvedEnr = enr.status === 'fulfilled' ? enr.value : [];
+            const resolvedLit = litData.status === 'fulfilled' ? litData.value : { results: [], pool: [] };
+
+            setResearchState(prev => ({
+              ...prev,
+              enrichment: resolvedEnr,
+              pubtatorResults: resolvedLit.results,
+              pubtatorGenePool: resolvedLit.pool,
               pubtatorPage: 1,
-              isFetchingPubTator: false
+              isFetchingPubTator: false,
             }));
 
             // Auto-save all genes to Obsidian wiki (silent, background)
-            autoSaveAllToWiki(finalGenes, opt, enr);
+            autoSaveAllToWiki(finalGenes, opt, resolvedEnr);
 
             // Trigger RWR extension asynchronously but track it
-            performRWR(finalGenes, litData.results.map(r => r.gene));
+            performRWR(finalGenes, resolvedLit.results.map((r: any) => r.gene));
 
             return `Project set to ${opt.name}. Molecular evidence mapped with composite scoring. Network analysis initiated.`;
           }
@@ -3589,30 +3597,38 @@ Return ONLY valid JSON.
           
           setLoadingMessage("Ranking targets by composite evidence...");
           const finalGenes = calculatePriorityScores(updatedGenes, researchState.weights);
-          const enr = await api.getEnrichment(finalGenes.map(g => g.symbol));
-          
-          // Literature initial load
-          setLoadingMessage("Synthesizing publication intelligence...");
-          const litData = await api.getPubTatorLiterature(args.name);
 
-          setResearchState(prev => ({ 
-            ...prev, 
-            targets: finalGenes, 
-            enrichment: enr, 
-            activeDisease: { id: args.id, name: args.name }, 
-            focusSymbol: null, 
-            currentPage: 0, 
-            pubtatorResults: litData.results, 
-            pubtatorGenePool: litData.pool,
-            pubtatorPage: 1,
-            isFetchingPubTator: false 
+          // ── Show genes immediately — don't block on enrichment or literature ──
+          setResearchState(prev => ({
+            ...prev,
+            targets: finalGenes,
+            activeDisease: { id: args.id, name: args.name },
+            focusSymbol: null,
+            currentPage: 0,
           }));
-          
+
+          // Load enrichment + literature in parallel, update state when ready
+          const [enr2, litData2] = await Promise.allSettled([
+            api.getEnrichment(finalGenes.map(g => g.symbol)),
+            api.getPubTatorLiterature(args.name),
+          ]);
+          const resolvedEnr2 = enr2.status === 'fulfilled' ? enr2.value : [];
+          const resolvedLit2 = litData2.status === 'fulfilled' ? litData2.value : { results: [], pool: [] };
+
+          setResearchState(prev => ({
+            ...prev,
+            enrichment: resolvedEnr2,
+            pubtatorResults: resolvedLit2.results,
+            pubtatorGenePool: resolvedLit2.pool,
+            pubtatorPage: 1,
+            isFetchingPubTator: false,
+          }));
+
           // Auto-save all genes to Obsidian wiki (silent, background)
-          autoSaveAllToWiki(finalGenes, { id: args.id, name: args.name }, enr);
+          autoSaveAllToWiki(finalGenes, { id: args.id, name: args.name }, resolvedEnr2);
 
           // Trigger RWR extension
-          performRWR(finalGenes, litData.results.map(r => r.gene));
+          performRWR(finalGenes, resolvedLit2.results.map((r: any) => r.gene));
 
           return `Target prioritization complete for ${args.name} with composite scoring. Network analysis initiated.`;
         }
