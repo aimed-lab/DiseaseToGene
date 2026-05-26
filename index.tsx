@@ -2613,7 +2613,8 @@ const App = () => {
     enrichment: typeof researchState.enrichment
   ) => {
     try {
-      const pages = targets.map(t =>
+      // Limit to top 5 for now (increase before production push)
+      const pages = targets.slice(0, 5).map(t =>
         buildWikiPayload(t, disease.id, disease.name, enrichment, targets)
       );
       const res = await fetch('/api/wiki/save-batch', {

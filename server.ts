@@ -550,14 +550,17 @@ async function startServer() {
         headers: { 'Content-Type': 'application/json', 'X-API-Key': PAPERCLIP_API_KEY },
         body: JSON.stringify({
           jsonrpc: '2.0', id: Date.now(), method: 'tools/call',
-          params: { name: 'sql', arguments: { command: query } }
+          params: { name: 'sql', arguments: { query } }   // sql tool uses 'query', not 'command'
         })
       });
       const raw = await resp.text();
       let data: any;
       try { data = JSON.parse(raw); } catch { return ''; }
-      return data?.result?.content?.[0]?.text || '';
-    } catch {
+      const text = data?.result?.content?.[0]?.text || '';
+      if (text) console.log(`[SQL] ${query.slice(0, 80)}... => ${text.slice(0, 120)}`);
+      return text;
+    } catch (e: any) {
+      console.error('[SQL error]', e.message);
       return '';
     }
   }
