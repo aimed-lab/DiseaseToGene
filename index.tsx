@@ -2540,7 +2540,7 @@ const App = () => {
   const [theme, setTheme] = useState<Theme>('light');
   const [isAuthenticated, setIsAuthenticated] = useState(!!localStorage.getItem('pharm_user'));
   const [viewMode, setViewMode] = useState<ViewMode>('list');
-  const OT_PAGE_SIZE = 50; // Open Targets max safe page size (API hard-caps at 50)
+  const OT_PAGE_SIZE = 5; // TODO: restore to 50 before production push
 
   const [wikiSavedGenes, setWikiSavedGenes] = useState<Set<string>>(new Set());
   const [wikiSaving, setWikiSaving] = useState<string | null>(null); // symbol currently saving
@@ -2613,8 +2613,7 @@ const App = () => {
     enrichment: typeof researchState.enrichment
   ) => {
     try {
-      // Limit to top 5 for now (increase before production push)
-      const pages = targets.slice(0, 5).map(t =>
+      const pages = targets.map(t =>
         buildWikiPayload(t, disease.id, disease.name, enrichment, targets)
       );
       const res = await fetch('/api/wiki/save-batch', {
