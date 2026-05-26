@@ -537,37 +537,100 @@ async function startServer() {
 
   // Parse "Found X papers" / "Found X documents" from Paperclip text
   function parsePaperclipCount(text: string): number {
-    // Match "Found X papers", "Found X documents", "Found X results" etc.
     const m = text.match(/Found\s+([\d,]+)\s+\w+/i);
     return m ? parseInt(m[1].replace(/,/g, ''), 10) : 0;
   }
 
-  // Metrics: total + last-12m counts for papers, preprints, FDA, trials
+  // ── SQL helpers ────────────────────────────────────────────────────────────
+
+  async function callPaperclipSQL(query: string): Promise<string> {
+    try {
+      const resp = await fetch('https://paperclip.gxl.ai/mcp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': PAPERCLIP_API_KEY },
+        body: JSON.stringify({
+          jsonrpc: '2.0', id: Date.now(), method: 'tools/call',
+          params: { name: 'sql', arguments: { command: query } }
+        })
+      });
+      const raw = await resp.text();
+      let data: any;
+      try { data = JSON.parse(raw); } catch { return ''; }
+      return data?.result?.content?.[0]?.text || '';
+    } catch {
+      return '';
+    }
+  }
+
+  function parseSQLCount(text: string): number {
+    if (!text) return 0;
+    try {
+      const cleaned = text.trim();
+      if (cleaned.startsWith('[')) {
+        const arr = JSON.parse(cleaned);
+        if (Array.isArray(arr) && arr.length > 0) {
+          const row = arr[0];
+          const val = row.total ?? row.count ?? row['COUNT(*)'] ?? row['count(*)'] ?? Object.values(row)[0];
+          return typeof val === 'number' ? val : (parseInt(String(val), 10) || 0);
+        }
+      }
+    } catch {}
+    const m = text.match(/\b(\d+)\b/);
+    return m ? parseInt(m[1], 10) : 0;
+  }
+
+  function parseSQLTrend(text: string): { year: number; count: number }[] {
+    if (!text) return [];
+    try {
+      const cleaned = text.trim();
+      if (cleaned.startsWith('[')) {
+        const arr = JSON.parse(cleaned);
+        if (Array.isArray(arr)) {
+          const currentYear = new Date().getFullYear();
+          return arr.map((row: any) => ({
+            year:  parseInt(String(row.pub_year ?? row.year ?? ''), 10),
+            count: parseInt(String(row.count ?? row['count(*)'] ?? row['COUNT(*)'] ?? Object.values(row)[1] ?? '0'), 10) || 0,
+          })).filter(r => r.year >= 2000 && r.year <= currentYear);
+        }
+      }
+    } catch {}
+    return [];
+  }
+
+  // Exact counts via SQL COUNT(*) + publication trend via GROUP BY pub_year
   app.post('/api/paperclip/metrics', async (req, res) => {
     const { gene, disease } = req.body as { gene: string; disease: string };
     if (!gene || !disease) return res.status(400).json({ error: 'gene and disease required' });
-    const q = `"${gene}" "${disease}"`;
+    // Escape single quotes for SQL safety
+    const g = gene.replace(/'/g, "''");
+    const d = disease.replace(/'/g, "''");
+    const gf = `(abstract_text ILIKE '%${g}%' OR title ILIKE '%${g}%')`;
+    const df = `(abstract_text ILIKE '%${d}%' OR title ILIKE '%${d}%')`;
+    const base = `${gf} AND ${df}`;
+    const yr1 = `AND pub_date >= NOW() - INTERVAL '1 year'`;
     try {
-      const [allP, recP, allPre, recPre, allFda, recFda, allTri, recTri] = await Promise.all([
-        callPaperclip(`search --all ${q}`),
-        callPaperclip(`search --since 1y ${q}`),
-        callPaperclip(`search --all -s biorxiv ${q}`),
-        callPaperclip(`search --since 1y -s biorxiv ${q}`),
-        callPaperclip(`search --all -s fda "${disease}"`),
-        callPaperclip(`search --since 1y -s fda "${disease}"`),
-        callPaperclip(`search --all -s trials ${q}`),
-        callPaperclip(`search --since 1y -s trials ${q}`),
+      const [pmcAll, pmcRec, preAll, preRec, fdaAll, fdaRec, triAll, triRec, trendRaw] = await Promise.all([
+        callPaperclipSQL(`SELECT COUNT(*) as total FROM documents WHERE ${base} AND source='pmc'`),
+        callPaperclipSQL(`SELECT COUNT(*) as total FROM documents WHERE ${base} AND source='pmc' ${yr1}`),
+        callPaperclipSQL(`SELECT COUNT(*) as total FROM documents WHERE ${base} AND source IN ('biorxiv','medrxiv','arxiv')`),
+        callPaperclipSQL(`SELECT COUNT(*) as total FROM documents WHERE ${base} AND source IN ('biorxiv','medrxiv','arxiv') ${yr1}`),
+        callPaperclipSQL(`SELECT COUNT(*) as total FROM documents WHERE ${base} AND source='fda'`),
+        callPaperclipSQL(`SELECT COUNT(*) as total FROM documents WHERE ${base} AND source='fda' ${yr1}`),
+        callPaperclipSQL(`SELECT COUNT(*) as total FROM documents WHERE ${base} AND source='trials'`),
+        callPaperclipSQL(`SELECT COUNT(*) as total FROM documents WHERE ${base} AND source='trials' ${yr1}`),
+        callPaperclipSQL(`SELECT pub_year, COUNT(*) as count FROM documents WHERE ${base} AND pub_year >= 2015 GROUP BY pub_year ORDER BY pub_year`),
       ]);
       const metrics = {
-        papers:    { total: parsePaperclipCount(allP),   recent: parsePaperclipCount(recP)   },
-        preprints: { total: parsePaperclipCount(allPre), recent: parsePaperclipCount(recPre) },
-        fda:       { total: parsePaperclipCount(allFda), recent: parsePaperclipCount(recFda) },
-        trials:    { total: parsePaperclipCount(allTri), recent: parsePaperclipCount(recTri) },
+        papers:    { total: parseSQLCount(pmcAll),  recent: parseSQLCount(pmcRec)  },
+        preprints: { total: parseSQLCount(preAll),  recent: parseSQLCount(preRec)  },
+        fda:       { total: parseSQLCount(fdaAll),  recent: parseSQLCount(fdaRec)  },
+        trials:    { total: parseSQLCount(triAll),  recent: parseSQLCount(triRec)  },
+        trend:     parseSQLTrend(trendRaw),
       };
-      console.log(`[Paperclip metrics] ${gene}+${disease}:`, JSON.stringify(metrics));
+      console.log(`[Paperclip SQL] ${gene}+${disease}: papers=${metrics.papers.total} preprints=${metrics.preprints.total} fda=${metrics.fda.total} trials=${metrics.trials.total} trend_pts=${metrics.trend.length}`);
       res.json(metrics);
     } catch (err: any) {
-      console.error('[Paperclip metrics]', err.message);
+      console.error('[Paperclip SQL metrics]', err.message);
       res.status(500).json({ error: err.message });
     }
   });

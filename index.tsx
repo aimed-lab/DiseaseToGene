@@ -1712,12 +1712,13 @@ const TargetDetailView = ({
   aiSummaryLoading: boolean;
   onShowScoreInfo?: (type: 'genetic' | 'expression' | 'target' | 'overall' | 'literature' | 'get_score' | 'priority' | 'rp_score' | 'winner_score') => void;
 }) => {
-  // ── Paperclip metrics (auto-fetch on open) ───────────────────────────────
+  // ── Paperclip SQL metrics (auto-fetch on open) ───────────────────────────
   type PcMetrics = {
     papers:    { total: number; recent: number };
     preprints: { total: number; recent: number };
     fda:       { total: number; recent: number };
     trials:    { total: number; recent: number };
+    trend:     { year: number; count: number }[];
   };
   const [pcMetrics, setPcMetrics] = React.useState<PcMetrics | null>(null);
   const [pcMetricsLoading, setPcMetricsLoading] = React.useState(false);
@@ -1732,7 +1733,7 @@ const TargetDetailView = ({
       body: JSON.stringify({ gene: target.symbol, disease: diseaseName }),
     })
       .then(r => r.json())
-      .then(d => { if (!cancelled && d?.papers && d?.preprints && d?.fda && d?.trials) setPcMetrics(d); })
+      .then(d => { if (!cancelled && typeof d?.papers?.total === 'number') setPcMetrics(d); })
       .catch(() => {})
       .finally(() => { if (!cancelled) setPcMetricsLoading(false); });
     return () => { cancelled = true; };
@@ -2282,70 +2283,97 @@ const TargetDetailView = ({
               </div>
               <div className="px-6 py-4">
                 {pcMetricsLoading && (
-                  <div className="flex items-center gap-2 py-2">
+                  <div className="flex items-center gap-2 py-3">
                     <Loader2 className="w-3.5 h-3.5 animate-spin text-cyan-500" />
-                    <span className="text-[10px] text-neutral-400">Querying Paperclip…</span>
+                    <span className="text-[10px] text-neutral-400">Running SQL counts across 150M documents…</span>
                   </div>
                 )}
-                {pcMetrics && (
-                  <div className="grid grid-cols-2 gap-3">
-                    {/* Papers */}
-                    <div className={`p-3 rounded-xl border ${theme === 'dark' ? 'bg-cyan-950/20 border-cyan-900/30' : 'bg-cyan-50 border-cyan-100'}`}>
-                      <div className="text-[8px] font-black uppercase text-cyan-600 tracking-widest mb-2">Full-Text Papers</div>
-                      <div className="flex items-end justify-between">
-                        <div>
-                          <div className="text-xl font-black text-cyan-700 dark:text-cyan-400">{(pcMetrics.papers?.total ?? 0).toLocaleString()}</div>
-                          <div className="text-[8px] text-neutral-400 uppercase">Total</div>
-                        </div>
-                        <div className="text-right">
-                          <div className="text-base font-bold text-cyan-600 dark:text-cyan-300">{(pcMetrics.papers?.recent ?? 0).toLocaleString()}</div>
-                          <div className="text-[8px] text-neutral-400 uppercase">Last 12m</div>
-                        </div>
+                {pcMetrics && (() => {
+                  // Inline sparkline SVG
+                  const Sparkline = ({ data, strokeColor }: { data: { year: number; count: number }[]; strokeColor: string }) => {
+                    if (!data || data.length < 2) return null;
+                    const counts = data.map(d => d.count);
+                    const maxVal = Math.max(...counts, 1);
+                    const W = 100, H = 28;
+                    const pts = data.map((d, i) => {
+                      const x = (i / (data.length - 1)) * W;
+                      const y = H - (d.count / maxVal) * H;
+                      return `${x.toFixed(1)},${y.toFixed(1)}`;
+                    }).join(' ');
+                    const lastX = W, lastY = H - (counts[counts.length - 1] / maxVal) * H;
+                    return (
+                      <svg viewBox={`0 0 ${W} ${H}`} className="w-full overflow-visible" style={{ height: 28 }}>
+                        <polyline points={pts} fill="none" stroke={strokeColor} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
+                        <circle cx={lastX} cy={lastY} r="2" fill={strokeColor} />
+                      </svg>
+                    );
+                  };
+                  const cards = [
+                    { key: 'papers'    as const, label: 'Full-Text Papers',    sub: 'PMC',              bg: 'bg-cyan-950/20 border-cyan-800/40',   numCls: 'text-cyan-400',   subCls: 'text-cyan-600',   stroke: '#22d3ee' },
+                    { key: 'preprints' as const, label: 'Preprints',           sub: 'bioRxiv / medRxiv', bg: 'bg-violet-950/20 border-violet-800/40', numCls: 'text-violet-400', subCls: 'text-violet-600', stroke: '#a78bfa' },
+                    { key: 'trials'    as const, label: 'Clinical Trials',     sub: 'ClinicalTrials.gov', bg: 'bg-teal-950/20 border-teal-800/40',   numCls: 'text-teal-400',   subCls: 'text-teal-600',   stroke: '#2dd4bf' },
+                    { key: 'fda'       as const, label: 'FDA Documents',       sub: 'FDA',               bg: 'bg-rose-950/20 border-rose-800/40',   numCls: 'text-rose-400',   subCls: 'text-rose-600',   stroke: '#fb7185' },
+                  ];
+                  const lightCards = [
+                    { key: 'papers'    as const, bg: 'bg-cyan-50 border-cyan-200',   numCls: 'text-cyan-700',   subCls: 'text-cyan-500',   stroke: '#0891b2' },
+                    { key: 'preprints' as const, bg: 'bg-violet-50 border-violet-200', numCls: 'text-violet-700', subCls: 'text-violet-500', stroke: '#7c3aed' },
+                    { key: 'trials'    as const, bg: 'bg-teal-50 border-teal-200',   numCls: 'text-teal-700',   subCls: 'text-teal-500',   stroke: '#0f766e' },
+                    { key: 'fda'       as const, bg: 'bg-rose-50 border-rose-200',   numCls: 'text-rose-700',   subCls: 'text-rose-500',   stroke: '#e11d48' },
+                  ];
+                  return (
+                    <>
+                      {/* 4 count cards */}
+                      <div className="grid grid-cols-2 gap-3 mb-4">
+                        {cards.map((c, idx) => {
+                          const lc = lightCards[idx];
+                          const sec = pcMetrics[c.key];
+                          const cardCls = theme === 'dark'
+                            ? `rounded-xl border p-3 ${c.bg}`
+                            : `rounded-xl border p-3 ${lc.bg}`;
+                          const nCls = theme === 'dark' ? c.numCls : lc.numCls;
+                          const sCls = theme === 'dark' ? c.subCls : lc.subCls;
+                          return (
+                            <div key={c.key} className={cardCls}>
+                              <div className={`text-[7px] font-black uppercase tracking-widest mb-1 ${sCls}`}>{c.label}</div>
+                              <div className={`text-[8px] ${sCls} opacity-60 mb-2`}>{c.sub}</div>
+                              <div className="flex items-end justify-between">
+                                <div>
+                                  <div className={`text-2xl font-black leading-none ${nCls}`}>{sec.total.toLocaleString()}</div>
+                                  <div className="text-[7px] text-neutral-400 uppercase mt-0.5">Total</div>
+                                </div>
+                                <div className="text-right">
+                                  <div className={`text-base font-bold leading-none ${nCls} opacity-80`}>{sec.recent.toLocaleString()}</div>
+                                  <div className="text-[7px] text-neutral-400 uppercase mt-0.5">Last 12m</div>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
-                    </div>
-                    {/* Preprints */}
-                    <div className={`p-3 rounded-xl border ${theme === 'dark' ? 'bg-violet-950/20 border-violet-900/30' : 'bg-violet-50 border-violet-100'}`}>
-                      <div className="text-[8px] font-black uppercase text-violet-600 tracking-widest mb-2">Preprints (bioRxiv)</div>
-                      <div className="flex items-end justify-between">
-                        <div>
-                          <div className="text-xl font-black text-violet-700 dark:text-violet-400">{(pcMetrics.preprints?.total ?? 0).toLocaleString()}</div>
-                          <div className="text-[8px] text-neutral-400 uppercase">Total</div>
+                      {/* Publication trend sparkline */}
+                      {pcMetrics.trend.length >= 2 && (
+                        <div className={`rounded-xl border p-3 ${theme === 'dark' ? 'bg-neutral-900 border-neutral-800' : 'bg-neutral-50 border-neutral-200'}`}>
+                          <div className="flex items-center justify-between mb-2">
+                            <span className="text-[8px] font-black uppercase tracking-widest text-neutral-500">Publication Trend</span>
+                            <span className="text-[8px] text-neutral-400">
+                              {pcMetrics.trend[0].year} – {pcMetrics.trend[pcMetrics.trend.length - 1].year}
+                            </span>
+                          </div>
+                          <Sparkline data={pcMetrics.trend} strokeColor={theme === 'dark' ? '#22d3ee' : '#0891b2'} />
+                          <div className="flex justify-between mt-1">
+                            <span className="text-[7px] text-neutral-500">{pcMetrics.trend[0].year}</span>
+                            <span className={`text-[8px] font-bold ${theme === 'dark' ? 'text-cyan-400' : 'text-cyan-700'}`}>
+                              {pcMetrics.trend[pcMetrics.trend.length - 1].count} papers in {pcMetrics.trend[pcMetrics.trend.length - 1].year}
+                            </span>
+                            <span className="text-[7px] text-neutral-500">{pcMetrics.trend[pcMetrics.trend.length - 1].year}</span>
+                          </div>
                         </div>
-                        <div className="text-right">
-                          <div className="text-base font-bold text-violet-600 dark:text-violet-300">{(pcMetrics.preprints?.recent ?? 0).toLocaleString()}</div>
-                          <div className="text-[8px] text-neutral-400 uppercase">Last 12m</div>
-                        </div>
-                      </div>
-                    </div>
-                    {/* FDA */}
-                    <div className={`p-3 rounded-xl border ${theme === 'dark' ? 'bg-rose-950/20 border-rose-900/30' : 'bg-rose-50 border-rose-100'}`}>
-                      <div className="text-[8px] font-black uppercase text-rose-600 tracking-widest mb-2">FDA Documents</div>
-                      <div className="flex items-end justify-between">
-                        <div>
-                          <div className="text-xl font-black text-rose-700 dark:text-rose-400">{(pcMetrics.fda?.total ?? 0).toLocaleString()}</div>
-                          <div className="text-[8px] text-neutral-400 uppercase">Total</div>
-                        </div>
-                        <div className="text-right">
-                          <div className="text-base font-bold text-rose-600 dark:text-rose-300">{(pcMetrics.fda?.recent ?? 0).toLocaleString()}</div>
-                          <div className="text-[8px] text-neutral-400 uppercase">Last 12m</div>
-                        </div>
-                      </div>
-                    </div>
-                    {/* Trials */}
-                    <div className={`p-3 rounded-xl border ${theme === 'dark' ? 'bg-teal-950/20 border-teal-900/30' : 'bg-teal-50 border-teal-100'}`}>
-                      <div className="text-[8px] font-black uppercase text-teal-600 tracking-widest mb-2">Trial Documents</div>
-                      <div className="flex items-end justify-between">
-                        <div>
-                          <div className="text-xl font-black text-teal-700 dark:text-teal-400">{(pcMetrics.trials?.total ?? 0).toLocaleString()}</div>
-                          <div className="text-[8px] text-neutral-400 uppercase">Total</div>
-                        </div>
-                        <div className="text-right">
-                          <div className="text-base font-bold text-teal-600 dark:text-teal-300">{(pcMetrics.trials?.recent ?? 0).toLocaleString()}</div>
-                          <div className="text-[8px] text-neutral-400 uppercase">Last 12m</div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
+                      )}
+                    </>
+                  );
+                })()}
+                {!pcMetricsLoading && !pcMetrics && (
+                  <p className="text-[10px] text-neutral-500 py-1">No data available.</p>
                 )}
               </div>
             </div>
