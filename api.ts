@@ -1,4 +1,4 @@
-import { Target, DrugInfo, DiseaseInfo, EnrichmentResult, PubMedStats, ClinicalSample, ExpressionRow, DrillDownData, PubTatorResult } from './types';
+import { Target, DrugInfo, DiseaseInfo, EnrichmentResult, PubMedStats, ClinicalSample, ExpressionRow, DrillDownData, PubTatorResult, GeneAssessmentData } from './types';
 import { GoogleGenAI } from "@google/genai";
 
 const OPEN_TARGETS_API = 'https://api.platform.opentargets.org/api/v4/graphql';
@@ -796,6 +796,201 @@ export const api = {
       console.error("getTcgaExpressionPage failed:", e);
       return { items: [], hasMore: false };
     }
+  },
+
+  // ── Full Gene Assessment — real API calls for Assess tab ─────────────────
+  // Fetches: OT gene profile + disease association + drugs + clinical trials + literature
+  async getGeneFullProfile(
+    symbol: string,
+    diseaseId: string | null,
+    diseaseName: string,
+    existingTarget?: Partial<Target>
+  ): Promise<GeneAssessmentData> {
+    const blank: GeneAssessmentData = {
+      symbol, name: symbol, ensemblId: '', biotype: '', functionDescription: '',
+      associationScore: 0, geneticScore: 0, expressionScore: 0, targetScore: 0,
+      getScore: 0, literatureScore: 0,
+      tractability: [], modalities: { sm: false, ab: false, pr: false, oc: false, ge: false },
+      drugs: [], topTissues: [],
+      drillDown: { trial_count: 0, max_phase: 'N/A', active_trial_present: false, paper_count: 0, recent_paper_count: 0, latest_publication_date: 'N/A' },
+      pubmed: { total: 0, recent: 0, topPapers: [] },
+      pathways: [], foundInOT: false, foundInDisease: false,
+    };
+
+    try {
+      // ── Step 1: resolve gene symbol → ENSG id via OT search ────────────────
+      let ensemblId = existingTarget?.id || '';
+
+      if (!ensemblId) {
+        const searchGql = `
+          query SearchTarget($q: String!) {
+            search(queryString: $q, entityNames: ["target"], page: {index: 0, size: 5}) {
+              hits { id name }
+            }
+          }`;
+        const sRes = await fetch(OPEN_TARGETS_API, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query: searchGql, variables: { q: symbol } })
+        });
+        const sData = await sRes.json();
+        const hits: { id: string; name: string }[] = sData.data?.search?.hits || [];
+        // Exact symbol match preferred, otherwise take first hit
+        const match = hits.find(h => h.name?.toUpperCase() === symbol.toUpperCase()) || hits[0];
+        if (!match) { blank.error = `Gene "${symbol}" not found in Open Targets`; return blank; }
+        ensemblId = match.id;
+      }
+
+      // ── Step 2: OT extended target profile (tractability, expression, drugs, function) ─
+      const profileGql = `
+        query GetTargetProfile($ensemblId: String!) {
+          target(ensemblId: $ensemblId) {
+            id approvedSymbol approvedName biotype
+            functionDescriptions
+            tractability { label modality value }
+            expressions { tissue { label } rna { value } }
+            knownDrugs {
+              rows {
+                drug { id name mechanismsOfAction { rows { mechanismOfAction } } }
+                phase status
+                disease { id name }
+              }
+            }
+            pathways { pathway }
+          }
+        }`;
+
+      // ── Step 3: Disease-gene association (if diseaseId provided) ─────────────
+      const assocGql = diseaseId ? `
+        query GetAssociation($efoId: String!, $targetId: String!) {
+          disease(efoId: $efoId) {
+            associatedTargets(
+              filter: { ids: [$targetId] }
+              page: { index: 0, size: 1 }
+            ) {
+              rows {
+                score
+                datatypeScores { id score }
+                target { approvedSymbol }
+              }
+            }
+          }
+        }` : null;
+
+      // Run OT profile + association + clinical/literature in parallel
+      const [profileRes, assocRes, drillDownData, pubmedData] = await Promise.all([
+        fetch(OPEN_TARGETS_API, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query: profileGql, variables: { ensemblId } })
+        }).then(r => r.json()).catch(() => null),
+
+        (assocGql && diseaseId) ? fetch(OPEN_TARGETS_API, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query: assocGql, variables: { efoId: diseaseId, targetId: ensemblId } })
+        }).then(r => r.json()).catch(() => null) : Promise.resolve(null),
+
+        this.getDrillDownData(symbol, diseaseName).catch(() => blank.drillDown),
+        this.getPubMedStats(symbol, diseaseName).catch(() => blank.pubmed),
+      ]);
+
+      // ── Parse target profile ─────────────────────────────────────────────────
+      const t = profileRes?.data?.target;
+      if (!t) { blank.error = `Failed to load Open Targets profile for ${symbol}`; blank.ensemblId = ensemblId; return blank; }
+
+      blank.foundInOT = true;
+      blank.ensemblId = ensemblId;
+      blank.name = t.approvedName || symbol;
+      blank.biotype = t.biotype || '';
+      blank.functionDescription = (t.functionDescriptions || []).slice(0, 2).join(' ') || '';
+
+      // Expression — top 8 tissues by RNA value
+      const exprVals: { tissue: string; value: number }[] = (t.expressions || [])
+        .map((e: any) => ({ tissue: e.tissue?.label || 'Unknown', value: e.rna?.value || 0 }))
+        .filter((e: any) => e.value > 0)
+        .sort((a: any, b: any) => b.value - a.value);
+      blank.topTissues = exprVals.slice(0, 10);
+
+      // Expression score (same formula as getGenes)
+      if (exprVals.length > 0) {
+        const top1 = exprVals[0].value;
+        const top3avg = exprVals.slice(0, 3).reduce((a, b) => a + b.value, 0) / Math.min(3, exprVals.length);
+        const meanAll = exprVals.reduce((a, b) => a + b.value, 0) / exprVals.length;
+        const strength = Math.min(1, Math.log10(top3avg + 1) / 4);
+        const selectivity = meanAll > 0 ? Math.min(1, Math.log10((top1 / meanAll) + 1) / Math.log10(6)) : 0;
+        blank.expressionScore = strength * 0.7 + selectivity * 0.3;
+      }
+
+      // Tractability
+      blank.tractability = t.tractability || [];
+      const hasTrac = (mod: string, lbl: string) =>
+        blank.tractability.some(x => x.modality === mod && x.label === lbl && x.value);
+      blank.modalities = {
+        sm: blank.tractability.some(x => x.modality === 'SM' && x.value),
+        ab: blank.tractability.some(x => x.modality === 'AB' && x.value),
+        pr: blank.tractability.some(x => x.modality === 'PR' && x.value),
+        oc: blank.tractability.some(x => x.modality === 'OC' && x.value),
+        ge: blank.tractability.some(x => x.modality === 'GE' && x.value),
+      };
+      blank.targetScore = (() => {
+        if (hasTrac('SM','Approved Drug') || hasTrac('AB','Approved Drug') || hasTrac('PR','Approved Drug')) return 1.0;
+        if (hasTrac('SM','Advanced Clinical') || hasTrac('AB','Advanced Clinical')) return 0.85;
+        if (hasTrac('SM','Phase 1 Clinical') || hasTrac('AB','Phase 1 Clinical')) return 0.70;
+        if (hasTrac('SM','Structure with Ligand') || hasTrac('SM','High-Quality Ligand')) return 0.55;
+        if (hasTrac('SM','High-Quality Pocket') || hasTrac('SM','Med-Quality Pocket')) return 0.40;
+        if (hasTrac('SM','Druggable Family')) return 0.25;
+        return 0.10;
+      })();
+
+      // Known drugs (deduplicate by drug id)
+      const seenDrug = new Set<string>();
+      blank.drugs = [];
+      for (const row of (t.knownDrugs?.rows || [])) {
+        if (!seenDrug.has(row.drug.id)) {
+          seenDrug.add(row.drug.id);
+          blank.drugs.push({
+            id: row.drug.id, name: row.drug.name,
+            phase: row.phase || 0, status: row.status || '',
+            mechanism: row.drug.mechanismsOfAction?.rows?.[0]?.mechanismOfAction || 'Unknown',
+            diseases: row.disease ? [row.disease.name] : [],
+          });
+        }
+      }
+      blank.drugs.sort((a, b) => b.phase - a.phase);
+
+      blank.pathways = (t.pathways || []).map((p: any) => p.pathway).filter(Boolean).slice(0, 15);
+
+      // ── Parse disease-gene association ──────────────────────────────────────
+      const assocRow = assocRes?.data?.disease?.associatedTargets?.rows?.[0];
+      if (assocRow) {
+        blank.foundInDisease = true;
+        blank.associationScore = assocRow.score || 0;
+        const ds = assocRow.datatypeScores || [];
+        blank.geneticScore = Math.max(
+          ds.find((d: any) => d.id === 'genetic_association')?.score || 0,
+          ds.find((d: any) => d.id === 'somatic_mutation')?.score || 0,
+          ds.find((d: any) => d.id === 'genetic_literature')?.score || 0
+        );
+        blank.literatureScore = ds.find((d: any) => d.id === 'literature')?.score || 0;
+      } else if (existingTarget) {
+        // Fallback to existing target data from ranked list
+        blank.foundInDisease = true;
+        blank.associationScore = existingTarget.overallScore || 0;
+        blank.geneticScore = existingTarget.geneticScore || 0;
+        blank.literatureScore = existingTarget.literatureScore || 0;
+      }
+
+      // GET score
+      blank.getScore = blank.geneticScore * 0.50 + blank.expressionScore * 0.25 + blank.targetScore * 0.25;
+
+      // ── Attach clinical & literature data ───────────────────────────────────
+      blank.drillDown = drillDownData || blank.drillDown;
+      blank.pubmed = { total: pubmedData?.total || 0, recent: pubmedData?.recent || 0, topPapers: pubmedData?.topPapers || [] };
+
+    } catch (err: any) {
+      blank.error = err?.message || 'Unknown error';
+      console.error(`[getGeneFullProfile] ${symbol}:`, err);
+    }
+
+    return blank;
   },
 
   // ── Protein Atlas TAU scores — background enrichment after initial load ──
