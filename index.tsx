@@ -901,45 +901,47 @@ const ProfileDropdown = ({
   onSignOut: () => void;
   globalWeights: { genetic: number; expression: number; target: number };
 }) => {
-  const isDark = theme === 'dark';
-  const [open, setOpen] = React.useState(false);
-  const ref  = React.useRef<HTMLDivElement>(null);
+  const isDark  = theme === 'dark';
+  const isAdmin = currentUser.role === 'admin';
+  const initials = (currentUser.username || '?').slice(0, 2).toUpperCase();
 
-  // Close on outside click
+  // mini-menu open / which full-page is open
+  const [menuOpen, setMenuOpen] = React.useState(false);
+  const [page, setPage]         = React.useState<null | 'settings' | 'docs'>(null);
+  const menuRef = React.useRef<HTMLDivElement>(null);
+
+  // close mini-menu on outside click
   React.useEffect(() => {
-    if (!open) return;
-    const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [open]);
+    if (!menuOpen) return;
+    const h = (e: MouseEvent) => { if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false); };
+    document.addEventListener('mousedown', h);
+    return () => document.removeEventListener('mousedown', h);
+  }, [menuOpen]);
 
-  // ── Profile state ──────────────────────────────────────────────────────────
+  const openPage = (p: 'settings' | 'docs') => { setMenuOpen(false); setPage(p); };
+  const closePage = () => setPage(null);
+
+  // ── Profile state (used inside Settings page) ─────────────────────────────
   const [profile, setProfile] = React.useState<Record<string, string>>(() => {
     try { return JSON.parse(localStorage.getItem('dtt_profile') || '{}'); } catch { return {}; }
   });
   const [profileSaving, setProfileSaving] = React.useState(false);
   const [profileSaved,  setProfileSaved]  = React.useState(false);
-
   const handleProfileChange = (field: string, value: string) => {
     const updated = { ...profile, [field]: value };
     setProfile(updated);
     localStorage.setItem('dtt_profile', JSON.stringify(updated));
   };
-
   const handleSaveProfile = async () => {
     setProfileSaving(true);
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (user) await updateUserProfile(user.id, { name: profile.name || null, institution: profile.institution || null });
-      setProfileSaved(true);
-      setTimeout(() => setProfileSaved(false), 2500);
-    } catch { /* non-critical */ }
-    finally { setProfileSaving(false); }
+      setProfileSaved(true); setTimeout(() => setProfileSaved(false), 2500);
+    } catch { /* non-critical */ } finally { setProfileSaving(false); }
   };
 
-  // ── Admin: user management ─────────────────────────────────────────────────
+  // ── Admin user management state (used inside Settings page) ───────────────
   const [adminUsers,        setAdminUsers]        = React.useState<AdminUser[]>([]);
   const [adminUsersLoading, setAdminUsersLoading] = React.useState(false);
   const [adminUsersError,   setAdminUsersError]   = React.useState<string | null>(null);
@@ -959,18 +961,17 @@ const ProfileDropdown = ({
     finally { setAdminUsersLoading(false); }
   }, []);
 
-  const handleRoleToggle = async (userId: string, currentRole: 'admin' | 'user') => {
-    const newRole = currentRole === 'admin' ? 'user' : 'admin';
+  const handleRoleToggle = async (userId: string, cur: 'admin' | 'user') => {
+    const next = cur === 'admin' ? 'user' : 'admin';
     setRoleUpdating(userId);
     try {
       const { data: { session } } = await supabase.auth.getSession();
       const res = await fetch(`/api/admin/users/${userId}/role`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session?.access_token}` },
-        body: JSON.stringify({ role: newRole }),
+        method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session?.access_token}` },
+        body: JSON.stringify({ role: next }),
       });
       if (!res.ok) throw new Error((await res.json()).error);
-      setAdminUsers(prev => prev.map(u => u.id === userId ? { ...u, role: newRole as 'admin' | 'user' } : u));
+      setAdminUsers(prev => prev.map(u => u.id === userId ? { ...u, role: next as 'admin' | 'user' } : u));
     } catch (e: any) { setAdminUsersError(e.message); }
     finally { setRoleUpdating(null); }
   };
@@ -979,9 +980,7 @@ const ProfileDropdown = ({
     setDeleting(userId);
     try {
       const { data: { session } } = await supabase.auth.getSession();
-      const res = await fetch(`/api/admin/users/${userId}`, {
-        method: 'DELETE', headers: { Authorization: `Bearer ${session?.access_token}` },
-      });
+      const res = await fetch(`/api/admin/users/${userId}`, { method: 'DELETE', headers: { Authorization: `Bearer ${session?.access_token}` } });
       if (!res.ok) throw new Error((await res.json()).error);
       setAdminUsers(prev => prev.filter(u => u.id !== userId));
       setDeleteConfirm(null);
@@ -989,233 +988,244 @@ const ProfileDropdown = ({
     finally { setDeleting(null); }
   };
 
-  // ── Docs accordion ─────────────────────────────────────────────────────────
+  // ── Docs content ──────────────────────────────────────────────────────────
   const [openDocs, setOpenDocs] = React.useState<string[]>([]);
   const DOC_ITEMS = [
-    { key: 'about',   title: 'About DiseaseToTarget',
+    { key: 'about',   title: 'About DiseaseToTarget',      icon: '🔬',
       content: `DiseaseToTarget (DTT) is an AI-powered therapeutic target discovery platform. It retrieves disease-associated genes from Open Targets, scores them using a multi-factor GET formula, and ranks them by druggability evidence.` },
-    { key: 'get',     title: 'How GET Score Works',
+    { key: 'get',     title: 'How GET Score Works',         icon: '⚖️',
       content: `GET = G × ${globalWeights.genetic} + E × ${globalWeights.expression} + T × ${globalWeights.target}\n\n• **G** — Genetic score (Open Targets association evidence)\n• **E** — Expression score (tissue expression selectivity)\n• **T** — Target score (tractability + clinical trial signal)\n\nA velocity bonus (×0.15) rewards fast-rising literature genes.` },
-    { key: 'csv',     title: 'Cohort CSV Format',
-      content: `Upload a CSV with columns: gene_symbol, then one column per cohort (TPM/FPKM values). First column must be named gene_symbol.\n\nExample:\ngene_symbol,early_stage,late_stage\nAPOE,12.4,8.2\nTREM2,3.2,9.8\n\nUpload via terminal chat: type "upload cohort CSV"` },
-    { key: 'scores',  title: 'Score Reference',
-      content: `G Score (0–1): genetic association strength\nE Score (0–1): expression selectivity\nT Score (0–1): target tractability\nGET (0–1): combined priority score\nRWR (0–1): network propagation rank\nWINNER (0–1): network-based prioritization\nLiterature (0–1): publication evidence` },
-    { key: 'sources', title: 'Data Sources',
+    { key: 'csv',     title: 'Cohort CSV Format',           icon: '📋',
+      content: `Upload a CSV with columns: gene_symbol, then one column per cohort (TPM/FPKM values).\n\nExample:\ngene_symbol,early_stage,late_stage\nAPOE,12.4,8.2\nTREM2,3.2,9.8\n\nUpload via terminal chat: type "upload cohort CSV"` },
+    { key: 'scores',  title: 'Score Reference',             icon: '📊',
+      content: `G Score (0–1): genetic association strength\nE Score (0–1): expression selectivity\nT Score (0–1): target tractability\nGET (0–1): combined priority\nRWR (0–1): network propagation rank\nWINNER (0–1): network-based prioritization\nLiterature (0–1): publication evidence` },
+    { key: 'sources', title: 'Data Sources',                icon: '🗄️',
       content: `• Open Targets — Gene-disease associations, expression, tractability\n• PubTator / PubMed — Literature mining\n• STRING DB — Protein interaction networks\n• ClinicalTrials.gov — Trial signal scoring\n• Enrichr — Pathway enrichment` },
   ];
 
-  // Initials avatar
-  const initials = (currentUser.username || '?').slice(0, 2).toUpperCase();
-  const isAdmin  = currentUser.role === 'admin';
+  // ── Full-page overlay shared header ──────────────────────────────────────
+  const PageHeader = ({ title, subtitle }: { title: string; subtitle: string }) => (
+    <div className={`sticky top-0 z-10 flex items-center gap-3 px-6 py-4 border-b ${isDark ? 'bg-[#0b111c] border-slate-800' : 'bg-white border-slate-200'}`}>
+      <button onClick={closePage}
+        className={`p-1.5 rounded-lg transition-colors ${isDark ? 'hover:bg-slate-800 text-slate-400' : 'hover:bg-slate-100 text-slate-500'}`}>
+        <ChevronLeft className="w-4 h-4" />
+      </button>
+      <div>
+        <p className={`text-[10px] font-black uppercase tracking-widest ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>{subtitle}</p>
+        <p className={`text-[15px] font-bold ${isDark ? 'text-slate-100' : 'text-slate-800'}`}>{title}</p>
+      </div>
+    </div>
+  );
 
   return (
-    <div ref={ref} className="relative">
-      {/* Trigger button */}
-      <button
-        onClick={() => setOpen(o => !o)}
-        className={`flex items-center gap-2 px-2.5 py-1.5 rounded-xl border transition-all ${
-          open
-            ? isDark ? 'bg-slate-800 border-slate-700' : 'bg-slate-100 border-slate-300'
-            : isDark ? 'bg-slate-900/60 border-slate-800 hover:bg-slate-800 hover:border-slate-700' : 'bg-white border-slate-200 hover:bg-slate-50 hover:border-slate-300'
-        }`}
-      >
-        {/* Avatar circle */}
-        <div className={`w-6 h-6 rounded-lg flex items-center justify-center text-[9px] font-black ${isAdmin ? 'bg-rose-500/15 text-rose-500' : 'bg-blue-500/10 text-blue-600'}`}>
-          {initials}
-        </div>
-        {/* Name (hidden on small screens) */}
-        <span className={`hidden sm:block text-[11px] font-semibold max-w-[110px] truncate ${isDark ? 'text-slate-200' : 'text-slate-700'}`}>
-          {profile.name || currentUser.username}
-        </span>
-        {/* Role pip */}
-        <span className={`hidden sm:block text-[8px] font-black px-1.5 py-0.5 rounded-full ${isAdmin ? 'bg-rose-500/10 text-rose-500' : 'bg-blue-500/10 text-blue-600'}`}>
-          {isAdmin ? 'Admin' : 'Researcher'}
-        </span>
-        <ChevronDown className={`w-3 h-3 transition-transform ${open ? 'rotate-180' : ''} ${isDark ? 'text-slate-500' : 'text-slate-400'}`} />
-      </button>
-
-      {/* Dropdown panel */}
-      {open && (
-        <div className={`absolute right-0 top-full mt-2 w-80 rounded-2xl border shadow-2xl shadow-slate-900/20 z-[200] flex flex-col overflow-hidden ${isDark ? 'bg-[#0b111c] border-slate-800' : 'bg-white border-slate-200'}`}>
-
-          {/* ── Identity header ── */}
-          <div className={`px-4 py-3 flex items-center gap-3 border-b ${isDark ? 'border-slate-800 bg-slate-900/60' : 'border-slate-100 bg-slate-50'}`}>
-            <div className={`w-9 h-9 rounded-xl flex items-center justify-center text-[13px] font-black shrink-0 ${isAdmin ? 'bg-rose-500/15 text-rose-500' : 'bg-blue-500/10 text-blue-600'}`}>
-              {initials}
-            </div>
-            <div className="min-w-0">
-              <p className={`text-[12px] font-bold truncate ${isDark ? 'text-slate-100' : 'text-slate-800'}`}>
-                {profile.name || <span className={isDark ? 'text-slate-500' : 'text-slate-400'}>No display name</span>}
-              </p>
-              <p className={`text-[10px] truncate ${isDark ? 'text-slate-500' : 'text-slate-500'}`}>{currentUser.username}</p>
-            </div>
-            <span className={`ml-auto shrink-0 flex items-center gap-1 px-2 py-0.5 rounded-full text-[8px] font-black uppercase tracking-wider border ${
-              isAdmin ? 'bg-rose-500/10 border-rose-500/30 text-rose-500' : 'bg-blue-500/10 border-blue-500/20 text-blue-600'
-            }`}>
-              <ShieldCheck className="w-2.5 h-2.5" />
-              {isAdmin ? 'Admin' : 'Researcher'}
-            </span>
+    <>
+      {/* ── Trigger button ── */}
+      <div ref={menuRef} className="relative">
+        <button
+          onClick={() => setMenuOpen(o => !o)}
+          className={`flex items-center gap-2 px-2.5 py-1.5 rounded-xl border transition-all ${
+            menuOpen
+              ? isDark ? 'bg-slate-800 border-slate-700' : 'bg-slate-100 border-slate-300'
+              : isDark ? 'bg-slate-900/60 border-slate-800 hover:bg-slate-800' : 'bg-white border-slate-200 hover:bg-slate-50'
+          }`}
+        >
+          <div className={`w-6 h-6 rounded-lg flex items-center justify-center text-[9px] font-black shrink-0 ${isAdmin ? 'bg-rose-500/15 text-rose-500' : 'bg-blue-500/10 text-blue-600'}`}>
+            {initials}
           </div>
+          <span className={`hidden sm:block text-[11px] font-semibold max-w-[120px] truncate ${isDark ? 'text-slate-200' : 'text-slate-700'}`}>
+            {profile.name || currentUser.username}
+          </span>
+          <span className={`hidden sm:block text-[8px] font-black px-1.5 py-0.5 rounded-full ${isAdmin ? 'bg-rose-500/10 text-rose-500' : 'bg-blue-500/10 text-blue-600'}`}>
+            {isAdmin ? 'Admin' : 'Researcher'}
+          </span>
+          <ChevronDown className={`w-3 h-3 transition-transform shrink-0 ${menuOpen ? 'rotate-180' : ''} ${isDark ? 'text-slate-500' : 'text-slate-400'}`} />
+        </button>
 
-          {/* ── Scrollable body ── */}
-          <div className="overflow-y-auto max-h-[70vh]">
-
-            {/* ── My Profile ── */}
-            <div className={`px-4 py-3 border-b ${isDark ? 'border-slate-800' : 'border-slate-100'}`}>
-              <p className={`text-[9px] font-black uppercase tracking-widest mb-2.5 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>My Profile</p>
-              <div className="space-y-2">
-                {[
-                  { field: 'name',        label: 'Display Name',  ph: 'Full name'       },
-                  { field: 'institution', label: 'Institution',   ph: 'e.g. UAB SPARC'  },
-                ].map(f => (
-                  <div key={f.field}>
-                    <label className={`text-[9px] font-bold uppercase tracking-wider block mb-0.5 ${isDark ? 'text-slate-600' : 'text-slate-400'}`}>{f.label}</label>
-                    <input
-                      value={profile[f.field] || ''}
-                      onChange={e => handleProfileChange(f.field, e.target.value)}
-                      placeholder={f.ph}
-                      className={`w-full px-2.5 py-1.5 rounded-lg border text-[11px] outline-none transition-colors ${isDark ? 'bg-slate-800 border-slate-700 text-white placeholder-slate-600 focus:border-blue-500' : 'bg-slate-50 border-slate-200 text-slate-800 placeholder-slate-400 focus:border-blue-500 focus:bg-white'}`}
-                    />
-                  </div>
-                ))}
-                <button
-                  onClick={handleSaveProfile}
-                  disabled={profileSaving}
-                  className={`w-full py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider flex items-center justify-center gap-1.5 transition-all mt-1 ${
-                    profileSaved
-                      ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-600'
-                      : 'bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40'
-                  }`}
-                >
-                  {profileSaving ? <><Loader2 className="w-3 h-3 animate-spin" /> Saving…</>
-                    : profileSaved ? <><CheckCircle2 className="w-3 h-3" /> Saved</>
-                    : <><Save className="w-3 h-3" /> Save Profile</>}
-                </button>
+        {/* ── Mini menu (3 items only) ── */}
+        {menuOpen && (
+          <div className={`absolute right-0 top-full mt-1.5 w-52 rounded-xl border shadow-xl shadow-slate-900/10 z-[999] overflow-hidden ${isDark ? 'bg-[#0d1424] border-slate-800' : 'bg-white border-slate-200'}`}>
+            {/* Identity row */}
+            <div className={`px-3 py-2.5 border-b flex items-center gap-2 ${isDark ? 'border-slate-800 bg-slate-900/40' : 'border-slate-100 bg-slate-50'}`}>
+              <div className={`w-7 h-7 rounded-lg flex items-center justify-center text-[10px] font-black shrink-0 ${isAdmin ? 'bg-rose-500/15 text-rose-500' : 'bg-blue-500/10 text-blue-600'}`}>{initials}</div>
+              <div className="min-w-0">
+                <p className={`text-[11px] font-bold truncate ${isDark ? 'text-slate-200' : 'text-slate-700'}`}>{profile.name || currentUser.username}</p>
+                <p className={`text-[9px] truncate ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>{currentUser.username}</p>
               </div>
             </div>
-
-            {/* ── Admin: User Management ── */}
-            {isAdmin && (
-              <div className={`px-4 py-3 border-b ${isDark ? 'border-slate-800' : 'border-slate-100'}`}>
-                <div className="flex items-center justify-between mb-2.5">
-                  <p className={`text-[9px] font-black uppercase tracking-widest ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
-                    User Management {adminUsers.length > 0 && <span className={`ml-1 px-1 py-0.5 rounded text-[8px] ${isDark ? 'bg-slate-800 text-slate-500' : 'bg-slate-100 text-slate-500'}`}>{adminUsers.length}</span>}
-                  </p>
-                  <button
-                    onClick={fetchAdminUsers} disabled={adminUsersLoading}
-                    className={`flex items-center gap-1 px-2 py-0.5 rounded-lg text-[9px] font-black transition-all ${isDark ? 'bg-rose-600/15 text-rose-400 hover:bg-rose-600/25' : 'bg-rose-50 text-rose-600 hover:bg-rose-100'} disabled:opacity-40`}
-                  >
-                    {adminUsersLoading ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : <RotateCcw className="w-2.5 h-2.5" />}
-                    {adminUsers.length === 0 ? 'Load' : 'Refresh'}
-                  </button>
-                </div>
-
-                {adminUsersError && (
-                  <div className="flex items-center gap-1.5 text-rose-500 text-[10px] mb-2">
-                    <AlertCircle className="w-3 h-3 shrink-0" />{adminUsersError}
-                  </div>
-                )}
-                {!adminUsersLoading && adminUsers.length === 0 && !adminUsersError && (
-                  <p className={`text-[10px] text-center py-3 ${isDark ? 'text-slate-600' : 'text-slate-400'}`}>Click Load to see all users</p>
-                )}
-
-                {adminUsers.length > 0 && (
-                  <div className={`rounded-xl border overflow-hidden ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
-                    {adminUsers.map((u, idx) => (
-                      <div key={u.id} className={`px-3 py-2 ${idx > 0 ? `border-t ${isDark ? 'border-slate-800' : 'border-slate-100'}` : ''}`}>
-                        <div className="flex items-start gap-2">
-                          <div className="flex-1 min-w-0">
-                            <p className={`text-[10px] font-bold truncate ${isDark ? 'text-slate-200' : 'text-slate-800'}`}>
-                              {u.name || <span className={isDark ? 'text-slate-600' : 'text-slate-400'}>—</span>}
-                            </p>
-                            <p className={`text-[9px] truncate ${isDark ? 'text-slate-500' : 'text-slate-500'}`}>{u.email}</p>
-                            {u.institution && <p className={`text-[8px] truncate ${isDark ? 'text-slate-600' : 'text-slate-400'}`}>{u.institution}</p>}
-                            <div className="flex items-center gap-1 mt-0.5">
-                              <span className={`text-[7px] font-black px-1 py-0.5 rounded ${u.confirmed ? isDark ? 'bg-emerald-500/10 text-emerald-400' : 'bg-emerald-50 text-emerald-600' : isDark ? 'bg-amber-500/10 text-amber-400' : 'bg-amber-50 text-amber-600'}`}>
-                                {u.confirmed ? '✓' : '⏳'}
-                              </span>
-                              <span className={`text-[7px] ${isDark ? 'text-slate-700' : 'text-slate-400'}`}>{new Date(u.created_at).toLocaleDateString()}</span>
-                            </div>
-                          </div>
-                          <div className="flex flex-col items-end gap-1 shrink-0">
-                            <button
-                              onClick={() => handleRoleToggle(u.id, u.role)}
-                              disabled={roleUpdating === u.id}
-                              className={`flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[8px] font-black border transition-all disabled:opacity-40 ${
-                                u.role === 'admin'
-                                  ? isDark ? 'bg-rose-500/10 border-rose-500/30 text-rose-400 hover:bg-rose-500/20' : 'bg-rose-50 border-rose-200 text-rose-600 hover:bg-rose-100'
-                                  : isDark ? 'bg-blue-500/10 border-blue-500/20 text-blue-400 hover:bg-blue-500/20' : 'bg-blue-50 border-blue-200 text-blue-600 hover:bg-blue-100'
-                              }`}
-                            >
-                              {roleUpdating === u.id ? <Loader2 className="w-2 h-2 animate-spin" /> : <ShieldCheck className="w-2 h-2" />}
-                              {u.role === 'admin' ? 'Admin' : 'Researcher'}
-                            </button>
-                            {deleteConfirm === u.id ? (
-                              <div className="flex gap-1">
-                                <button onClick={() => handleDeleteUser(u.id)} disabled={deleting === u.id}
-                                  className="px-1.5 py-0.5 rounded text-[7px] font-black bg-rose-600 text-white hover:bg-rose-700 disabled:opacity-40">
-                                  {deleting === u.id ? '…' : 'Confirm'}
-                                </button>
-                                <button onClick={() => setDeleteConfirm(null)}
-                                  className={`px-1.5 py-0.5 rounded text-[7px] font-black ${isDark ? 'bg-slate-800 text-slate-400' : 'bg-slate-100 text-slate-500'}`}>
-                                  Cancel
-                                </button>
-                              </div>
-                            ) : (
-                              <button onClick={() => setDeleteConfirm(u.id)}
-                                className={`p-0.5 rounded transition-colors ${isDark ? 'text-slate-700 hover:text-rose-400' : 'text-slate-300 hover:text-rose-500'}`}>
-                                <Trash2 className="w-2.5 h-2.5" />
-                              </button>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* ── Documentation ── */}
-            <div className={`px-4 py-3 border-b ${isDark ? 'border-slate-800' : 'border-slate-100'}`}>
-              <p className={`text-[9px] font-black uppercase tracking-widest mb-2 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Documentation</p>
-              <div className={`rounded-xl border overflow-hidden ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
-                {DOC_ITEMS.map((sec, idx) => {
-                  const isOpen = openDocs.includes(sec.key);
-                  return (
-                    <div key={sec.key} className={idx > 0 ? `border-t ${isDark ? 'border-slate-800' : 'border-slate-100'}` : ''}>
-                      <button
-                        onClick={() => setOpenDocs(p => isOpen ? p.filter(k => k !== sec.key) : [...p, sec.key])}
-                        className={`w-full px-3 py-2 flex items-center justify-between text-left transition-colors ${isDark ? 'hover:bg-slate-800/60' : 'hover:bg-slate-50'}`}
-                      >
-                        <span className={`text-[10px] font-semibold ${isDark ? 'text-slate-300' : 'text-slate-600'}`}>{sec.title}</span>
-                        <ChevronDown className={`w-3 h-3 transition-transform shrink-0 ml-2 ${isOpen ? 'rotate-180' : ''} ${isDark ? 'text-slate-600' : 'text-slate-400'}`} />
-                      </button>
-                      {isOpen && (
-                        <div className={`px-3 pb-3 text-[10px] leading-relaxed whitespace-pre-line ${isDark ? 'text-slate-400 bg-slate-900/40' : 'text-slate-500 bg-slate-50'}`}>
-                          <Markdown>{sec.content}</Markdown>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* ── Sign out ── */}
-            <div className="px-4 py-3">
-              <button
-                onClick={() => { setOpen(false); onSignOut(); }}
-                className={`w-full flex items-center justify-center gap-2 py-2 rounded-xl text-[11px] font-black uppercase tracking-wider transition-all ${isDark ? 'bg-slate-800 text-slate-300 hover:bg-rose-600/15 hover:text-rose-400' : 'bg-slate-100 text-slate-600 hover:bg-rose-50 hover:text-rose-600'}`}
-              >
-                <LogOut className="w-3.5 h-3.5" />
+            {/* Menu items */}
+            {[
+              { label: isAdmin ? 'Settings & Users' : 'Settings', icon: Settings, page: 'settings' as const, color: isDark ? 'text-slate-300' : 'text-slate-700' },
+              { label: 'Documentation', icon: BookOpen, page: 'docs' as const, color: isDark ? 'text-slate-300' : 'text-slate-700' },
+            ].map(item => (
+              <button key={item.page} onClick={() => openPage(item.page)}
+                className={`w-full flex items-center gap-2.5 px-3 py-2.5 text-[12px] font-semibold transition-colors ${isDark ? 'hover:bg-slate-800' : 'hover:bg-slate-50'} ${item.color}`}>
+                <item.icon className="w-3.5 h-3.5 shrink-0 opacity-60" />
+                {item.label}
+                <ChevronRight className="w-3 h-3 ml-auto opacity-40" />
+              </button>
+            ))}
+            <div className={`border-t ${isDark ? 'border-slate-800' : 'border-slate-100'}`}>
+              <button onClick={() => { setMenuOpen(false); onSignOut(); }}
+                className={`w-full flex items-center gap-2.5 px-3 py-2.5 text-[12px] font-semibold transition-colors text-rose-500 ${isDark ? 'hover:bg-rose-500/10' : 'hover:bg-rose-50'}`}>
+                <LogOut className="w-3.5 h-3.5 shrink-0" />
                 Sign Out
               </button>
             </div>
           </div>
+        )}
+      </div>
+
+      {/* ── Settings full-page overlay ── */}
+      {page === 'settings' && (
+        <div className={`fixed inset-0 z-[500] flex flex-col ${isDark ? 'bg-[#080e18]' : 'bg-slate-50'}`}>
+          <PageHeader title="Settings" subtitle={isAdmin ? 'Profile · Users · Admin' : 'Profile'} />
+          <div className="flex-1 overflow-y-auto">
+            <div className="max-w-2xl mx-auto px-6 py-8 space-y-8">
+
+              {/* My Account */}
+              <section>
+                <h2 className={`text-[11px] font-black uppercase tracking-widest mb-4 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>My Account</h2>
+                <div className={`rounded-2xl border overflow-hidden ${isDark ? 'border-slate-800 bg-[#0d1424]' : 'border-slate-200 bg-white'}`}>
+                  {/* Identity */}
+                  <div className={`px-5 py-4 flex items-center gap-4 border-b ${isDark ? 'border-slate-800' : 'border-slate-100'}`}>
+                    <div className={`w-12 h-12 rounded-2xl flex items-center justify-center text-[16px] font-black ${isAdmin ? 'bg-rose-500/15 text-rose-500' : 'bg-blue-500/10 text-blue-600'}`}>{initials}</div>
+                    <div>
+                      <p className={`text-[13px] font-bold ${isDark ? 'text-slate-100' : 'text-slate-800'}`}>{profile.name || 'No display name'}</p>
+                      <p className={`text-[11px] ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>{currentUser.username}</p>
+                      <span className={`inline-flex items-center gap-1 mt-1 px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider border ${isAdmin ? 'bg-rose-500/10 border-rose-500/30 text-rose-500' : 'bg-blue-500/10 border-blue-500/20 text-blue-600'}`}>
+                        <ShieldCheck className="w-2.5 h-2.5" />{isAdmin ? 'Admin' : 'Researcher'}
+                      </span>
+                    </div>
+                  </div>
+                  {/* Edit fields */}
+                  <div className="px-5 py-4 space-y-4">
+                    {[{ field: 'name', label: 'Display Name', ph: 'Full name' }, { field: 'institution', label: 'Institution', ph: 'e.g. UAB SPARC' }].map(f => (
+                      <div key={f.field}>
+                        <label className={`text-[10px] font-bold uppercase tracking-wider block mb-1.5 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>{f.label}</label>
+                        <input value={profile[f.field] || ''} onChange={e => handleProfileChange(f.field, e.target.value)} placeholder={f.ph}
+                          className={`w-full px-3 py-2 rounded-xl border text-[13px] outline-none transition-colors ${isDark ? 'bg-slate-800 border-slate-700 text-white placeholder-slate-600 focus:border-blue-500' : 'bg-slate-50 border-slate-200 text-slate-800 placeholder-slate-400 focus:border-blue-500 focus:bg-white'}`} />
+                      </div>
+                    ))}
+                    <button onClick={handleSaveProfile} disabled={profileSaving}
+                      className={`flex items-center gap-2 px-5 py-2 rounded-xl text-[12px] font-black uppercase tracking-wider transition-all ${profileSaved ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-600' : 'bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40'}`}>
+                      {profileSaving ? <><Loader2 className="w-3.5 h-3.5 animate-spin" />Saving…</> : profileSaved ? <><CheckCircle2 className="w-3.5 h-3.5" />Saved</> : <><Save className="w-3.5 h-3.5" />Save Profile</>}
+                    </button>
+                  </div>
+                </div>
+              </section>
+
+              {/* User Management — admin only */}
+              {isAdmin && (
+                <section>
+                  <div className="flex items-center justify-between mb-4">
+                    <h2 className={`text-[11px] font-black uppercase tracking-widest ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
+                      User Management {adminUsers.length > 0 && <span className={`ml-1.5 px-1.5 py-0.5 rounded-full text-[9px] ${isDark ? 'bg-slate-800 text-slate-400' : 'bg-slate-200 text-slate-500'}`}>{adminUsers.length} users</span>}
+                    </h2>
+                    <button onClick={fetchAdminUsers} disabled={adminUsersLoading}
+                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-bold transition-all ${isDark ? 'bg-rose-600/15 text-rose-400 hover:bg-rose-600/25 border border-rose-500/20' : 'bg-rose-50 text-rose-600 hover:bg-rose-100 border border-rose-200'} disabled:opacity-40`}>
+                      {adminUsersLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RotateCcw className="w-3.5 h-3.5" />}
+                      {adminUsers.length === 0 ? 'Load Users' : 'Refresh'}
+                    </button>
+                  </div>
+
+                  {adminUsersError && (
+                    <div className={`flex items-center gap-2 p-3 rounded-xl mb-3 text-rose-500 text-[12px] ${isDark ? 'bg-rose-500/10 border border-rose-500/20' : 'bg-rose-50 border border-rose-200'}`}>
+                      <AlertCircle className="w-4 h-4 shrink-0" />{adminUsersError}
+                    </div>
+                  )}
+
+                  {!adminUsersLoading && adminUsers.length === 0 && !adminUsersError && (
+                    <div className={`rounded-2xl border px-6 py-10 text-center ${isDark ? 'border-slate-800 bg-[#0d1424]' : 'border-slate-200 bg-white'}`}>
+                      <Users className={`w-8 h-8 mx-auto mb-2 ${isDark ? 'text-slate-700' : 'text-slate-300'}`} />
+                      <p className={`text-[13px] ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Click <strong>Load Users</strong> to see all registered accounts</p>
+                    </div>
+                  )}
+
+                  {adminUsers.length > 0 && (
+                    <div className={`rounded-2xl border overflow-hidden ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
+                      {adminUsers.map((u, idx) => (
+                        <div key={u.id} className={`px-5 py-3.5 flex items-center gap-3 ${idx > 0 ? `border-t ${isDark ? 'border-slate-800' : 'border-slate-100'}` : ''} ${isDark ? 'bg-[#0d1424]' : 'bg-white'}`}>
+                          {/* Avatar */}
+                          <div className={`w-9 h-9 rounded-xl flex items-center justify-center text-[11px] font-black shrink-0 ${u.role === 'admin' ? 'bg-rose-500/15 text-rose-500' : 'bg-blue-500/10 text-blue-600'}`}>
+                            {(u.name || u.email).slice(0, 2).toUpperCase()}
+                          </div>
+                          {/* Info */}
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2">
+                              <p className={`text-[12px] font-bold truncate ${isDark ? 'text-slate-200' : 'text-slate-800'}`}>{u.name || <span className="opacity-40">No name</span>}</p>
+                              {!u.confirmed && <span className={`text-[8px] font-black px-1 py-0.5 rounded ${isDark ? 'bg-amber-500/10 text-amber-400' : 'bg-amber-50 text-amber-600'}`}>⏳ unconfirmed</span>}
+                            </div>
+                            <p className={`text-[11px] truncate ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>{u.email}</p>
+                            {u.institution && <p className={`text-[10px] truncate ${isDark ? 'text-slate-600' : 'text-slate-400'}`}>{u.institution}</p>}
+                            <p className={`text-[9px] mt-0.5 ${isDark ? 'text-slate-700' : 'text-slate-300'}`}>Joined {new Date(u.created_at).toLocaleDateString()}</p>
+                          </div>
+                          {/* Actions */}
+                          <div className="flex flex-col items-end gap-1.5 shrink-0">
+                            <button onClick={() => handleRoleToggle(u.id, u.role)} disabled={roleUpdating === u.id} title="Click to toggle role"
+                              className={`flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-black border transition-all disabled:opacity-40 ${u.role === 'admin' ? isDark ? 'bg-rose-500/10 border-rose-500/30 text-rose-400 hover:bg-rose-500/20' : 'bg-rose-50 border-rose-200 text-rose-600 hover:bg-rose-100' : isDark ? 'bg-blue-500/10 border-blue-500/20 text-blue-400 hover:bg-blue-500/20' : 'bg-blue-50 border-blue-200 text-blue-600 hover:bg-blue-100'}`}>
+                              {roleUpdating === u.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <ShieldCheck className="w-3 h-3" />}
+                              {u.role === 'admin' ? 'Admin' : 'Researcher'}
+                            </button>
+                            {deleteConfirm === u.id ? (
+                              <div className="flex gap-1.5">
+                                <button onClick={() => handleDeleteUser(u.id)} disabled={deleting === u.id}
+                                  className="px-2 py-0.5 rounded-lg text-[10px] font-black bg-rose-600 text-white hover:bg-rose-700 disabled:opacity-40">
+                                  {deleting === u.id ? <Loader2 className="w-3 h-3 animate-spin inline" /> : 'Confirm'}
+                                </button>
+                                <button onClick={() => setDeleteConfirm(null)}
+                                  className={`px-2 py-0.5 rounded-lg text-[10px] font-black ${isDark ? 'bg-slate-800 text-slate-400 hover:bg-slate-700' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}>
+                                  Cancel
+                                </button>
+                              </div>
+                            ) : (
+                              <button onClick={() => setDeleteConfirm(u.id)} title="Remove user"
+                                className={`p-1 rounded-lg transition-colors ${isDark ? 'text-slate-700 hover:text-rose-400 hover:bg-rose-500/10' : 'text-slate-300 hover:text-rose-500 hover:bg-rose-50'}`}>
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </section>
+              )}
+            </div>
+          </div>
         </div>
       )}
-    </div>
+
+      {/* ── Documentation full-page overlay ── */}
+      {page === 'docs' && (
+        <div className={`fixed inset-0 z-[500] flex flex-col ${isDark ? 'bg-[#080e18]' : 'bg-slate-50'}`}>
+          <PageHeader title="Documentation" subtitle="DiseaseToTarget" />
+          <div className="flex-1 overflow-y-auto">
+            <div className="max-w-2xl mx-auto px-6 py-8 space-y-3">
+              {DOC_ITEMS.map(sec => {
+                const isOpen = openDocs.includes(sec.key);
+                return (
+                  <div key={sec.key} className={`rounded-2xl border overflow-hidden ${isDark ? 'border-slate-800 bg-[#0d1424]' : 'border-slate-200 bg-white'}`}>
+                    <button onClick={() => setOpenDocs(p => isOpen ? p.filter(k => k !== sec.key) : [...p, sec.key])}
+                      className={`w-full px-5 py-4 flex items-center justify-between text-left transition-colors ${isDark ? 'hover:bg-slate-800/40' : 'hover:bg-slate-50'}`}>
+                      <div className="flex items-center gap-3">
+                        <span className="text-lg">{sec.icon}</span>
+                        <span className={`text-[13px] font-bold ${isDark ? 'text-slate-200' : 'text-slate-700'}`}>{sec.title}</span>
+                      </div>
+                      <ChevronDown className={`w-4 h-4 transition-transform shrink-0 ${isOpen ? 'rotate-180' : ''} ${isDark ? 'text-slate-600' : 'text-slate-400'}`} />
+                    </button>
+                    {isOpen && (
+                      <div className={`px-5 pb-5 pt-1 text-[12px] leading-relaxed border-t ${isDark ? 'border-slate-800 text-slate-400' : 'border-slate-100 text-slate-600'}`}>
+                        <Markdown>{sec.content}</Markdown>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 };
 
