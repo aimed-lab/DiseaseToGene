@@ -1763,6 +1763,115 @@ Be specific and cite the data. Do not fabricate information. Limit to ~500 words
 };
 
 // =============================================================================
+// AssessPanelContent — proper sub-component so hooks are valid
+// =============================================================================
+const AssessPanelContent = ({ isDark, targets, onAssessRun }: {
+  isDark: boolean;
+  targets: Target[];
+  onAssessRun?: (genes: string[]) => void;
+}) => {
+  const [assessChecked, setAssessChecked] = React.useState<string[]>([]);
+  const [assessCustom, setAssessCustom]   = React.useState('');
+
+  const toggleCheck = (sym: string) => {
+    setAssessChecked(prev =>
+      prev.includes(sym) ? prev.filter(s => s !== sym) : prev.length < 3 ? [...prev, sym] : prev
+    );
+  };
+
+  const runAssess = () => {
+    const extra = assessCustom.trim().toUpperCase().split(/[\s,]+/).filter(Boolean);
+    const combined = [...new Set([...assessChecked, ...extra])].slice(0, 3);
+    if (combined.length === 0) return;
+    onAssessRun?.(combined);
+  };
+
+  const top20 = targets.slice(0, 20);
+
+  return (
+    <div className="flex flex-col flex-1 overflow-hidden">
+      <div className="p-3 space-y-3 flex-shrink-0">
+        <p className={`text-[10px] leading-relaxed ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
+          Select up to 3 targets for a deep evidence assessment, or type any gene name below.
+        </p>
+
+        {/* Ranked target checkboxes */}
+        {top20.length > 0 ? (
+          <div className={`rounded-xl border overflow-hidden ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
+            <div className={`px-3 py-1.5 ${isDark ? 'bg-slate-900/40' : 'bg-slate-50'}`}>
+              <p className={`text-[9px] uppercase tracking-widest font-bold ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>From Ranked List</p>
+            </div>
+            <div className="max-h-48 overflow-y-auto">
+              {top20.map(t => {
+                const checked = assessChecked.includes(t.symbol);
+                const disabled = !checked && assessChecked.length >= 3;
+                return (
+                  <button key={t.symbol} onClick={() => !disabled && toggleCheck(t.symbol)} disabled={disabled}
+                    className={`w-full flex items-center gap-2.5 px-3 py-2 transition-colors border-b last:border-0 text-left ${
+                      isDark ? 'border-slate-800' : 'border-slate-100'
+                    } ${checked ? (isDark ? 'bg-blue-600/10' : 'bg-blue-50') : (isDark ? 'hover:bg-slate-800/60' : 'hover:bg-slate-50')} ${disabled ? 'opacity-30' : ''}`}>
+                    <div className={`w-3.5 h-3.5 rounded border flex-shrink-0 flex items-center justify-center transition-colors ${
+                      checked ? 'bg-blue-600 border-blue-600' : (isDark ? 'border-slate-600' : 'border-slate-300')
+                    }`}>
+                      {checked && <CheckCircle2 className="w-2.5 h-2.5 text-white" />}
+                    </div>
+                    <span className={`text-[11px] font-bold font-mono ${isDark ? 'text-blue-300' : 'text-blue-700'}`}>{t.symbol}</span>
+                    <span className={`text-[9px] truncate flex-1 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>{t.name}</span>
+                    <span className={`text-[9px] font-mono font-bold ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>{(t.getScore ?? 0).toFixed(2)}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ) : (
+          <div className={`text-center py-4 rounded-xl border ${isDark ? 'border-slate-800 text-slate-600' : 'border-slate-200 text-slate-400'}`}>
+            <p className="text-[10px]">Search a disease first to load targets</p>
+          </div>
+        )}
+
+        {/* Manual gene input */}
+        <div>
+          <label className={`text-[9px] font-black uppercase tracking-widest block mb-1 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
+            Add any gene (not in list)
+          </label>
+          <input value={assessCustom} onChange={e => setAssessCustom(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && runAssess()}
+            placeholder="e.g. CLU, BIN1, SORL1"
+            className={`w-full px-3 py-2 rounded-lg border text-[11px] font-mono outline-none transition-colors ${
+              isDark ? 'bg-slate-900 border-slate-700 text-white placeholder-slate-600 focus:border-blue-500'
+                     : 'bg-white border-slate-300 text-slate-900 placeholder-slate-400 focus:border-blue-500'
+            }`} />
+        </div>
+
+        {assessChecked.length > 0 && (
+          <div className="flex flex-wrap gap-1">
+            {assessChecked.map(sym => (
+              <span key={sym} className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-600/15 text-blue-500 text-[10px] font-bold">
+                {sym}
+                <button onClick={() => toggleCheck(sym)} className="hover:text-red-400">
+                  <X className="w-2.5 h-2.5" />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+
+        <button onClick={runAssess}
+          disabled={assessChecked.length === 0 && !assessCustom.trim()}
+          className={`w-full py-2.5 rounded-xl text-[11px] font-black uppercase tracking-wider flex items-center justify-center gap-2 transition-all ${
+            assessChecked.length === 0 && !assessCustom.trim()
+              ? 'opacity-30 cursor-not-allowed bg-blue-600 text-white'
+              : 'bg-blue-600 text-white hover:bg-blue-700 shadow-md shadow-blue-600/20'
+          }`}>
+          <Microscope className="w-3.5 h-3.5" />
+          Run Assessment
+        </button>
+      </div>
+    </div>
+  );
+};
+
+// =============================================================================
 // CohortFilterSidebar
 // =============================================================================
 const CohortFilterSidebar = ({ theme, targets, activeDisease, onScoreRangesChange, onRankRangesChange, visibleCols, onVisibleColsChange, visibleBioTissues, onVisibleBioTissuesChange, currentUser, globalWeights, onWeightsSave, onAssessRun, activeNav: activeNavProp, onActiveNavChange }: {
@@ -2441,105 +2550,9 @@ Be concise, scientific, and use markdown. Max 350 words.`;
         )}
 
         {/* ── ASSESS panel ──────────────────────────────────────────────── */}
-        {activeNav === 'assess' && (() => {
-          const [assessChecked, setAssessChecked] = React.useState<string[]>([]);
-          const [assessCustom, setAssessCustom]   = React.useState('');
-
-          const toggleCheck = (sym: string) => {
-            setAssessChecked(prev =>
-              prev.includes(sym) ? prev.filter(s => s !== sym) : prev.length < 3 ? [...prev, sym] : prev
-            );
-          };
-          const runAssess = () => {
-            const extra = assessCustom.trim().toUpperCase().split(/[\s,]+/).filter(Boolean);
-            const combined = [...new Set([...assessChecked, ...extra])].slice(0, 3);
-            if (combined.length === 0) return;
-            onAssessRun?.(combined);
-          };
-          const top10 = targets.slice(0, 20);
-
-          return (
-            <div className="flex flex-col flex-1 overflow-hidden">
-              <div className="p-3 space-y-3 flex-shrink-0">
-                <p className={`text-[10px] leading-relaxed ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
-                  Select up to 3 targets for a deep evidence assessment, or type any gene name below.
-                </p>
-
-                {/* Ranked target checkboxes */}
-                {top10.length > 0 ? (
-                  <div className={`rounded-xl border overflow-hidden ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
-                    <div className={`px-3 py-1.5 ${isDark ? 'bg-slate-900/40' : 'bg-slate-50'}`}>
-                      <p className={`text-[9px] uppercase tracking-widest font-bold ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>From Ranked List</p>
-                    </div>
-                    <div className="max-h-48 overflow-y-auto">
-                      {top10.map(t => {
-                        const checked = assessChecked.includes(t.symbol);
-                        const disabled = !checked && assessChecked.length >= 3;
-                        return (
-                          <button key={t.symbol} onClick={() => !disabled && toggleCheck(t.symbol)} disabled={disabled}
-                            className={`w-full flex items-center gap-2.5 px-3 py-2 transition-colors border-b last:border-0 text-left ${
-                              isDark ? 'border-slate-800' : 'border-slate-100'
-                            } ${checked ? (isDark ? 'bg-blue-600/10' : 'bg-blue-50') : (isDark ? 'hover:bg-slate-800/60' : 'hover:bg-slate-50')} ${disabled ? 'opacity-30' : ''}`}>
-                            <div className={`w-3.5 h-3.5 rounded border flex-shrink-0 flex items-center justify-center transition-colors ${
-                              checked ? 'bg-blue-600 border-blue-600' : (isDark ? 'border-slate-600' : 'border-slate-300')
-                            }`}>
-                              {checked && <CheckCircle2 className="w-2.5 h-2.5 text-white" />}
-                            </div>
-                            <span className={`text-[11px] font-bold font-mono ${isDark ? 'text-blue-300' : 'text-blue-700'}`}>{t.symbol}</span>
-                            <span className={`text-[9px] truncate flex-1 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>{t.name}</span>
-                            <span className={`text-[9px] font-mono font-bold ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>{(t.getScore ?? 0).toFixed(2)}</span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                ) : (
-                  <div className={`text-center py-4 rounded-xl border ${isDark ? 'border-slate-800 text-slate-600' : 'border-slate-200 text-slate-400'}`}>
-                    <p className="text-[10px]">Search a disease first to load targets</p>
-                  </div>
-                )}
-
-                {/* Manual gene input */}
-                <div>
-                  <label className={`text-[9px] font-black uppercase tracking-widest block mb-1 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
-                    Add any gene (not in list)
-                  </label>
-                  <input value={assessCustom} onChange={e => setAssessCustom(e.target.value)}
-                    onKeyDown={e => e.key === 'Enter' && runAssess()}
-                    placeholder="e.g. CLU, BIN1, SORL1"
-                    className={`w-full px-3 py-2 rounded-lg border text-[11px] font-mono outline-none transition-colors ${
-                      isDark ? 'bg-slate-900 border-slate-700 text-white placeholder-slate-600 focus:border-blue-500'
-                               : 'bg-white border-slate-300 text-slate-900 placeholder-slate-400 focus:border-blue-500'
-                    }`} />
-                </div>
-
-                {assessChecked.length > 0 && (
-                  <div className="flex flex-wrap gap-1">
-                    {assessChecked.map(sym => (
-                      <span key={sym} className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-600/15 text-blue-500 text-[10px] font-bold">
-                        {sym}
-                        <button onClick={() => toggleCheck(sym)} className="hover:text-red-400">
-                          <X className="w-2.5 h-2.5" />
-                        </button>
-                      </span>
-                    ))}
-                  </div>
-                )}
-
-                <button onClick={runAssess}
-                  disabled={assessChecked.length === 0 && !assessCustom.trim()}
-                  className={`w-full py-2.5 rounded-xl text-[11px] font-black uppercase tracking-wider flex items-center justify-center gap-2 transition-all ${
-                    assessChecked.length === 0 && !assessCustom.trim()
-                      ? 'opacity-30 cursor-not-allowed bg-blue-600 text-white'
-                      : 'bg-blue-600 text-white hover:bg-blue-700 shadow-md shadow-blue-600/20'
-                  }`}>
-                  <Microscope className="w-3.5 h-3.5" />
-                  Run Assessment
-                </button>
-              </div>
-            </div>
-          );
-        })()}
+        {activeNav === 'assess' && (
+          <AssessPanelContent isDark={isDark} targets={targets} onAssessRun={onAssessRun} />
+        )}
 
         {/* ── WORKSPACE panel ───────────────────────────────────────────── */}
         {activeNav === 'workspace' && (
