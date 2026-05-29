@@ -784,7 +784,6 @@ const LEFT_NAV_ITEMS = [
   { id: 'cohort',    icon: Users,    label: 'Cohort'    },
   { id: 'rankings',  icon: BarChart3,label: 'Rankings'  },
   { id: 'compare',   icon: Layers,   label: 'Compare'   },
-  { id: 'settings',  icon: Settings, label: 'Settings'  },
 ] as const;
 
 // ── Dual-handle range slider ─────────────────────────────────────────────────
@@ -887,6 +886,339 @@ const DualSlider = ({
   );
 };
 
+// ── Profile dropdown (top-right avatar menu) ─────────────────────────────────
+
+type AdminUser = {
+  id: string; email: string; name: string | null; institution: string | null;
+  role: 'admin' | 'user'; created_at: string; last_sign_in: string | null; confirmed: boolean;
+};
+
+const ProfileDropdown = ({
+  currentUser, theme, onSignOut, globalWeights,
+}: {
+  currentUser: UserSession;
+  theme: Theme;
+  onSignOut: () => void;
+  globalWeights: { genetic: number; expression: number; target: number };
+}) => {
+  const isDark = theme === 'dark';
+  const [open, setOpen] = React.useState(false);
+  const ref  = React.useRef<HTMLDivElement>(null);
+
+  // Close on outside click
+  React.useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [open]);
+
+  // ── Profile state ──────────────────────────────────────────────────────────
+  const [profile, setProfile] = React.useState<Record<string, string>>(() => {
+    try { return JSON.parse(localStorage.getItem('dtt_profile') || '{}'); } catch { return {}; }
+  });
+  const [profileSaving, setProfileSaving] = React.useState(false);
+  const [profileSaved,  setProfileSaved]  = React.useState(false);
+
+  const handleProfileChange = (field: string, value: string) => {
+    const updated = { ...profile, [field]: value };
+    setProfile(updated);
+    localStorage.setItem('dtt_profile', JSON.stringify(updated));
+  };
+
+  const handleSaveProfile = async () => {
+    setProfileSaving(true);
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) await updateUserProfile(user.id, { name: profile.name || null, institution: profile.institution || null });
+      setProfileSaved(true);
+      setTimeout(() => setProfileSaved(false), 2500);
+    } catch { /* non-critical */ }
+    finally { setProfileSaving(false); }
+  };
+
+  // ── Admin: user management ─────────────────────────────────────────────────
+  const [adminUsers,        setAdminUsers]        = React.useState<AdminUser[]>([]);
+  const [adminUsersLoading, setAdminUsersLoading] = React.useState(false);
+  const [adminUsersError,   setAdminUsersError]   = React.useState<string | null>(null);
+  const [roleUpdating,      setRoleUpdating]      = React.useState<string | null>(null);
+  const [deleteConfirm,     setDeleteConfirm]     = React.useState<string | null>(null);
+  const [deleting,          setDeleting]          = React.useState<string | null>(null);
+
+  const fetchAdminUsers = React.useCallback(async () => {
+    setAdminUsersLoading(true); setAdminUsersError(null);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) throw new Error('Not authenticated');
+      const res = await fetch('/api/admin/users', { headers: { Authorization: `Bearer ${session.access_token}` } });
+      if (!res.ok) throw new Error((await res.json()).error ?? res.statusText);
+      setAdminUsers(await res.json());
+    } catch (e: any) { setAdminUsersError(e.message); }
+    finally { setAdminUsersLoading(false); }
+  }, []);
+
+  const handleRoleToggle = async (userId: string, currentRole: 'admin' | 'user') => {
+    const newRole = currentRole === 'admin' ? 'user' : 'admin';
+    setRoleUpdating(userId);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch(`/api/admin/users/${userId}/role`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session?.access_token}` },
+        body: JSON.stringify({ role: newRole }),
+      });
+      if (!res.ok) throw new Error((await res.json()).error);
+      setAdminUsers(prev => prev.map(u => u.id === userId ? { ...u, role: newRole as 'admin' | 'user' } : u));
+    } catch (e: any) { setAdminUsersError(e.message); }
+    finally { setRoleUpdating(null); }
+  };
+
+  const handleDeleteUser = async (userId: string) => {
+    setDeleting(userId);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch(`/api/admin/users/${userId}`, {
+        method: 'DELETE', headers: { Authorization: `Bearer ${session?.access_token}` },
+      });
+      if (!res.ok) throw new Error((await res.json()).error);
+      setAdminUsers(prev => prev.filter(u => u.id !== userId));
+      setDeleteConfirm(null);
+    } catch (e: any) { setAdminUsersError(e.message); }
+    finally { setDeleting(null); }
+  };
+
+  // ── Docs accordion ─────────────────────────────────────────────────────────
+  const [openDocs, setOpenDocs] = React.useState<string[]>([]);
+  const DOC_ITEMS = [
+    { key: 'about',   title: 'About DiseaseToTarget',
+      content: `DiseaseToTarget (DTT) is an AI-powered therapeutic target discovery platform. It retrieves disease-associated genes from Open Targets, scores them using a multi-factor GET formula, and ranks them by druggability evidence.` },
+    { key: 'get',     title: 'How GET Score Works',
+      content: `GET = G × ${globalWeights.genetic} + E × ${globalWeights.expression} + T × ${globalWeights.target}\n\n• **G** — Genetic score (Open Targets association evidence)\n• **E** — Expression score (tissue expression selectivity)\n• **T** — Target score (tractability + clinical trial signal)\n\nA velocity bonus (×0.15) rewards fast-rising literature genes.` },
+    { key: 'csv',     title: 'Cohort CSV Format',
+      content: `Upload a CSV with columns: gene_symbol, then one column per cohort (TPM/FPKM values). First column must be named gene_symbol.\n\nExample:\ngene_symbol,early_stage,late_stage\nAPOE,12.4,8.2\nTREM2,3.2,9.8\n\nUpload via terminal chat: type "upload cohort CSV"` },
+    { key: 'scores',  title: 'Score Reference',
+      content: `G Score (0–1): genetic association strength\nE Score (0–1): expression selectivity\nT Score (0–1): target tractability\nGET (0–1): combined priority score\nRWR (0–1): network propagation rank\nWINNER (0–1): network-based prioritization\nLiterature (0–1): publication evidence` },
+    { key: 'sources', title: 'Data Sources',
+      content: `• Open Targets — Gene-disease associations, expression, tractability\n• PubTator / PubMed — Literature mining\n• STRING DB — Protein interaction networks\n• ClinicalTrials.gov — Trial signal scoring\n• Enrichr — Pathway enrichment` },
+  ];
+
+  // Initials avatar
+  const initials = (currentUser.username || '?').slice(0, 2).toUpperCase();
+  const isAdmin  = currentUser.role === 'admin';
+
+  return (
+    <div ref={ref} className="relative">
+      {/* Trigger button */}
+      <button
+        onClick={() => setOpen(o => !o)}
+        className={`flex items-center gap-2 px-2.5 py-1.5 rounded-xl border transition-all ${
+          open
+            ? isDark ? 'bg-slate-800 border-slate-700' : 'bg-slate-100 border-slate-300'
+            : isDark ? 'bg-slate-900/60 border-slate-800 hover:bg-slate-800 hover:border-slate-700' : 'bg-white border-slate-200 hover:bg-slate-50 hover:border-slate-300'
+        }`}
+      >
+        {/* Avatar circle */}
+        <div className={`w-6 h-6 rounded-lg flex items-center justify-center text-[9px] font-black ${isAdmin ? 'bg-rose-500/15 text-rose-500' : 'bg-blue-500/10 text-blue-600'}`}>
+          {initials}
+        </div>
+        {/* Name (hidden on small screens) */}
+        <span className={`hidden sm:block text-[11px] font-semibold max-w-[110px] truncate ${isDark ? 'text-slate-200' : 'text-slate-700'}`}>
+          {profile.name || currentUser.username}
+        </span>
+        {/* Role pip */}
+        <span className={`hidden sm:block text-[8px] font-black px-1.5 py-0.5 rounded-full ${isAdmin ? 'bg-rose-500/10 text-rose-500' : 'bg-blue-500/10 text-blue-600'}`}>
+          {isAdmin ? 'Admin' : 'Researcher'}
+        </span>
+        <ChevronDown className={`w-3 h-3 transition-transform ${open ? 'rotate-180' : ''} ${isDark ? 'text-slate-500' : 'text-slate-400'}`} />
+      </button>
+
+      {/* Dropdown panel */}
+      {open && (
+        <div className={`absolute right-0 top-full mt-2 w-80 rounded-2xl border shadow-2xl shadow-slate-900/20 z-[200] flex flex-col overflow-hidden ${isDark ? 'bg-[#0b111c] border-slate-800' : 'bg-white border-slate-200'}`}>
+
+          {/* ── Identity header ── */}
+          <div className={`px-4 py-3 flex items-center gap-3 border-b ${isDark ? 'border-slate-800 bg-slate-900/60' : 'border-slate-100 bg-slate-50'}`}>
+            <div className={`w-9 h-9 rounded-xl flex items-center justify-center text-[13px] font-black shrink-0 ${isAdmin ? 'bg-rose-500/15 text-rose-500' : 'bg-blue-500/10 text-blue-600'}`}>
+              {initials}
+            </div>
+            <div className="min-w-0">
+              <p className={`text-[12px] font-bold truncate ${isDark ? 'text-slate-100' : 'text-slate-800'}`}>
+                {profile.name || <span className={isDark ? 'text-slate-500' : 'text-slate-400'}>No display name</span>}
+              </p>
+              <p className={`text-[10px] truncate ${isDark ? 'text-slate-500' : 'text-slate-500'}`}>{currentUser.username}</p>
+            </div>
+            <span className={`ml-auto shrink-0 flex items-center gap-1 px-2 py-0.5 rounded-full text-[8px] font-black uppercase tracking-wider border ${
+              isAdmin ? 'bg-rose-500/10 border-rose-500/30 text-rose-500' : 'bg-blue-500/10 border-blue-500/20 text-blue-600'
+            }`}>
+              <ShieldCheck className="w-2.5 h-2.5" />
+              {isAdmin ? 'Admin' : 'Researcher'}
+            </span>
+          </div>
+
+          {/* ── Scrollable body ── */}
+          <div className="overflow-y-auto max-h-[70vh]">
+
+            {/* ── My Profile ── */}
+            <div className={`px-4 py-3 border-b ${isDark ? 'border-slate-800' : 'border-slate-100'}`}>
+              <p className={`text-[9px] font-black uppercase tracking-widest mb-2.5 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>My Profile</p>
+              <div className="space-y-2">
+                {[
+                  { field: 'name',        label: 'Display Name',  ph: 'Full name'       },
+                  { field: 'institution', label: 'Institution',   ph: 'e.g. UAB SPARC'  },
+                ].map(f => (
+                  <div key={f.field}>
+                    <label className={`text-[9px] font-bold uppercase tracking-wider block mb-0.5 ${isDark ? 'text-slate-600' : 'text-slate-400'}`}>{f.label}</label>
+                    <input
+                      value={profile[f.field] || ''}
+                      onChange={e => handleProfileChange(f.field, e.target.value)}
+                      placeholder={f.ph}
+                      className={`w-full px-2.5 py-1.5 rounded-lg border text-[11px] outline-none transition-colors ${isDark ? 'bg-slate-800 border-slate-700 text-white placeholder-slate-600 focus:border-blue-500' : 'bg-slate-50 border-slate-200 text-slate-800 placeholder-slate-400 focus:border-blue-500 focus:bg-white'}`}
+                    />
+                  </div>
+                ))}
+                <button
+                  onClick={handleSaveProfile}
+                  disabled={profileSaving}
+                  className={`w-full py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider flex items-center justify-center gap-1.5 transition-all mt-1 ${
+                    profileSaved
+                      ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-600'
+                      : 'bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40'
+                  }`}
+                >
+                  {profileSaving ? <><Loader2 className="w-3 h-3 animate-spin" /> Saving…</>
+                    : profileSaved ? <><CheckCircle2 className="w-3 h-3" /> Saved</>
+                    : <><Save className="w-3 h-3" /> Save Profile</>}
+                </button>
+              </div>
+            </div>
+
+            {/* ── Admin: User Management ── */}
+            {isAdmin && (
+              <div className={`px-4 py-3 border-b ${isDark ? 'border-slate-800' : 'border-slate-100'}`}>
+                <div className="flex items-center justify-between mb-2.5">
+                  <p className={`text-[9px] font-black uppercase tracking-widest ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
+                    User Management {adminUsers.length > 0 && <span className={`ml-1 px-1 py-0.5 rounded text-[8px] ${isDark ? 'bg-slate-800 text-slate-500' : 'bg-slate-100 text-slate-500'}`}>{adminUsers.length}</span>}
+                  </p>
+                  <button
+                    onClick={fetchAdminUsers} disabled={adminUsersLoading}
+                    className={`flex items-center gap-1 px-2 py-0.5 rounded-lg text-[9px] font-black transition-all ${isDark ? 'bg-rose-600/15 text-rose-400 hover:bg-rose-600/25' : 'bg-rose-50 text-rose-600 hover:bg-rose-100'} disabled:opacity-40`}
+                  >
+                    {adminUsersLoading ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : <RotateCcw className="w-2.5 h-2.5" />}
+                    {adminUsers.length === 0 ? 'Load' : 'Refresh'}
+                  </button>
+                </div>
+
+                {adminUsersError && (
+                  <div className="flex items-center gap-1.5 text-rose-500 text-[10px] mb-2">
+                    <AlertCircle className="w-3 h-3 shrink-0" />{adminUsersError}
+                  </div>
+                )}
+                {!adminUsersLoading && adminUsers.length === 0 && !adminUsersError && (
+                  <p className={`text-[10px] text-center py-3 ${isDark ? 'text-slate-600' : 'text-slate-400'}`}>Click Load to see all users</p>
+                )}
+
+                {adminUsers.length > 0 && (
+                  <div className={`rounded-xl border overflow-hidden ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
+                    {adminUsers.map((u, idx) => (
+                      <div key={u.id} className={`px-3 py-2 ${idx > 0 ? `border-t ${isDark ? 'border-slate-800' : 'border-slate-100'}` : ''}`}>
+                        <div className="flex items-start gap-2">
+                          <div className="flex-1 min-w-0">
+                            <p className={`text-[10px] font-bold truncate ${isDark ? 'text-slate-200' : 'text-slate-800'}`}>
+                              {u.name || <span className={isDark ? 'text-slate-600' : 'text-slate-400'}>—</span>}
+                            </p>
+                            <p className={`text-[9px] truncate ${isDark ? 'text-slate-500' : 'text-slate-500'}`}>{u.email}</p>
+                            {u.institution && <p className={`text-[8px] truncate ${isDark ? 'text-slate-600' : 'text-slate-400'}`}>{u.institution}</p>}
+                            <div className="flex items-center gap-1 mt-0.5">
+                              <span className={`text-[7px] font-black px-1 py-0.5 rounded ${u.confirmed ? isDark ? 'bg-emerald-500/10 text-emerald-400' : 'bg-emerald-50 text-emerald-600' : isDark ? 'bg-amber-500/10 text-amber-400' : 'bg-amber-50 text-amber-600'}`}>
+                                {u.confirmed ? '✓' : '⏳'}
+                              </span>
+                              <span className={`text-[7px] ${isDark ? 'text-slate-700' : 'text-slate-400'}`}>{new Date(u.created_at).toLocaleDateString()}</span>
+                            </div>
+                          </div>
+                          <div className="flex flex-col items-end gap-1 shrink-0">
+                            <button
+                              onClick={() => handleRoleToggle(u.id, u.role)}
+                              disabled={roleUpdating === u.id}
+                              className={`flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[8px] font-black border transition-all disabled:opacity-40 ${
+                                u.role === 'admin'
+                                  ? isDark ? 'bg-rose-500/10 border-rose-500/30 text-rose-400 hover:bg-rose-500/20' : 'bg-rose-50 border-rose-200 text-rose-600 hover:bg-rose-100'
+                                  : isDark ? 'bg-blue-500/10 border-blue-500/20 text-blue-400 hover:bg-blue-500/20' : 'bg-blue-50 border-blue-200 text-blue-600 hover:bg-blue-100'
+                              }`}
+                            >
+                              {roleUpdating === u.id ? <Loader2 className="w-2 h-2 animate-spin" /> : <ShieldCheck className="w-2 h-2" />}
+                              {u.role === 'admin' ? 'Admin' : 'Researcher'}
+                            </button>
+                            {deleteConfirm === u.id ? (
+                              <div className="flex gap-1">
+                                <button onClick={() => handleDeleteUser(u.id)} disabled={deleting === u.id}
+                                  className="px-1.5 py-0.5 rounded text-[7px] font-black bg-rose-600 text-white hover:bg-rose-700 disabled:opacity-40">
+                                  {deleting === u.id ? '…' : 'Confirm'}
+                                </button>
+                                <button onClick={() => setDeleteConfirm(null)}
+                                  className={`px-1.5 py-0.5 rounded text-[7px] font-black ${isDark ? 'bg-slate-800 text-slate-400' : 'bg-slate-100 text-slate-500'}`}>
+                                  Cancel
+                                </button>
+                              </div>
+                            ) : (
+                              <button onClick={() => setDeleteConfirm(u.id)}
+                                className={`p-0.5 rounded transition-colors ${isDark ? 'text-slate-700 hover:text-rose-400' : 'text-slate-300 hover:text-rose-500'}`}>
+                                <Trash2 className="w-2.5 h-2.5" />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ── Documentation ── */}
+            <div className={`px-4 py-3 border-b ${isDark ? 'border-slate-800' : 'border-slate-100'}`}>
+              <p className={`text-[9px] font-black uppercase tracking-widest mb-2 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Documentation</p>
+              <div className={`rounded-xl border overflow-hidden ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
+                {DOC_ITEMS.map((sec, idx) => {
+                  const isOpen = openDocs.includes(sec.key);
+                  return (
+                    <div key={sec.key} className={idx > 0 ? `border-t ${isDark ? 'border-slate-800' : 'border-slate-100'}` : ''}>
+                      <button
+                        onClick={() => setOpenDocs(p => isOpen ? p.filter(k => k !== sec.key) : [...p, sec.key])}
+                        className={`w-full px-3 py-2 flex items-center justify-between text-left transition-colors ${isDark ? 'hover:bg-slate-800/60' : 'hover:bg-slate-50'}`}
+                      >
+                        <span className={`text-[10px] font-semibold ${isDark ? 'text-slate-300' : 'text-slate-600'}`}>{sec.title}</span>
+                        <ChevronDown className={`w-3 h-3 transition-transform shrink-0 ml-2 ${isOpen ? 'rotate-180' : ''} ${isDark ? 'text-slate-600' : 'text-slate-400'}`} />
+                      </button>
+                      {isOpen && (
+                        <div className={`px-3 pb-3 text-[10px] leading-relaxed whitespace-pre-line ${isDark ? 'text-slate-400 bg-slate-900/40' : 'text-slate-500 bg-slate-50'}`}>
+                          <Markdown>{sec.content}</Markdown>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* ── Sign out ── */}
+            <div className="px-4 py-3">
+              <button
+                onClick={() => { setOpen(false); onSignOut(); }}
+                className={`w-full flex items-center justify-center gap-2 py-2 rounded-xl text-[11px] font-black uppercase tracking-wider transition-all ${isDark ? 'bg-slate-800 text-slate-300 hover:bg-rose-600/15 hover:text-rose-400' : 'bg-slate-100 text-slate-600 hover:bg-rose-50 hover:text-rose-600'}`}
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                Sign Out
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
 const CohortFilterSidebar = ({ theme, targets, activeDisease, onScoreRangesChange, onRankRangesChange, visibleCols, onVisibleColsChange, visibleBioTissues, onVisibleBioTissuesChange, currentUser, globalWeights, onWeightsSave }: {
   theme: Theme;
   targets: Target[];
@@ -920,74 +1252,6 @@ const CohortFilterSidebar = ({ theme, targets, activeDisease, onScoreRangesChang
   const [rankRanges, setRankRanges] = useState<Record<string, [number, number]>>({
     rwr: [0, 1], winner: [0, 1],
   });
-
-  // ── Admin: user management ────────────────────────────────────────────────
-  type AdminUser = {
-    id: string; email: string; name: string | null; institution: string | null;
-    role: 'admin' | 'user'; created_at: string; last_sign_in: string | null; confirmed: boolean;
-  };
-  const [adminUsers,      setAdminUsers]      = React.useState<AdminUser[]>([]);
-  const [adminUsersLoading, setAdminUsersLoading] = React.useState(false);
-  const [adminUsersError,   setAdminUsersError]   = React.useState<string | null>(null);
-  const [roleUpdating,    setRoleUpdating]    = React.useState<string | null>(null); // userId being updated
-  const [deleteConfirm,   setDeleteConfirm]   = React.useState<string | null>(null); // userId awaiting confirm
-  const [deleting,        setDeleting]        = React.useState<string | null>(null);
-
-  const fetchAdminUsers = React.useCallback(async () => {
-    setAdminUsersLoading(true);
-    setAdminUsersError(null);
-    try {
-      const { data: { session } } = await supabase.auth.getSession();
-      const token = session?.access_token;
-      if (!token) throw new Error('Not authenticated');
-      const res = await fetch('/api/admin/users', {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!res.ok) throw new Error((await res.json()).error ?? res.statusText);
-      setAdminUsers(await res.json());
-    } catch (e: any) {
-      setAdminUsersError(e.message);
-    } finally {
-      setAdminUsersLoading(false);
-    }
-  }, []);
-
-  const handleRoleToggle = async (userId: string, currentRole: 'admin' | 'user') => {
-    const newRole = currentRole === 'admin' ? 'user' : 'admin';
-    setRoleUpdating(userId);
-    try {
-      const { data: { session } } = await supabase.auth.getSession();
-      const res = await fetch(`/api/admin/users/${userId}/role`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session?.access_token}` },
-        body: JSON.stringify({ role: newRole }),
-      });
-      if (!res.ok) throw new Error((await res.json()).error);
-      setAdminUsers(prev => prev.map(u => u.id === userId ? { ...u, role: newRole } : u));
-    } catch (e: any) {
-      setAdminUsersError(e.message);
-    } finally {
-      setRoleUpdating(null);
-    }
-  };
-
-  const handleDeleteUser = async (userId: string) => {
-    setDeleting(userId);
-    try {
-      const { data: { session } } = await supabase.auth.getSession();
-      const res = await fetch(`/api/admin/users/${userId}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${session?.access_token}` },
-      });
-      if (!res.ok) throw new Error((await res.json()).error);
-      setAdminUsers(prev => prev.filter(u => u.id !== userId));
-      setDeleteConfirm(null);
-    } catch (e: any) {
-      setAdminUsersError(e.message);
-    } finally {
-      setDeleting(null);
-    }
-  };
 
   // ── GET formula studio (admin) ────────────────────────────────────────────
   const [draftWeights, setDraftWeights] = React.useState(() => globalWeights ?? { genetic: 0.45, expression: 0.25, target: 0.30 });
@@ -1078,13 +1342,6 @@ const CohortFilterSidebar = ({ theme, targets, activeDisease, onScoreRangesChang
   const [compareResult, setCompareResult] = useState<string>('');
   const [compareError, setCompareError]   = useState('');
 
-  // ── settings panel ───────────────────────────────────────────────────────
-  const [profile, setProfile] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('dtt_profile') || '{}'); } catch { return {}; }
-  });
-  const [profileSaving, setProfileSaving] = useState(false);
-  const [profileSaved,  setProfileSaved]  = useState(false);
-  const [openDocSections, setOpenDocSections] = useState<string[]>(['about']);
 
   // ── helpers ──────────────────────────────────────────────────────────────
   const toggleCheckbox = (group: CohortFilterKey, value: string) =>
@@ -1098,28 +1355,6 @@ const CohortFilterSidebar = ({ theme, targets, activeDisease, onScoreRangesChang
 
   const totalActive = Object.values(selected).flat().length;
 
-  // Update local draft only — Supabase is written when Save is clicked
-  const saveProfile = (field: string, value: string) => {
-    const updated = { ...profile, [field]: value };
-    setProfile(updated);
-    localStorage.setItem('dtt_profile', JSON.stringify(updated));
-  };
-
-  const handleSaveProfile = async () => {
-    setProfileSaving(true);
-    try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (user) {
-        await updateUserProfile(user.id, {
-          name:        profile.name        || null,
-          institution: profile.institution || null,
-        });
-      }
-      setProfileSaved(true);
-      setTimeout(() => setProfileSaved(false), 2500);
-    } catch { /* non-critical */ }
-    finally { setProfileSaving(false); }
-  };
 
   const handleCompare = async () => {
     if (!gene1.trim() || !gene2.trim()) return;
@@ -1175,7 +1410,6 @@ Be concise, scientific, and use markdown. Max 350 words.`;
     cohort:    { icon: Users,            title: 'Cohort',     sub: 'Cohort data'    },
     rankings:  { icon: BarChart3,         title: 'Rankings',   sub: 'Score ranges'   },
     compare:   { icon: Layers,           title: 'Compare',    sub: 'AI gene compare'},
-    settings:  { icon: Settings,         title: 'Settings',   sub: 'Profile & docs' },
   };
   const pc = panelConfig[activeNav] ?? panelConfig['cohort'];
   const PanelIcon = pc.icon;
@@ -1754,264 +1988,6 @@ Be concise, scientific, and use markdown. Max 350 words.`;
         )}
 
         {/* ── SETTINGS panel ────────────────────────────────────────────── */}
-        {activeNav === 'settings' && (
-          <div className="flex-1 overflow-y-auto p-2.5 space-y-2">
-
-            {/* Session badge */}
-            {currentUser && (
-              <div className={`rounded-xl border px-3 py-2.5 flex items-center justify-between ${isDark ? 'border-slate-800 bg-slate-900/40' : 'border-slate-200 bg-slate-50'}`}>
-                <div className="flex items-center gap-2">
-                  <div className={`w-7 h-7 rounded-lg flex items-center justify-center ${currentUser.role === 'admin' ? 'bg-rose-600/15' : 'bg-blue-600/10'}`}>
-                    <ShieldCheck className={`w-3.5 h-3.5 ${currentUser.role === 'admin' ? 'text-rose-500' : 'text-blue-500'}`} />
-                  </div>
-                  <div>
-                    <p className={`text-[11px] font-bold ${isDark ? 'text-slate-100' : 'text-slate-800'}`}>{currentUser.username}</p>
-                    <p className={`text-[9px] uppercase tracking-wider font-black ${currentUser.role === 'admin' ? 'text-rose-500' : isDark ? 'text-slate-500' : 'text-slate-400'}`}>{currentUser.role}</p>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* User profile */}
-            <div className={`rounded-xl border overflow-hidden ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
-              <div className={`px-3 py-2 flex items-center gap-2 ${isDark ? 'bg-slate-900/40' : 'bg-slate-50'}`}>
-                <Users className={`w-3.5 h-3.5 ${isDark ? 'text-slate-400' : 'text-slate-500'}`} />
-                <span className={`text-[11px] font-bold ${isDark ? 'text-slate-200' : 'text-slate-700'}`}>User Profile</span>
-              </div>
-              <div className={`p-3 space-y-2.5 border-t ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
-
-                {/* Read-only: email from Supabase Auth */}
-                <div>
-                  <label className={`text-[9px] font-bold uppercase tracking-wider block mb-0.5 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Email</label>
-                  <div className={`w-full px-2.5 py-1.5 rounded-md border text-[11px] select-all ${isDark ? 'bg-slate-800/50 border-slate-700 text-slate-400' : 'bg-slate-50 border-slate-200 text-slate-500'}`}>
-                    {currentUser?.username || '—'}
-                  </div>
-                </div>
-
-                {/* Read-only: role badge */}
-                <div>
-                  <label className={`text-[9px] font-bold uppercase tracking-wider block mb-0.5 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Role</label>
-                  <div className="flex items-center gap-2 px-2.5 py-1.5">
-                    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider border ${
-                      currentUser?.role === 'admin'
-                        ? 'bg-rose-500/10 border-rose-500/30 text-rose-500'
-                        : 'bg-blue-500/10 border-blue-500/20 text-blue-600'
-                    }`}>
-                      <ShieldCheck className="w-2.5 h-2.5" />
-                      {currentUser?.role === 'admin' ? 'Admin' : 'Researcher'}
-                    </span>
-                    <span className={`text-[9px] ${isDark ? 'text-slate-600' : 'text-slate-400'}`}>assigned by system</span>
-                  </div>
-                </div>
-
-                {/* Editable: name */}
-                <div>
-                  <label className={`text-[9px] font-bold uppercase tracking-wider block mb-0.5 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Name</label>
-                  <input
-                    value={profile.name || ''}
-                    onChange={e => saveProfile('name', e.target.value)}
-                    placeholder="Full name"
-                    className={`w-full px-2.5 py-1.5 rounded-md border text-[11px] outline-none transition-colors ${isDark ? 'bg-slate-900 border-slate-700 text-white placeholder-slate-600 focus:border-blue-500' : 'bg-white border-slate-300 text-slate-800 placeholder-slate-400 focus:border-blue-500 focus:ring-1 focus:ring-blue-500/10'}`}
-                  />
-                </div>
-
-                {/* Editable: institution */}
-                <div>
-                  <label className={`text-[9px] font-bold uppercase tracking-wider block mb-0.5 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Institution</label>
-                  <input
-                    value={profile.institution || ''}
-                    onChange={e => saveProfile('institution', e.target.value)}
-                    placeholder="e.g. UAB SPARC"
-                    className={`w-full px-2.5 py-1.5 rounded-md border text-[11px] outline-none transition-colors ${isDark ? 'bg-slate-900 border-slate-700 text-white placeholder-slate-600 focus:border-blue-500' : 'bg-white border-slate-300 text-slate-800 placeholder-slate-400 focus:border-blue-500 focus:ring-1 focus:ring-blue-500/10'}`}
-                  />
-                </div>
-
-                {/* Save button */}
-                <button
-                  onClick={handleSaveProfile}
-                  disabled={profileSaving}
-                  className={`w-full py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider flex items-center justify-center gap-1.5 transition-all ${
-                    profileSaved
-                      ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-600'
-                      : isDark
-                        ? 'bg-blue-600 text-white hover:bg-blue-500 disabled:opacity-40'
-                        : 'bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40'
-                  }`}
-                >
-                  {profileSaving
-                    ? <><Loader2 className="w-3 h-3 animate-spin" /> Saving…</>
-                    : profileSaved
-                      ? <><CheckCircle2 className="w-3 h-3" /> Saved</>
-                      : <><Save className="w-3 h-3" /> Save Profile</>
-                  }
-                </button>
-              </div>
-            </div>
-
-            {/* ── Admin: User Management (admin only) ──────────────────── */}
-            {currentUser?.role === 'admin' && (
-              <div className={`rounded-xl border overflow-hidden ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
-                {/* Header */}
-                <div className={`px-3 py-2 flex items-center justify-between ${isDark ? 'bg-slate-900/40' : 'bg-slate-50'}`}>
-                  <div className="flex items-center gap-2">
-                    <Users className={`w-3.5 h-3.5 ${isDark ? 'text-rose-400' : 'text-rose-500'}`} />
-                    <span className={`text-[11px] font-bold ${isDark ? 'text-slate-200' : 'text-slate-700'}`}>User Management</span>
-                    {adminUsers.length > 0 && (
-                      <span className={`text-[9px] font-black px-1.5 py-0.5 rounded-full ${isDark ? 'bg-slate-800 text-slate-400' : 'bg-slate-200 text-slate-500'}`}>
-                        {adminUsers.length}
-                      </span>
-                    )}
-                  </div>
-                  <button
-                    onClick={fetchAdminUsers}
-                    disabled={adminUsersLoading}
-                    className={`flex items-center gap-1 px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-wider transition-all ${
-                      isDark ? 'bg-rose-600/20 text-rose-400 hover:bg-rose-600/30' : 'bg-rose-50 text-rose-600 hover:bg-rose-100'
-                    } disabled:opacity-40`}
-                  >
-                    {adminUsersLoading
-                      ? <Loader2 className="w-3 h-3 animate-spin" />
-                      : <RotateCcw className="w-3 h-3" />
-                    }
-                    {adminUsers.length === 0 ? 'Load' : 'Refresh'}
-                  </button>
-                </div>
-
-                <div className={`border-t ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
-                  {/* Error */}
-                  {adminUsersError && (
-                    <div className="px-3 py-2 flex items-center gap-2 text-rose-500 text-[10px]">
-                      <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-                      {adminUsersError}
-                    </div>
-                  )}
-
-                  {/* Empty / not loaded yet */}
-                  {!adminUsersLoading && adminUsers.length === 0 && !adminUsersError && (
-                    <div className={`px-3 py-4 text-center text-[10px] ${isDark ? 'text-slate-600' : 'text-slate-400'}`}>
-                      Click Load to fetch all registered users
-                    </div>
-                  )}
-
-                  {/* User rows */}
-                  {adminUsers.length > 0 && (
-                    <div className="divide-y divide-inherit">
-                      {adminUsers.map(u => (
-                        <div key={u.id} className={`px-3 py-2.5 ${isDark ? 'divide-slate-800' : 'divide-slate-100'}`}>
-                          <div className="flex items-start justify-between gap-2">
-                            {/* Left: user info */}
-                            <div className="min-w-0 flex-1">
-                              <p className={`text-[11px] font-bold truncate ${isDark ? 'text-slate-200' : 'text-slate-800'}`}>
-                                {u.name || <span className={isDark ? 'text-slate-600' : 'text-slate-400'}>No name</span>}
-                              </p>
-                              <p className={`text-[10px] truncate ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>{u.email}</p>
-                              {u.institution && (
-                                <p className={`text-[9px] truncate mt-0.5 ${isDark ? 'text-slate-600' : 'text-slate-400'}`}>
-                                  {u.institution}
-                                </p>
-                              )}
-                              <div className="flex items-center gap-1.5 mt-1">
-                                {/* Confirmed badge */}
-                                <span className={`text-[8px] font-black px-1 py-0.5 rounded ${
-                                  u.confirmed
-                                    ? isDark ? 'bg-emerald-500/10 text-emerald-400' : 'bg-emerald-50 text-emerald-600'
-                                    : isDark ? 'bg-amber-500/10 text-amber-400' : 'bg-amber-50 text-amber-600'
-                                }`}>
-                                  {u.confirmed ? '✓ confirmed' : '⏳ unconfirmed'}
-                                </span>
-                                {/* Joined */}
-                                <span className={`text-[8px] ${isDark ? 'text-slate-700' : 'text-slate-400'}`}>
-                                  joined {new Date(u.created_at).toLocaleDateString()}
-                                </span>
-                              </div>
-                            </div>
-
-                            {/* Right: actions */}
-                            <div className="flex flex-col items-end gap-1.5 shrink-0">
-                              {/* Role toggle */}
-                              <button
-                                onClick={() => handleRoleToggle(u.id, u.role)}
-                                disabled={roleUpdating === u.id}
-                                title={`Click to make ${u.role === 'admin' ? 'Researcher' : 'Admin'}`}
-                                className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider border transition-all disabled:opacity-40 ${
-                                  u.role === 'admin'
-                                    ? isDark ? 'bg-rose-500/10 border-rose-500/30 text-rose-400 hover:bg-rose-500/20' : 'bg-rose-50 border-rose-200 text-rose-600 hover:bg-rose-100'
-                                    : isDark ? 'bg-blue-500/10 border-blue-500/20 text-blue-400 hover:bg-blue-500/20'  : 'bg-blue-50 border-blue-200 text-blue-600 hover:bg-blue-100'
-                                }`}
-                              >
-                                {roleUpdating === u.id
-                                  ? <Loader2 className="w-2.5 h-2.5 animate-spin" />
-                                  : <ShieldCheck className="w-2.5 h-2.5" />
-                                }
-                                {u.role === 'admin' ? 'Admin' : 'Researcher'}
-                              </button>
-
-                              {/* Delete */}
-                              {deleteConfirm === u.id ? (
-                                <div className="flex items-center gap-1">
-                                  <button
-                                    onClick={() => handleDeleteUser(u.id)}
-                                    disabled={deleting === u.id}
-                                    className="px-1.5 py-0.5 rounded text-[8px] font-black bg-rose-600 text-white hover:bg-rose-700 disabled:opacity-40"
-                                  >
-                                    {deleting === u.id ? <Loader2 className="w-2.5 h-2.5 animate-spin inline" /> : 'Confirm'}
-                                  </button>
-                                  <button
-                                    onClick={() => setDeleteConfirm(null)}
-                                    className={`px-1.5 py-0.5 rounded text-[8px] font-black ${isDark ? 'bg-slate-800 text-slate-400 hover:bg-slate-700' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}
-                                  >
-                                    Cancel
-                                  </button>
-                                </div>
-                              ) : (
-                                <button
-                                  onClick={() => setDeleteConfirm(u.id)}
-                                  className={`p-1 rounded transition-colors ${isDark ? 'text-slate-700 hover:text-rose-400 hover:bg-rose-500/10' : 'text-slate-300 hover:text-rose-500 hover:bg-rose-50'}`}
-                                  title="Remove user"
-                                >
-                                  <Trash2 className="w-3 h-3" />
-                                </button>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {/* Documentation */}
-            <div className={`rounded-xl border overflow-hidden ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
-              <div className={`px-3 py-2 flex items-center gap-2 ${isDark ? 'bg-slate-900/40' : 'bg-slate-50'}`}>
-                <BookOpen className={`w-3.5 h-3.5 ${isDark ? 'text-slate-400' : 'text-slate-500'}`} />
-                <span className={`text-[11px] font-bold ${isDark ? 'text-slate-200' : 'text-slate-700'}`}>Documentation</span>
-              </div>
-              <div className={`divide-y ${isDark ? 'divide-slate-800' : 'divide-slate-100'}`}>
-                {DOC_SECTIONS.map(sec => {
-                  const open = openDocSections.includes(sec.key);
-                  return (
-                    <div key={sec.key}>
-                      <button
-                        onClick={() => setOpenDocSections(p => open ? p.filter(k => k !== sec.key) : [...p, sec.key])}
-                        className={`w-full px-3 py-2 flex items-center justify-between text-left transition-colors ${isDark ? 'hover:bg-slate-800/40' : 'hover:bg-slate-50'}`}
-                      >
-                        <span className={`text-[10px] font-bold ${isDark ? 'text-slate-300' : 'text-slate-600'}`}>{sec.title}</span>
-                        {open ? <ChevronUp className="w-3 h-3 text-slate-400" /> : <ChevronDown className="w-3 h-3 text-slate-400" />}
-                      </button>
-                      {open && (
-                        <div className={`px-3 pb-3 pt-1 text-[10px] leading-relaxed whitespace-pre-line ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
-                          <Markdown>{sec.content}</Markdown>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
-        )}
       </div>
     </div>
   );
@@ -4545,24 +4521,17 @@ Return ONLY valid JSON.
           theme={theme} 
         />
         <div className="flex items-center gap-2 shrink-0">
-          {/* Role badge */}
-          {currentUser && (
-            <span className={`hidden sm:flex items-center gap-1 px-2 py-0.5 rounded-full text-[8px] font-black uppercase tracking-wider border ${
-              currentUser.role === 'admin'
-                ? 'bg-rose-500/10 border-rose-500/30 text-rose-500 dark:text-rose-400'
-                : 'bg-blue-500/10 border-blue-500/20 text-blue-600 dark:text-blue-400'
-            }`}>
-              <ShieldCheck className="w-2.5 h-2.5" />
-              {currentUser.role === 'admin' ? 'Admin' : 'Researcher'}
-            </span>
-          )}
-          <button onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')} className="p-2 rounded hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">
+          <button onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')} className="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">
             {theme === 'dark' ? <Sun className="w-4 h-4 text-slate-300" /> : <Moon className="w-4 h-4 text-slate-900" />}
           </button>
-          <div className="w-px h-4 bg-neutral-200 dark:bg-neutral-800 mx-1" />
-          <button onClick={handleSignOut} className="p-2 rounded hover:text-rose-600 text-neutral-400 transition-colors" title="Sign out">
-            <LogOut className="w-4 h-4" />
-          </button>
+          {currentUser && (
+            <ProfileDropdown
+              currentUser={currentUser}
+              theme={theme}
+              onSignOut={handleSignOut}
+              globalWeights={globalWeights}
+            />
+          )}
         </div>
       </header>
       <main className="flex-1 flex overflow-hidden relative p-2 gap-2">
