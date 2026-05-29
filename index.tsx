@@ -1765,7 +1765,7 @@ Be specific and cite the data. Do not fabricate information. Limit to ~500 words
 // =============================================================================
 // CohortFilterSidebar
 // =============================================================================
-const CohortFilterSidebar = ({ theme, targets, activeDisease, onScoreRangesChange, onRankRangesChange, visibleCols, onVisibleColsChange, visibleBioTissues, onVisibleBioTissuesChange, currentUser, globalWeights, onWeightsSave, onAssessRun }: {
+const CohortFilterSidebar = ({ theme, targets, activeDisease, onScoreRangesChange, onRankRangesChange, visibleCols, onVisibleColsChange, visibleBioTissues, onVisibleBioTissuesChange, currentUser, globalWeights, onWeightsSave, onAssessRun, activeNav: activeNavProp, onActiveNavChange }: {
   theme: Theme;
   targets: Target[];
   activeDisease?: { id: string; name: string } | null;
@@ -1779,12 +1779,16 @@ const CohortFilterSidebar = ({ theme, targets, activeDisease, onScoreRangesChang
   globalWeights?: { genetic: number; expression: number; target: number };
   onWeightsSave?: (w: { genetic: number; expression: number; target: number }) => Promise<{ ok: boolean; error?: string }>;
   onAssessRun?: (genes: string[]) => void;
+  activeNav?: string;
+  onActiveNavChange?: (nav: string) => void;
 }) => {
   const isDark = theme === 'dark';
 
   // ── nav state ────────────────────────────────────────────────────────────
   const [isExpanded, setIsExpanded] = useState(true);
-  const [activeNav, setActiveNav]   = useState<string>('cohort');
+  const [activeNavLocal, setActiveNavLocal] = useState<string>('cohort');
+  const activeNav    = activeNavProp    ?? activeNavLocal;
+  const setActiveNav = onActiveNavChange ?? setActiveNavLocal;
 
   // ── filters panel ────────────────────────────────────────────────────────
   const [openSections, setOpenSections] = useState<string[]>(['age', 'stage', 'subtype', 'gender']);
@@ -3347,6 +3351,7 @@ const App = () => {
   };
 
   const [viewMode, setViewMode] = useState<ViewMode>('list');
+  const [sidebarNav, setSidebarNav] = useState<string>('cohort');
   const OT_PAGE_SIZE = 50;
 
   const [wikiSavedGenes, setWikiSavedGenes] = useState<Set<string>>(new Set());
@@ -5308,7 +5313,7 @@ Return ONLY valid JSON.
              </div>
            </form>
         </aside>
-        <CohortFilterSidebar theme={theme} targets={researchState.targets} activeDisease={researchState.activeDisease} onScoreRangesChange={setScoreRangeFilter} onRankRangesChange={setRankRangeFilter} visibleCols={visibleColumns} onVisibleColsChange={setVisibleColumns} visibleBioTissues={visibleBioTissues} onVisibleBioTissuesChange={setVisibleBioTissues} currentUser={currentUser} globalWeights={globalWeights} onWeightsSave={handleWeightsSave} onAssessRun={handleAssessRun} />
+        <CohortFilterSidebar theme={theme} targets={researchState.targets} activeDisease={researchState.activeDisease} onScoreRangesChange={setScoreRangeFilter} onRankRangesChange={setRankRangeFilter} visibleCols={visibleColumns} onVisibleColsChange={setVisibleColumns} visibleBioTissues={visibleBioTissues} onVisibleBioTissuesChange={setVisibleBioTissues} currentUser={currentUser} globalWeights={globalWeights} onWeightsSave={handleWeightsSave} onAssessRun={handleAssessRun} activeNav={sidebarNav} onActiveNavChange={setSidebarNav} />
         {!isLeftSidebarOpen && (<button onClick={() => setIsLeftSidebarOpen(true)} className="absolute right-4 bottom-4 z-20 p-2.5 rounded-full bg-blue-600 text-white shadow-xl hover:scale-110 transition-transform"><MessageSquare className="w-5 h-5" /></button>)}
         <section className="order-1 flex-1 flex flex-col overflow-hidden relative min-w-0">
            <Breadcrumbs 
@@ -5345,6 +5350,33 @@ Return ONLY valid JSON.
                   theme={theme}
                   onClose={() => setAssessMode(false)}
                 />
+              ) : sidebarNav === 'assess' ? (
+                <div className="h-full flex flex-col items-center justify-center p-20 text-center animate-in zoom-in duration-500">
+                  <div className={`p-6 rounded-3xl mb-8 ${theme === 'dark' ? 'bg-blue-500/10' : 'bg-blue-50'}`}>
+                    <Microscope className={`w-14 h-14 ${theme === 'dark' ? 'text-blue-400' : 'text-blue-500'}`} />
+                  </div>
+                  <h2 className={`text-2xl font-black mb-3 tracking-tight ${theme === 'dark' ? 'text-neutral-100' : 'text-slate-900'}`}>
+                    Target Assessment
+                  </h2>
+                  <p className={`text-sm max-w-md leading-relaxed mb-8 ${theme === 'dark' ? 'text-neutral-400' : 'text-slate-600'}`}>
+                    Select up to 3 genes from the panel on the left — choose from your ranked list or type any gene symbol — then click <strong>Run Assessment</strong> to get a full evidence report with drug modalities, clinical trial context, tissue expression, and AI-powered trade-off analysis.
+                  </p>
+                  <div className={`flex flex-col gap-3 text-left max-w-sm w-full px-6 py-5 rounded-2xl border ${theme === 'dark' ? 'bg-slate-900/60 border-slate-800' : 'bg-white border-slate-200'}`}>
+                    {[
+                      { icon: '🧬', text: 'GET scores: genetic, expression & target evidence' },
+                      { icon: '💊', text: 'Drug modality: small molecule, antibody, gene therapy' },
+                      { icon: '🏥', text: 'Clinical trials: phase, active studies, conditions' },
+                      { icon: '📚', text: 'Literature: total papers, recent velocity, top hits' },
+                      { icon: '🤖', text: 'AI narrative: trade-off analysis across all genes' },
+                      { icon: '📄', text: 'Download full report as DOCX' },
+                    ].map(({ icon, text }) => (
+                      <div key={text} className="flex items-center gap-3">
+                        <span className="text-base">{icon}</span>
+                        <span className={`text-xs ${theme === 'dark' ? 'text-neutral-400' : 'text-slate-600'}`}>{text}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               ) : researchState.focusSymbol ? (
                 <div className={`h-full rounded-2xl border overflow-hidden shadow-xl shadow-slate-950/5 ${theme === 'dark' ? 'bg-[#0b111c]/95 border-slate-800/80' : 'bg-white/95 border-slate-200'}`}>
                   <TargetDetailView
