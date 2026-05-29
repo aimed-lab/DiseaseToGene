@@ -86,6 +86,7 @@ import {
 } from 'lucide-react';
 
 import PaperExtractor from './PaperExtractor';
+import { supabase, fetchGlobalWeights, saveGlobalWeights, fetchUserProfile, updateUserProfile } from './supabase';
 import { 
   Target, 
   DrugInfo, 
@@ -110,8 +111,11 @@ import { runRWR } from './rwr';
 import { runWINNER } from './winner';
 
 // --- Configuration ---
-const HARDCODED_PASSWORD = "Sparc@2026";
 const MAX_WebGL_POINTS = 1024;
+
+// --- Auth types ---
+type UserRole = 'admin' | 'user';
+interface UserSession { role: UserRole; username: string; userId: string }
 
 const CANCER_TYPE_MAP: Record<string, string> = {
   'bladder': 'BLCA',
@@ -777,7 +781,7 @@ const bioTissueLabel = (t: string) => t.replace(/_/g, ' ').replace(/\b\w/g, c =>
 const LEFT_NAV_ITEMS = [
   { id: 'workspace', icon: Home,     label: 'Workspace' },
   { id: 'targets',   icon: List,     label: 'Targets'   },
-  { id: 'filters',   icon: Filter,   label: 'Filters'   },
+  { id: 'cohort',    icon: Users,    label: 'Cohort'    },
   { id: 'rankings',  icon: BarChart3,label: 'Rankings'  },
   { id: 'compare',   icon: Layers,   label: 'Compare'   },
   { id: 'settings',  icon: Settings, label: 'Settings'  },
@@ -883,7 +887,7 @@ const DualSlider = ({
   );
 };
 
-const CohortFilterSidebar = ({ theme, targets, activeDisease, onScoreRangesChange, onRankRangesChange, visibleCols, onVisibleColsChange, visibleBioTissues, onVisibleBioTissuesChange }: {
+const CohortFilterSidebar = ({ theme, targets, activeDisease, onScoreRangesChange, onRankRangesChange, visibleCols, onVisibleColsChange, visibleBioTissues, onVisibleBioTissuesChange, currentUser, globalWeights, onWeightsSave }: {
   theme: Theme;
   targets: Target[];
   activeDisease?: { id: string; name: string } | null;
@@ -893,12 +897,15 @@ const CohortFilterSidebar = ({ theme, targets, activeDisease, onScoreRangesChang
   onVisibleColsChange?: (cols: string[]) => void;
   visibleBioTissues?: string[];
   onVisibleBioTissuesChange?: (tissues: string[]) => void;
+  currentUser?: UserSession | null;
+  globalWeights?: { genetic: number; expression: number; target: number };
+  onWeightsSave?: (w: { genetic: number; expression: number; target: number }) => Promise<{ ok: boolean; error?: string }>;
 }) => {
   const isDark = theme === 'dark';
 
   // ── nav state ────────────────────────────────────────────────────────────
   const [isExpanded, setIsExpanded] = useState(true);
-  const [activeNav, setActiveNav]   = useState<string>('filters');
+  const [activeNav, setActiveNav]   = useState<string>('cohort');
 
   // ── filters panel ────────────────────────────────────────────────────────
   const [openSections, setOpenSections] = useState<string[]>(['age', 'stage', 'subtype', 'gender']);
@@ -913,6 +920,37 @@ const CohortFilterSidebar = ({ theme, targets, activeDisease, onScoreRangesChang
   const [rankRanges, setRankRanges] = useState<Record<string, [number, number]>>({
     rwr: [0, 1], winner: [0, 1],
   });
+
+  // ── GET formula studio (admin) ────────────────────────────────────────────
+  const [draftWeights, setDraftWeights] = React.useState(() => globalWeights ?? { genetic: 0.45, expression: 0.25, target: 0.30 });
+  const [weightSaving, setWeightSaving] = React.useState(false);
+  const [weightMsg,    setWeightMsg]    = React.useState<{ ok: boolean; text: string } | null>(null);
+
+  // Keep draft in sync if server weights arrive after mount
+  React.useEffect(() => {
+    if (globalWeights) setDraftWeights(globalWeights);
+  }, [globalWeights?.genetic, globalWeights?.expression, globalWeights?.target]);
+
+  const weightSum = +(draftWeights.genetic + draftWeights.expression + draftWeights.target).toFixed(3);
+
+  const handleWeightChange = (key: 'genetic' | 'expression' | 'target', raw: number) => {
+    const val = Math.round(raw * 100) / 100;
+    setDraftWeights(prev => ({ ...prev, [key]: val }));
+  };
+
+  const handleWeightSave = async () => {
+    if (!onWeightsSave) return;
+    if (Math.abs(weightSum - 1.0) > 0.005) {
+      setWeightMsg({ ok: false, text: `Weights must sum to 1.00 (currently ${weightSum.toFixed(2)})` });
+      return;
+    }
+    setWeightSaving(true);
+    setWeightMsg(null);
+    const result = await onWeightsSave(draftWeights);
+    setWeightSaving(false);
+    setWeightMsg(result.ok ? { ok: true, text: 'Saved — formula updated globally' } : { ok: false, text: result.error ?? 'Save failed' });
+    setTimeout(() => setWeightMsg(null), 3500);
+  };
 
   // notify parent whenever score/rank ranges change so displayTargets can filter
   useEffect(() => { onScoreRangesChange?.(scoreRanges); }, [scoreRanges]);
@@ -994,6 +1032,12 @@ const CohortFilterSidebar = ({ theme, targets, activeDisease, onScoreRangesChang
     const updated = { ...profile, [field]: value };
     setProfile(updated);
     localStorage.setItem('dtt_profile', JSON.stringify(updated));
+    // Sync name / institution to Supabase
+    if (field === 'name' || field === 'institution') {
+      supabase.auth.getUser().then(({ data: { user } }) => {
+        if (user) updateUserProfile(user.id, { [field]: value });
+      });
+    }
   };
 
   const handleCompare = async () => {
@@ -1047,12 +1091,12 @@ Be concise, scientific, and use markdown. Max 350 words.`;
   const panelConfig: Record<string, { icon: React.ElementType; title: string; sub: string }> = {
     workspace: { icon: Home,             title: 'Workspace',  sub: 'Overview'       },
     targets:   { icon: List,             title: 'Targets',    sub: 'Gene list'      },
-    filters:   { icon: SlidersHorizontal,title: 'Filters',    sub: 'Cohort data'    },
+    cohort:    { icon: Users,            title: 'Cohort',     sub: 'Cohort data'    },
     rankings:  { icon: BarChart3,         title: 'Rankings',   sub: 'Score ranges'   },
     compare:   { icon: Layers,           title: 'Compare',    sub: 'AI gene compare'},
     settings:  { icon: Settings,         title: 'Settings',   sub: 'Profile & docs' },
   };
-  const pc = panelConfig[activeNav] ?? panelConfig['filters'];
+  const pc = panelConfig[activeNav] ?? panelConfig['cohort'];
   const PanelIcon = pc.icon;
 
   const DOC_SECTIONS = [
@@ -1064,7 +1108,7 @@ Be concise, scientific, and use markdown. Max 350 words.`;
     {
       key: 'get',
       title: 'How GET Score Works',
-      content: `GET = G × 0.45 + E × 0.25 + T × 0.30\n\n• **G** — Genetic score (Open Targets association evidence)\n• **E** — Expression score (tissue expression selectivity)\n• **T** — Target score (tractability + clinical trial signal)\n\nA velocity bonus (×0.15) rewards fast-rising literature genes.`,
+      content: `GET = G × ${globalWeights.genetic} + E × ${globalWeights.expression} + T × ${globalWeights.target}\n\n• **G** — Genetic score (Open Targets association evidence)\n• **E** — Expression score (tissue expression selectivity)\n• **T** — Target score (tractability + clinical trial signal)\n\nA velocity bonus (×0.15) rewards fast-rising literature genes.`,
     },
     {
       key: 'csv',
@@ -1133,13 +1177,13 @@ Be concise, scientific, and use markdown. Max 350 words.`;
               <div className={`text-[12px] font-bold leading-tight ${isDark ? 'text-slate-100' : 'text-slate-900'}`}>{pc.title}</div>
             </div>
           </div>
-          {activeNav === 'filters' && totalActive > 0 && (
+          {activeNav === 'cohort' && totalActive > 0 && (
             <span className="px-1.5 py-0.5 rounded-full bg-blue-600 text-white text-[9px] font-black">{totalActive}</span>
           )}
         </div>
 
         {/* ── FILTERS panel ─────────────────────────────────────────────── */}
-        {activeNav === 'filters' && (
+        {activeNav === 'cohort' && (
           <>
             <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
               {/* Cohort checkbox filters */}
@@ -1329,40 +1373,119 @@ Be concise, scientific, and use markdown. Max 350 words.`;
         {/* ── RANKINGS panel ────────────────────────────────────────────── */}
         {activeNav === 'rankings' && (
           <div className="flex-1 overflow-y-auto p-3 space-y-4">
-            <p className={`text-[10px] leading-relaxed ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
-              Filter the gene list by network-based ranking scores. Drag both handles to set a min–max range.
-            </p>
 
-            {/* RWR */}
-            <div className={`p-3 rounded-xl border space-y-2 ${isDark ? 'border-slate-800 bg-slate-900/30' : 'border-slate-200 bg-slate-50'}`}>
-              <div className="flex items-center gap-2 mb-1">
-                <div className="w-2 h-2 rounded-full bg-violet-500" />
-                <span className={`text-[11px] font-bold uppercase tracking-wide ${isDark ? 'text-slate-200' : 'text-slate-700'}`}>RWR Score</span>
+            {/* ── ADMIN VIEW: GET Formula Studio ──────────────────────── */}
+            {currentUser?.role === 'admin' && (<>
+              {/* Header card */}
+              <div className={`rounded-xl border overflow-hidden ${isDark ? 'border-amber-500/30 bg-amber-500/5' : 'border-amber-200 bg-amber-50/60'}`}>
+                <div className={`px-3 py-2.5 flex items-center justify-between ${isDark ? 'bg-amber-500/10' : 'bg-amber-100/60'}`}>
+                  <div className="flex items-center gap-2">
+                    <Zap className="w-3.5 h-3.5 text-amber-500" />
+                    <span className={`text-[11px] font-bold ${isDark ? 'text-amber-300' : 'text-amber-700'}`}>GET Formula Weights</span>
+                  </div>
+                  <span className="px-1.5 py-0.5 rounded-full bg-rose-600 text-white text-[8px] font-black uppercase tracking-wider">Admin</span>
+                </div>
+
+                <div className="p-3 space-y-3">
+                  <p className={`text-[9px] leading-relaxed ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
+                    Adjust sliders so the total equals 100%, then click <strong>Save Global</strong>.
+                  </p>
+
+                  {/* Sliders */}
+                  {(['genetic', 'expression', 'target'] as const).map((key) => {
+                    const labels = {
+                      genetic:    { short: 'G', full: 'Genetic',    accent: 'accent-blue-500',    text: 'text-blue-500'    },
+                      expression: { short: 'E', full: 'Expression', accent: 'accent-emerald-500', text: 'text-emerald-500' },
+                      target:     { short: 'T', full: 'Target',     accent: 'accent-amber-500',   text: 'text-amber-500'  },
+                    };
+                    const lbl = labels[key];
+                    const pct = Math.round(draftWeights[key] * 100);
+                    return (
+                      <div key={key}>
+                        <div className="flex items-center justify-between mb-1.5">
+                          <div className="flex items-center gap-1.5">
+                            <span className={`text-[11px] font-black ${lbl.text}`}>{lbl.short}</span>
+                            <span className={`text-[10px] ${isDark ? 'text-slate-400' : 'text-slate-600'}`}>{lbl.full}</span>
+                          </div>
+                          <span className={`text-[13px] font-black tabular-nums ${isDark ? 'text-white' : 'text-slate-900'}`}>{pct}%</span>
+                        </div>
+                        <input
+                          type="range" min={0} max={1} step={0.01}
+                          value={draftWeights[key]}
+                          onChange={e => handleWeightChange(key, parseFloat(e.target.value))}
+                          className={`w-full h-2 cursor-pointer rounded-full ${lbl.accent}`}
+                        />
+                      </div>
+                    );
+                  })}
+
+                  {/* Sum indicator */}
+                  <div className={`flex items-center justify-between py-1.5 px-2 rounded-lg ${
+                    Math.abs(weightSum - 1.0) > 0.005
+                      ? 'bg-rose-500/10 border border-rose-500/30'
+                      : isDark ? 'bg-emerald-500/10 border border-emerald-500/20' : 'bg-emerald-50 border border-emerald-200'
+                  }`}>
+                    <span className={`text-[10px] font-black ${Math.abs(weightSum - 1.0) > 0.005 ? 'text-rose-500' : 'text-emerald-600'}`}>
+                      {Math.abs(weightSum - 1.0) > 0.005 ? `⚠ Sum: ${(weightSum * 100).toFixed(0)}% — must be 100%` : `✓ Sum: 100%`}
+                    </span>
+                    <button
+                      onClick={() => setDraftWeights({ genetic: 0.45, expression: 0.25, target: 0.30 })}
+                      className={`text-[9px] font-bold px-2 py-0.5 rounded transition-colors ${isDark ? 'text-slate-500 hover:text-white' : 'text-slate-400 hover:text-slate-700'}`}
+                    >Reset</button>
+                  </div>
+
+                  {/* Prominent Save Global button */}
+                  <button
+                    onClick={handleWeightSave}
+                    disabled={weightSaving || Math.abs(weightSum - 1.0) > 0.005}
+                    className="w-full py-2.5 rounded-xl font-black text-[12px] uppercase tracking-wider flex items-center justify-center gap-2 transition-all bg-amber-500 text-white hover:bg-amber-600 shadow-lg shadow-amber-500/20 disabled:opacity-40 disabled:cursor-not-allowed disabled:shadow-none"
+                  >
+                    {weightSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                    {weightSaving ? 'Saving…' : 'Save Global'}
+                  </button>
+
+                  {weightMsg && (
+                    <p className={`text-[10px] font-bold text-center ${weightMsg.ok ? 'text-emerald-500' : 'text-rose-500'}`}>
+                      {weightMsg.ok ? '✓ ' : '⚠ '}{weightMsg.text}
+                    </p>
+                  )}
+                </div>
               </div>
-              <p className={`text-[9px] leading-relaxed ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
-                Random Walk with Restart — measures proximity to seed genes in the protein interaction network.
-              </p>
-              <DualSlider label="RWR Score" values={rankRanges.rwr as [number, number]} onChange={v => setRankRanges(p => ({ ...p, rwr: v }))} accent="#8b5cf6" isDark={isDark} />
-            </div>
+            </>)}
 
-            {/* WINNER */}
-            <div className={`p-3 rounded-xl border space-y-2 ${isDark ? 'border-slate-800 bg-slate-900/30' : 'border-slate-200 bg-slate-50'}`}>
-              <div className="flex items-center gap-2 mb-1">
-                <div className="w-2 h-2 rounded-full bg-cyan-500" />
-                <span className={`text-[11px] font-bold uppercase tracking-wide ${isDark ? 'text-slate-200' : 'text-slate-700'}`}>WINNER Score</span>
+            {/* ── RESEARCHER VIEW: Network score range filters ─────────── */}
+            {currentUser?.role !== 'admin' && (<>
+              <p className={`text-[10px] leading-relaxed ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
+                Filter the gene list by network-based ranking scores. Drag both handles to set a min–max range.
+              </p>
+              <div className={`p-3 rounded-xl border space-y-2 ${isDark ? 'border-slate-800 bg-slate-900/30' : 'border-slate-200 bg-slate-50'}`}>
+                <div className="flex items-center gap-2 mb-1">
+                  <div className="w-2 h-2 rounded-full bg-violet-500" />
+                  <span className={`text-[11px] font-bold uppercase tracking-wide ${isDark ? 'text-slate-200' : 'text-slate-700'}`}>RWR Score</span>
+                </div>
+                <p className={`text-[9px] leading-relaxed ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
+                  Random Walk with Restart — measures proximity to seed genes in the protein interaction network.
+                </p>
+                <DualSlider label="RWR Score" values={rankRanges.rwr as [number, number]} onChange={v => setRankRanges(p => ({ ...p, rwr: v }))} accent="#8b5cf6" isDark={isDark} />
               </div>
-              <p className={`text-[9px] leading-relaxed ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
-                Network-based prioritization (Nguyen et al. 2022). Combines network topology with disease seed strength.
-              </p>
-              <DualSlider label="WINNER Score" values={rankRanges.winner as [number, number]} onChange={v => setRankRanges(p => ({ ...p, winner: v }))} accent="#06b6d4" isDark={isDark} />
-            </div>
+              <div className={`p-3 rounded-xl border space-y-2 ${isDark ? 'border-slate-800 bg-slate-900/30' : 'border-slate-200 bg-slate-50'}`}>
+                <div className="flex items-center gap-2 mb-1">
+                  <div className="w-2 h-2 rounded-full bg-cyan-500" />
+                  <span className={`text-[11px] font-bold uppercase tracking-wide ${isDark ? 'text-slate-200' : 'text-slate-700'}`}>WINNER Score</span>
+                </div>
+                <p className={`text-[9px] leading-relaxed ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
+                  Network-based prioritization (Nguyen et al. 2022). Combines network topology with disease seed strength.
+                </p>
+                <DualSlider label="WINNER Score" values={rankRanges.winner as [number, number]} onChange={v => setRankRanges(p => ({ ...p, winner: v }))} accent="#06b6d4" isDark={isDark} />
+              </div>
+              <button
+                onClick={() => setRankRanges({ rwr: [0, 1], winner: [0, 1] })}
+                className={`w-full py-1.5 rounded-lg text-[10px] font-bold transition-colors ${isDark ? 'bg-slate-800 text-slate-400 hover:text-white hover:bg-slate-700' : 'bg-slate-100 text-slate-500 hover:bg-slate-200 hover:text-slate-800'}`}
+              >
+                Reset Ranges
+              </button>
+            </>)}
 
-            <button
-              onClick={() => setRankRanges({ rwr: [0, 1], winner: [0, 1] })}
-              className={`w-full py-1.5 rounded-lg text-[10px] font-bold transition-colors ${isDark ? 'bg-slate-800 text-slate-400 hover:text-white hover:bg-slate-700' : 'bg-slate-100 text-slate-500 hover:bg-slate-200 hover:text-slate-800'}`}
-            >
-              Reset Ranges
-            </button>
           </div>
         )}
 
@@ -1552,6 +1675,25 @@ Be concise, scientific, and use markdown. Max 350 words.`;
         {/* ── SETTINGS panel ────────────────────────────────────────────── */}
         {activeNav === 'settings' && (
           <div className="flex-1 overflow-y-auto p-2.5 space-y-2">
+
+            {/* Session badge */}
+            {currentUser && (
+              <div className={`rounded-xl border px-3 py-2.5 flex items-center justify-between ${isDark ? 'border-slate-800 bg-slate-900/40' : 'border-slate-200 bg-slate-50'}`}>
+                <div className="flex items-center gap-2">
+                  <div className={`w-7 h-7 rounded-lg flex items-center justify-center ${currentUser.role === 'admin' ? 'bg-rose-600/15' : 'bg-blue-600/10'}`}>
+                    <ShieldCheck className={`w-3.5 h-3.5 ${currentUser.role === 'admin' ? 'text-rose-500' : 'text-blue-500'}`} />
+                  </div>
+                  <div>
+                    <p className={`text-[11px] font-bold ${isDark ? 'text-slate-100' : 'text-slate-800'}`}>{currentUser.username}</p>
+                    <p className={`text-[9px] uppercase tracking-wider font-black ${currentUser.role === 'admin' ? 'text-rose-500' : isDark ? 'text-slate-500' : 'text-slate-400'}`}>{currentUser.role}</p>
+                  </div>
+                </div>
+                {currentUser.role === 'admin' && (
+                  <span className={`text-[8px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full ${isDark ? 'bg-rose-500/15 text-rose-400' : 'bg-rose-50 text-rose-600'}`}>Formula Control</span>
+                )}
+              </div>
+            )}
+
             {/* User profile */}
             <div className={`rounded-xl border overflow-hidden ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
               <div className={`px-3 py-2 flex items-center gap-2 ${isDark ? 'bg-slate-900/40' : 'bg-slate-50'}`}>
@@ -1712,60 +1854,6 @@ const TargetDetailView = ({
   aiSummaryLoading: boolean;
   onShowScoreInfo?: (type: 'genetic' | 'expression' | 'target' | 'overall' | 'literature' | 'get_score' | 'priority' | 'rp_score' | 'winner_score') => void;
 }) => {
-  // ── Paperclip metrics (auto-fetch on open) ───────────────────────────────
-  type PcMetrics = {
-    papers:    { total: number; recent: number };
-    preprints: { total: number; recent: number };
-    fda:       { total: number; recent: number };
-    trials:    { total: number; recent: number };
-    trend:     { year: number; count: number }[];
-  };
-  const [pcMetrics, setPcMetrics] = React.useState<PcMetrics | null>(null);
-  const [pcMetricsLoading, setPcMetricsLoading] = React.useState(false);
-
-  React.useEffect(() => {
-    let cancelled = false;
-    setPcMetrics(null);
-    setPcMetricsLoading(true);
-    fetch('/api/paperclip/metrics', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ gene: target.symbol, disease: diseaseName }),
-    })
-      .then(r => r.json())
-      .then(d => { if (!cancelled && typeof d?.papers?.total === 'number') setPcMetrics(d); })
-      .catch(() => {})
-      .finally(() => { if (!cancelled) setPcMetricsLoading(false); });
-    return () => { cancelled = true; };
-  }, [target.symbol, diseaseName]);
-
-  // ── Paperclip deep-literature state (on-demand search) ───────────────────
-  const [paperclipData, setPaperclipData] = React.useState<{
-    papers: { title: string; source: string; year: string; url: string; summary: string }[];
-    trials: { title: string; source: string; year: string; url: string; summary: string }[];
-  } | null>(null);
-  const [paperclipLoading, setPaperclipLoading] = React.useState(false);
-  const [paperclipError, setPaperclipError] = React.useState<string | null>(null);
-
-  const handlePaperclipSearch = async () => {
-    if (paperclipLoading || paperclipData) return;
-    setPaperclipLoading(true);
-    setPaperclipError(null);
-    try {
-      const resp = await fetch('/api/paperclip/search', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ gene: target.symbol, disease: diseaseName })
-      });
-      if (!resp.ok) throw new Error(`Server error ${resp.status}`);
-      const data = await resp.json();
-      setPaperclipData(data);
-    } catch (e: any) {
-      setPaperclipError(e.message || 'Failed to fetch');
-    } finally {
-      setPaperclipLoading(false);
-    }
-  };
 
   if (subPage === 'literature') {
     return (
@@ -2272,239 +2360,6 @@ const TargetDetailView = ({
               </div>
             )}
 
-            {/* ── Paperclip Metrics Strip ────────────────────────────────── */}
-            <div className={`mt-6 rounded-2xl border overflow-hidden ${theme === 'dark' ? 'bg-[#171717] border-neutral-800' : 'bg-white border-neutral-200 shadow-sm'}`}>
-              <div className={`px-6 py-3 border-b flex items-center gap-2 ${theme === 'dark' ? 'border-neutral-800 bg-cyan-900/10' : 'border-neutral-100 bg-cyan-50/60'}`}>
-                <div className="p-1 rounded-lg bg-cyan-100 dark:bg-cyan-900/30">
-                  <BookOpen className="w-3.5 h-3.5 text-cyan-600" />
-                </div>
-                <h4 className="text-[10px] font-bold uppercase text-neutral-500 tracking-wider">Paperclip Literature Intelligence</h4>
-                <span className="text-[8px] text-neutral-400 ml-auto">150M+ papers · PMC · bioRxiv · FDA · Trials</span>
-              </div>
-              <div className="px-6 py-4">
-                {pcMetricsLoading && (
-                  <div className="flex items-center gap-2 py-3">
-                    <Loader2 className="w-3.5 h-3.5 animate-spin text-cyan-500" />
-                    <span className="text-[10px] text-neutral-400">Running SQL counts across 150M documents…</span>
-                  </div>
-                )}
-                {pcMetrics && (() => {
-                  // Inline sparkline SVG
-                  const Sparkline = ({ data, strokeColor }: { data: { year: number; count: number }[]; strokeColor: string }) => {
-                    if (!data || data.length < 2) return null;
-                    const counts = data.map(d => d.count);
-                    const maxVal = Math.max(...counts, 1);
-                    const W = 100, H = 28;
-                    const pts = data.map((d, i) => {
-                      const x = (i / (data.length - 1)) * W;
-                      const y = H - (d.count / maxVal) * H;
-                      return `${x.toFixed(1)},${y.toFixed(1)}`;
-                    }).join(' ');
-                    const lastX = W, lastY = H - (counts[counts.length - 1] / maxVal) * H;
-                    return (
-                      <svg viewBox={`0 0 ${W} ${H}`} className="w-full overflow-visible" style={{ height: 28 }}>
-                        <polyline points={pts} fill="none" stroke={strokeColor} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
-                        <circle cx={lastX} cy={lastY} r="2" fill={strokeColor} />
-                      </svg>
-                    );
-                  };
-                  const cards = [
-                    { key: 'papers'    as const, label: 'Full-Text Papers',    sub: 'PMC',              bg: 'bg-cyan-950/20 border-cyan-800/40',   numCls: 'text-cyan-400',   subCls: 'text-cyan-600',   stroke: '#22d3ee' },
-                    { key: 'preprints' as const, label: 'Preprints',           sub: 'bioRxiv / medRxiv', bg: 'bg-violet-950/20 border-violet-800/40', numCls: 'text-violet-400', subCls: 'text-violet-600', stroke: '#a78bfa' },
-                    { key: 'trials'    as const, label: 'Clinical Trials',     sub: 'ClinicalTrials.gov', bg: 'bg-teal-950/20 border-teal-800/40',   numCls: 'text-teal-400',   subCls: 'text-teal-600',   stroke: '#2dd4bf' },
-                    { key: 'fda'       as const, label: 'FDA Documents',       sub: 'FDA',               bg: 'bg-rose-950/20 border-rose-800/40',   numCls: 'text-rose-400',   subCls: 'text-rose-600',   stroke: '#fb7185' },
-                  ];
-                  const lightCards = [
-                    { key: 'papers'    as const, bg: 'bg-cyan-50 border-cyan-200',   numCls: 'text-cyan-700',   subCls: 'text-cyan-500',   stroke: '#0891b2' },
-                    { key: 'preprints' as const, bg: 'bg-violet-50 border-violet-200', numCls: 'text-violet-700', subCls: 'text-violet-500', stroke: '#7c3aed' },
-                    { key: 'trials'    as const, bg: 'bg-teal-50 border-teal-200',   numCls: 'text-teal-700',   subCls: 'text-teal-500',   stroke: '#0f766e' },
-                    { key: 'fda'       as const, bg: 'bg-rose-50 border-rose-200',   numCls: 'text-rose-700',   subCls: 'text-rose-500',   stroke: '#e11d48' },
-                  ];
-                  return (
-                    <>
-                      {/* 4 count cards */}
-                      <div className="grid grid-cols-2 gap-3 mb-4">
-                        {cards.map((c, idx) => {
-                          const lc = lightCards[idx];
-                          const sec = pcMetrics[c.key];
-                          const cardCls = theme === 'dark'
-                            ? `rounded-xl border p-3 ${c.bg}`
-                            : `rounded-xl border p-3 ${lc.bg}`;
-                          const nCls = theme === 'dark' ? c.numCls : lc.numCls;
-                          const sCls = theme === 'dark' ? c.subCls : lc.subCls;
-                          return (
-                            <div key={c.key} className={cardCls}>
-                              <div className={`text-[7px] font-black uppercase tracking-widest mb-1 ${sCls}`}>{c.label}</div>
-                              <div className={`text-[8px] ${sCls} opacity-60 mb-2`}>{c.sub}</div>
-                              <div className="flex items-end justify-between">
-                                <div>
-                                  <div className={`text-2xl font-black leading-none ${nCls}`}>
-                                    {sec.total.toLocaleString()}
-                                  </div>
-                                  <div className="text-[7px] text-neutral-400 uppercase mt-0.5">Total</div>
-                                </div>
-                                <div className="text-right">
-                                  <div className={`text-base font-bold leading-none ${nCls} opacity-80`}>{sec.recent.toLocaleString()}</div>
-                                  <div className="text-[7px] text-neutral-400 uppercase mt-0.5">Last 12m</div>
-                                </div>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                      {/* Publication trend sparkline */}
-                      {pcMetrics.trend.length >= 2 && (
-                        <div className={`rounded-xl border p-3 ${theme === 'dark' ? 'bg-neutral-900 border-neutral-800' : 'bg-neutral-50 border-neutral-200'}`}>
-                          <div className="flex items-center justify-between mb-2">
-                            <span className="text-[8px] font-black uppercase tracking-widest text-neutral-500">Publication Trend</span>
-                            <span className="text-[8px] text-neutral-400">
-                              {pcMetrics.trend[0].year} – {pcMetrics.trend[pcMetrics.trend.length - 1].year}
-                            </span>
-                          </div>
-                          <Sparkline data={pcMetrics.trend} strokeColor={theme === 'dark' ? '#22d3ee' : '#0891b2'} />
-                          <div className="flex justify-between mt-1">
-                            <span className="text-[7px] text-neutral-500">{pcMetrics.trend[0].year}</span>
-                            <span className={`text-[8px] font-bold ${theme === 'dark' ? 'text-cyan-400' : 'text-cyan-700'}`}>
-                              {pcMetrics.trend[pcMetrics.trend.length - 1].count} papers in {pcMetrics.trend[pcMetrics.trend.length - 1].year}
-                            </span>
-                            <span className="text-[7px] text-neutral-500">{pcMetrics.trend[pcMetrics.trend.length - 1].year}</span>
-                          </div>
-                        </div>
-                      )}
-                    </>
-                  );
-                })()}
-                {!pcMetricsLoading && !pcMetrics && (
-                  <p className="text-[10px] text-neutral-500 py-1">No data available.</p>
-                )}
-              </div>
-            </div>
-
-            {/* ── Paperclip Deep Literature ──────────────────────────────── */}
-            <div className={`mt-6 rounded-2xl border overflow-hidden ${theme === 'dark' ? 'bg-[#171717] border-neutral-800' : 'bg-white border-neutral-200 shadow-sm'}`}>
-              {/* Header */}
-              <div className={`px-6 py-4 border-b flex items-center justify-between ${theme === 'dark' ? 'border-neutral-800 bg-cyan-900/10' : 'border-neutral-100 bg-cyan-50/60'}`}>
-                <div className="flex items-center gap-2">
-                  <div className="p-1.5 rounded-lg bg-cyan-100 dark:bg-cyan-900/30">
-                    <BookOpen className="w-4 h-4 text-cyan-600" />
-                  </div>
-                  <div>
-                    <h4 className="text-[11px] font-bold uppercase text-neutral-500 tracking-wider">Paperclip Deep Literature</h4>
-                    <p className="text-[9px] text-neutral-400 mt-0.5">150M+ papers · PMC · bioRxiv · medRxiv · ClinicalTrials</p>
-                  </div>
-                </div>
-                {!paperclipData && (
-                  <button
-                    onClick={handlePaperclipSearch}
-                    disabled={paperclipLoading}
-                    className="px-4 py-1.5 rounded-xl bg-cyan-600 text-white text-[10px] font-bold uppercase tracking-widest hover:bg-cyan-700 transition-all flex items-center gap-1.5 disabled:opacity-50"
-                  >
-                    {paperclipLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Search className="w-3 h-3" />}
-                    {paperclipLoading ? 'Searching...' : 'Search'}
-                  </button>
-                )}
-                {paperclipData && (
-                  <div className="px-2 py-0.5 rounded bg-cyan-500/10 text-[9px] font-black text-cyan-600 uppercase">
-                    {paperclipData.papers.length} papers · {paperclipData.trials.length} trials
-                  </div>
-                )}
-              </div>
-
-              {/* Body */}
-              <div className="px-6 py-4">
-                {/* Not yet searched */}
-                {!paperclipData && !paperclipLoading && !paperclipError && (
-                  <p className="text-[10px] text-neutral-400 text-center py-4">
-                    Click <strong>Search</strong> to pull full-text papers and trials for <strong>{target.symbol}</strong> in {diseaseName}
-                  </p>
-                )}
-
-                {/* Loading */}
-                {paperclipLoading && (
-                  <div className="flex flex-col items-center gap-2 py-6">
-                    <Loader2 className="w-6 h-6 animate-spin text-cyan-500" />
-                    <p className="text-[10px] font-bold uppercase text-neutral-400 tracking-widest">Querying 150M papers…</p>
-                  </div>
-                )}
-
-                {/* Error */}
-                {paperclipError && (
-                  <div className="flex items-center gap-2 py-4 text-rose-500">
-                    <AlertCircle className="w-4 h-4 shrink-0" />
-                    <p className="text-[10px]">{paperclipError}</p>
-                  </div>
-                )}
-
-                {/* Results */}
-                {paperclipData && (
-                  <div className="space-y-5">
-                    {/* Papers */}
-                    {paperclipData.papers.length > 0 && (
-                      <div>
-                        <h5 className="text-[9px] font-bold uppercase text-cyan-600 tracking-widest mb-2">Research Papers</h5>
-                        <div className="space-y-2">
-                          {paperclipData.papers.map((p, i) => (
-                            <div key={i} className={`p-3 rounded-xl border ${theme === 'dark' ? 'bg-neutral-900 border-neutral-800' : 'bg-neutral-50 border-neutral-100'}`}>
-                              <div className="flex items-start gap-2">
-                                <span className="text-[9px] font-black text-cyan-500 mt-0.5 shrink-0">#{i + 1}</span>
-                                <div className="min-w-0">
-                                  {p.url ? (
-                                    <a href={p.url} target="_blank" rel="noopener noreferrer"
-                                      className="text-[11px] font-semibold text-cyan-700 dark:text-cyan-400 hover:underline line-clamp-2 leading-tight block">
-                                      {p.title}
-                                    </a>
-                                  ) : (
-                                    <p className="text-[11px] font-semibold text-neutral-800 dark:text-neutral-200 line-clamp-2 leading-tight">{p.title}</p>
-                                  )}
-                                  {p.summary && (
-                                    <p className="text-[10px] text-neutral-500 dark:text-neutral-400 line-clamp-2 mt-1 italic">{p.summary}</p>
-                                  )}
-                                  <div className="flex items-center gap-2 mt-1.5">
-                                    {p.source && <span className="px-1.5 py-0.5 rounded bg-cyan-100 dark:bg-cyan-900/30 text-[8px] font-bold text-cyan-700 dark:text-cyan-400 uppercase">{p.source}</span>}
-                                    {p.year && <span className="text-[9px] text-neutral-400">{p.year}</span>}
-                                  </div>
-                                </div>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Trials */}
-                    {paperclipData.trials.length > 0 && (
-                      <div>
-                        <h5 className="text-[9px] font-bold uppercase text-teal-600 tracking-widest mb-2">Clinical Trials (Paperclip)</h5>
-                        <div className="space-y-2">
-                          {paperclipData.trials.map((t, i) => (
-                            <div key={i} className={`p-3 rounded-xl border ${theme === 'dark' ? 'bg-neutral-900 border-neutral-800' : 'bg-teal-50/50 border-teal-100'}`}>
-                              <div className="flex items-start gap-2">
-                                <span className="text-[9px] font-black text-teal-500 mt-0.5 shrink-0">#{i + 1}</span>
-                                <div className="min-w-0">
-                                  <p className="text-[11px] font-semibold text-neutral-800 dark:text-neutral-200 line-clamp-2 leading-tight">{t.title}</p>
-                                  {t.summary && (
-                                    <p className="text-[10px] text-neutral-500 dark:text-neutral-400 line-clamp-2 mt-1 italic">{t.summary}</p>
-                                  )}
-                                  <div className="flex items-center gap-2 mt-1.5">
-                                    {t.source && <span className="px-1.5 py-0.5 rounded bg-teal-100 dark:bg-teal-900/30 text-[8px] font-bold text-teal-700 dark:text-teal-400 uppercase">{t.source}</span>}
-                                    {t.year && <span className="text-[9px] text-neutral-400">{t.year}</span>}
-                                  </div>
-                                </div>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
-                    {paperclipData.papers.length === 0 && paperclipData.trials.length === 0 && (
-                      <p className="text-[10px] text-neutral-400 text-center py-4">No results found for {target.symbol} in {diseaseName}</p>
-                    )}
-                  </div>
-                )}
-              </div>
-            </div>
-
             {/* Clinical Pipeline Section */}
             <div className="pt-10 border-t border-neutral-100 dark:border-neutral-800">
               <DrugLandscape 
@@ -2540,9 +2395,73 @@ const TargetDetailView = ({
 
 const App = () => {
   const [theme, setTheme] = useState<Theme>('light');
-  const [isAuthenticated, setIsAuthenticated] = useState(!!localStorage.getItem('pharm_user'));
+
+  // ── Auth state (Supabase) ────────────────────────────────────────────────
+  const [currentUser, setCurrentUser] = useState<UserSession | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const isAuthenticated = !!currentUser;
+
+  // Fetch role from DB in the background and patch currentUser if it differs.
+  // Called AFTER we already let the user in — never blocks the UI.
+  const syncRole = async (userId: string) => {
+    try {
+      const profile = await fetchUserProfile(userId);
+      if (profile?.role) {
+        setCurrentUser(prev =>
+          prev && prev.userId === userId ? { ...prev, role: profile.role as UserRole } : prev
+        );
+      }
+    } catch { /* non-critical — user stays as 'user' */ }
+  };
+
+  useEffect(() => {
+    let mounted = true;
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (!mounted) return;
+
+      if (session?.user) {
+        // ── Let the user in IMMEDIATELY with basic info ──
+        // Role will be patched by syncRole() in the background.
+        setCurrentUser({
+          role:     'user',           // default; overwritten by syncRole
+          username: session.user.email ?? session.user.id,
+          userId:   session.user.id,
+        });
+        setAuthLoading(false);
+        syncRole(session.user.id);   // fire-and-forget
+      } else {
+        setCurrentUser(null);
+        setAuthLoading(false);
+      }
+    });
+
+    // Safety net: unblock UI after 5 s if Supabase never fires
+    const timeout = setTimeout(() => { if (mounted) setAuthLoading(false); }, 5000);
+
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+      clearTimeout(timeout);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleSignOut = async () => {
+    try {
+      await supabase.auth.signOut();
+    } catch { /* ignore sign-out errors */ }
+    // Force clear state regardless of whether signOut succeeded
+    setCurrentUser(null);
+    setAuthLoading(false);
+    localStorage.removeItem('dtt_session');
+    localStorage.removeItem('pharm_user');
+    // Clear persisted research state so the next user starts fresh
+    try { sessionStorage.removeItem('dtt_research_state'); } catch { /* ignore */ }
+  };
+
   const [viewMode, setViewMode] = useState<ViewMode>('list');
-  const OT_PAGE_SIZE = 5; // TODO: restore to 50 before production push
+  const OT_PAGE_SIZE = 50;
 
   const [wikiSavedGenes, setWikiSavedGenes] = useState<Set<string>>(new Set());
   const [wikiSaving, setWikiSaving] = useState<string | null>(null); // symbol currently saving
@@ -2662,12 +2581,32 @@ const App = () => {
 
   const [loading, setLoading] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState("Mapping Intelligence...");
+
+  // ── Global weights (Supabase app_config) ────────────────────────────────
+  const [globalWeights, setGlobalWeights] = useState<{ genetic: number; expression: number; target: number }>({ genetic: 0.45, expression: 0.25, target: 0.30 });
+
+  useEffect(() => {
+    fetchGlobalWeights().then(w => {
+      if (!w) return;
+      setGlobalWeights(w);
+      setResearchState(prev => ({ ...prev, weights: { ...prev.weights, ...w } }));
+    });
+  }, []);
+
+  const handleWeightsSave = async (w: { genetic: number; expression: number; target: number }): Promise<{ ok: boolean; error?: string }> => {
+    const result = await saveGlobalWeights(w);
+    if (!result.ok) return result;
+    setGlobalWeights(w);
+    setResearchState(prev => ({ ...prev, weights: { ...prev.weights, ...w } }));
+    return { ok: true };
+  };
+
   const [researchState, setResearchState] = useState<ResearchContext>({
     activeDisease: null,
     targets: [],
     enrichment: [],
     limit: OT_PAGE_SIZE,
-    currentPage: 0, 
+    currentPage: 0,
     focusSymbol: null,
     filters: [],
     sorts: [],
@@ -2681,6 +2620,54 @@ const App = () => {
     paperResults: [],
     pubtatorPage: 1
   });
+
+  // ── Session persistence: restore researchState from sessionStorage after login ──
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    if (sessionRestoredRef.current) return;          // only run once per session
+    if (researchState.activeDisease || researchState.targets.length > 0) {
+      sessionRestoredRef.current = true;             // already have live data — skip restore
+      return;
+    }
+    sessionRestoredRef.current = true;
+    try {
+      const raw = sessionStorage.getItem('dtt_research_state');
+      if (!raw) return;
+      const snap = JSON.parse(raw) as {
+        activeDisease?: DiseaseInfo | null;
+        targets?: Target[];
+        currentPage?: number;
+        weights?: GETWeights;
+      };
+      if (snap.activeDisease || (snap.targets && snap.targets.length > 0)) {
+        setResearchState(prev => ({
+          ...prev,
+          activeDisease: snap.activeDisease ?? prev.activeDisease,
+          targets:       snap.targets      ?? prev.targets,
+          currentPage:   snap.currentPage  ?? prev.currentPage,
+          weights:       snap.weights      ?? prev.weights,
+        }));
+      }
+    } catch { /* corrupt snapshot — ignore */ }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthenticated]);
+
+  // ── Session persistence: save researchState to sessionStorage whenever key fields change ──
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    if (!researchState.activeDisease && researchState.targets.length === 0) return;
+    try {
+      // Strip drillDown — it's loaded on demand and can be large
+      const lightTargets = researchState.targets.map(({ drillDown: _dd, ...rest }) => rest);
+      sessionStorage.setItem('dtt_research_state', JSON.stringify({
+        activeDisease: researchState.activeDisease,
+        targets:       lightTargets,
+        currentPage:   researchState.currentPage,
+        weights:       researchState.weights,
+      }));
+    } catch { /* sessionStorage quota exceeded — ignore */ }
+  }, [researchState.activeDisease, researchState.targets, researchState.currentPage, researchState.weights, isAuthenticated]);
+
   const [messages, setMessages] = useState<Message[]>([{ role: 'assistant', content: "DiseaseToTarget Ready. Targeting breakthroughs in Alzheimer's and other complex diseases.", timestamp: new Date() }]);
   const [chatInput, setChatInput] = useState("");
   const [isChatting, setIsChatting] = useState(false);
@@ -2695,6 +2682,7 @@ const App = () => {
   const [visibleBioTissues, setVisibleBioTissues] = useState<string[]>([]);  // selected tissues to show as columns
   const bimodalityCache = useRef<Record<string, Record<string, number>> | null>(null);
   const bimodalityLoading = useRef(false);
+  const sessionRestoredRef = useRef(false);
   const [isExportDropdownOpen, setIsExportDropdownOpen] = useState(false);
   const [activeScoreInfo, setActiveScoreInfo] = useState<'genetic' | 'expression' | 'target' | 'overall' | 'literature' | 'get_score' | 'priority' | 'rp_score' | 'winner_score' | null>(null);
   const [activeTooltip, setActiveTooltip] = useState<string | null>(null);
@@ -3469,8 +3457,11 @@ Return ONLY valid JSON.
       const e = t.combinedExpression || t.expressionScore || 0;
       const tr = t.targetScore || 0;
 
-      // GET = 0.45·G + 0.25·E + 0.30·T  (pure OT scores, no lazy drill-down dependency)
-      const getScore = (g * 0.45) + (e * 0.25) + (tr * 0.30);
+      // GET = wG·G + wE·E + wT·T  — uses admin-saved weights from Supabase
+      const wG = weights.genetic   ?? 0.45;
+      const wE = weights.expression ?? 0.25;
+      const wT = weights.target     ?? 0.30;
+      const getScore = (g * wG) + (e * wE) + (tr * wT);
       const overallScore = getScore;
 
       const clinical_flags: string[] = [];
@@ -4042,24 +4033,6 @@ Return ONLY valid JSON.
 
           return `Loaded ${updatedNewGenes.length} more targets for ${researchState.activeDisease.name}.`;
         }
-        case 'search_paperclip': {
-          try {
-            const resp = await fetch('/api/paperclip/ask', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ query: args.query, source: args.source }),
-            });
-            const data = await resp.json();
-            if (!data.results?.length) return `No Paperclip results found for: "${args.query}"`;
-            const lines = data.results.map((p: any, i: number) => {
-              const src = [p.source, p.year].filter(Boolean).join(' · ');
-              return `**${i + 1}. ${p.title}**\n${src}${p.url ? ` · [link](${p.url})` : ''}\n${p.summary || ''}`;
-            });
-            return `Paperclip found ${data.total ?? data.results.length} results for **"${args.query}"**:\n\n${lines.join('\n\n')}`;
-          } catch (e: any) {
-            return `Paperclip search failed: ${e.message}`;
-          }
-        }
         default: return "Acknowledged.";
       }
     } catch (err) { return "Operation error."; } finally { setLoading(false); }
@@ -4157,8 +4130,7 @@ Return ONLY valid JSON.
         { name: 'explain_target', parameters: { type: Type.OBJECT, properties: { symbol: { type: Type.STRING } }, required: ['symbol'] } },
         { name: 'get_target_details', parameters: { type: Type.OBJECT, properties: { symbol: { type: Type.STRING } }, required: ['symbol'] } },
         { name: 'suggest_filters', parameters: { type: Type.OBJECT, properties: { query: { type: Type.STRING } }, required: ['query'] } },
-        { name: 'rank_targets', parameters: { type: Type.OBJECT, properties: { priorities: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { field: { type: Type.STRING }, weight: { type: Type.NUMBER } }, required: ['field'] } } }, required: ['priorities'] } },
-        { name: 'search_paperclip', parameters: { type: Type.OBJECT, properties: { query: { type: Type.STRING, description: 'Free-form literature query, e.g. "TREM2 microglial phagocytosis mechanism"' }, source: { type: Type.STRING, enum: ['pmc', 'biorxiv', 'medrxiv', 'arxiv', 'fda', 'trials'], description: 'Optional: restrict to a specific source' } }, required: ['query'] } }
+        { name: 'rank_targets', parameters: { type: Type.OBJECT, properties: { priorities: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { field: { type: Type.STRING }, weight: { type: Type.NUMBER } }, required: ['field'] } } }, required: ['priorities'] } }
       ];
 
       const systemInstruction = `You are the DiseaseToTarget AI Assistant, an intelligent terminal for Target List exploration and literature discovery.
@@ -4168,17 +4140,7 @@ Return ONLY valid JSON.
       - You use MCP-style tools to filter, sort, compare, and explain targets.
       - You interpret natural-language requests into precise tool calls.
       - You manage a persistent filter state for the Target List.
-      - You can search 150M+ biomedical papers, preprints, FDA documents, and clinical trials via Paperclip using 'search_paperclip'.
 
-      Paperclip Usage:
-      - Use 'search_paperclip' whenever the user asks about mechanisms, evidence, recent findings, drug history, or wants literature on a gene/disease.
-      - Construct specific queries: gene name + disease + mechanism keyword (e.g. "TREM2 Alzheimer microglial phagocytosis").
-      - Use source='fda' for regulatory/drug approval questions.
-      - Use source='trials' for clinical trial protocol questions.
-      - Use source='biorxiv' for cutting-edge unpublished findings.
-      - After getting results, synthesize them into a clear answer — don't just list papers.
-      - Cite paper titles and sources briefly when relevant.
-      
       Filter State Management:
       - Maintain active filters across the session.
       - Use 'get_active_filters' to see what's currently applied.
@@ -4272,7 +4234,17 @@ Return ONLY valid JSON.
     }
   };
 
-  if (!isAuthenticated) return <SignInPage theme={theme} toggleTheme={() => setTheme(t=>t==='dark'?'light':'dark')} onSignIn={e => { localStorage.setItem('pharm_user', e); setIsAuthenticated(true); }} />;
+  // While Supabase is checking the existing session, show a neutral loader
+  if (authLoading) return (
+    <div className={`h-screen flex flex-col items-center justify-center gap-4 ${theme === 'dark' ? 'bg-[#0a0a0a]' : 'bg-neutral-50'}`}>
+      <div className="p-4 bg-blue-600 rounded-2xl shadow-xl shadow-blue-600/30">
+        <FlaskConical className="w-10 h-10 text-white" />
+      </div>
+      <Loader2 className="w-6 h-6 text-blue-500 animate-spin" />
+    </div>
+  );
+
+  if (!isAuthenticated) return <SignInPage theme={theme} toggleTheme={() => setTheme(t => t === 'dark' ? 'light' : 'dark')} />;
 
   return (
     <div className={`h-screen flex flex-col transition-colors duration-200 ai-native-bg ${theme === 'dark' ? 'bg-[#070b12] text-slate-200' : 'bg-[#eef3f8] text-slate-950'}`}>
@@ -4301,8 +4273,24 @@ Return ONLY valid JSON.
           theme={theme} 
         />
         <div className="flex items-center gap-2 shrink-0">
-          <button onClick={() => setTheme(t=>t==='dark'?'light':'dark')} className="p-2 rounded hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">{theme === 'dark' ? <Sun className="w-4 h-4 text-slate-300" /> : <Moon className="w-4 h-4 text-slate-900" />}</button>
-          <div className="w-px h-4 bg-neutral-200 dark:bg-neutral-800 mx-1" /><button onClick={() => { localStorage.removeItem('pharm_user'); setIsAuthenticated(false); }} className="p-2 rounded hover:text-rose-600 text-neutral-400 transition-colors"><LogOut className="w-4 h-4" /></button>
+          {/* Role badge */}
+          {currentUser && (
+            <span className={`hidden sm:flex items-center gap-1 px-2 py-0.5 rounded-full text-[8px] font-black uppercase tracking-wider border ${
+              currentUser.role === 'admin'
+                ? 'bg-rose-500/10 border-rose-500/30 text-rose-500 dark:text-rose-400'
+                : 'bg-blue-500/10 border-blue-500/20 text-blue-600 dark:text-blue-400'
+            }`}>
+              <ShieldCheck className="w-2.5 h-2.5" />
+              {currentUser.role === 'admin' ? 'Admin' : 'Researcher'}
+            </span>
+          )}
+          <button onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')} className="p-2 rounded hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">
+            {theme === 'dark' ? <Sun className="w-4 h-4 text-slate-300" /> : <Moon className="w-4 h-4 text-slate-900" />}
+          </button>
+          <div className="w-px h-4 bg-neutral-200 dark:bg-neutral-800 mx-1" />
+          <button onClick={handleSignOut} className="p-2 rounded hover:text-rose-600 text-neutral-400 transition-colors" title="Sign out">
+            <LogOut className="w-4 h-4" />
+          </button>
         </div>
       </header>
       <main className="flex-1 flex overflow-hidden relative p-2 gap-2">
@@ -4387,7 +4375,7 @@ Return ONLY valid JSON.
              </div>
            </form>
         </aside>
-        <CohortFilterSidebar theme={theme} targets={researchState.targets} activeDisease={researchState.activeDisease} onScoreRangesChange={setScoreRangeFilter} onRankRangesChange={setRankRangeFilter} visibleCols={visibleColumns} onVisibleColsChange={setVisibleColumns} visibleBioTissues={visibleBioTissues} onVisibleBioTissuesChange={setVisibleBioTissues} />
+        <CohortFilterSidebar theme={theme} targets={researchState.targets} activeDisease={researchState.activeDisease} onScoreRangesChange={setScoreRangeFilter} onRankRangesChange={setRankRangeFilter} visibleCols={visibleColumns} onVisibleColsChange={setVisibleColumns} visibleBioTissues={visibleBioTissues} onVisibleBioTissuesChange={setVisibleBioTissues} currentUser={currentUser} globalWeights={globalWeights} onWeightsSave={handleWeightsSave} />
         {!isLeftSidebarOpen && (<button onClick={() => setIsLeftSidebarOpen(true)} className="absolute right-4 bottom-4 z-20 p-2.5 rounded-full bg-blue-600 text-white shadow-xl hover:scale-110 transition-transform"><MessageSquare className="w-5 h-5" /></button>)}
         <section className="order-1 flex-1 flex flex-col overflow-hidden relative min-w-0">
            <Breadcrumbs 
@@ -5191,34 +5179,124 @@ Return ONLY valid JSON.
   );
 };
 
-const SignInPage = ({ theme, toggleTheme, onSignIn }: { theme: Theme, toggleTheme: () => void, onSignIn: (user: string) => void }) => {
-  const [email, setEmail] = useState(""), [password, setPassword] = useState("");
+const SignInPage = ({ theme, toggleTheme }: { theme: Theme; toggleTheme: () => void }) => {
+  const [mode, setMode]           = useState<'signin' | 'signup'>('signin');
+  const [email, setEmail]         = useState('');
+  const [password, setPassword]   = useState('');
+  const [confirm, setConfirm]     = useState('');
+  const [error, setError]         = useState('');
+  const [info, setInfo]           = useState('');
+  const [busy, setBusy]           = useState(false);
+
+  const inputCls = `w-full p-4 rounded-xl border text-sm font-semibold outline-none transition-all ${
+    theme === 'dark'
+      ? 'bg-[#0a0a0a] border-neutral-800 text-white focus:border-blue-600'
+      : 'bg-neutral-50 border-neutral-300 text-neutral-900 focus:border-blue-600 focus:bg-white'
+  }`;
+
+  const handleSignIn = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!email.trim() || !password) { setError('Enter your email and password.'); return; }
+    setBusy(true); setError(''); setInfo('');
+
+    // Race sign-in against a 10-second timeout so the button never freezes
+    const signInPromise = supabase.auth.signInWithPassword({ email: email.trim(), password });
+    const timeoutPromise = new Promise<{ error: Error }>(resolve =>
+      setTimeout(() => resolve({ error: new Error('Connection timed out. Check your network and try again.') }), 10000)
+    );
+
+    const result = await Promise.race([signInPromise, timeoutPromise]);
+    setBusy(false);
+
+    if (result.error) {
+      const msg = result.error.message;
+      // Give friendlier messages for the two most common issues
+      if (msg.toLowerCase().includes('email not confirmed')) {
+        setError('Email not yet confirmed. Go to Supabase Dashboard → Authentication → Providers → Email → disable "Confirm email", then try again.');
+      } else if (msg.toLowerCase().includes('invalid login') || msg.toLowerCase().includes('invalid credentials')) {
+        setError('Wrong email or password. Try again.');
+      } else {
+        setError(msg);
+      }
+    }
+    // On success onAuthStateChange fires in App and lets the user in immediately
+  };
+
+  const handleSignUp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!email.trim() || !password) { setError('Enter your email and password.'); return; }
+    if (password !== confirm) { setError('Passwords do not match.'); return; }
+    if (password.length < 6) { setError('Password must be at least 6 characters.'); return; }
+    setBusy(true); setError(''); setInfo('');
+    const { error: err } = await supabase.auth.signUp({ email: email.trim(), password });
+    setBusy(false);
+    if (err) { setError(err.message); return; }
+    setInfo('Account created! Check your email to confirm, then sign in.');
+    setMode('signin');
+    setPassword(''); setConfirm('');
+  };
+
   return (
     <div className={`h-screen flex items-center justify-center p-6 ${theme === 'dark' ? 'bg-[#0a0a0a]' : 'bg-neutral-50'}`}>
-      <div className={`w-full max-w-sm p-10 rounded-2xl border transition-all ${theme === 'dark' ? 'bg-[#171717] border-neutral-800 shadow-2xl' : 'bg-white border-neutral-200 shadow-2xl shadow-blue-900/10'}`}>
-        <div className="flex flex-col items-center gap-6 mb-12 text-center">
+      <div className={`w-full max-w-sm rounded-2xl border transition-all ${theme === 'dark' ? 'bg-[#171717] border-neutral-800 shadow-2xl' : 'bg-white border-neutral-200 shadow-2xl shadow-blue-900/10'}`}>
+
+        {/* Header */}
+        <div className="flex flex-col items-center gap-6 pt-10 pb-6 px-10 text-center">
           <div className="p-4 bg-blue-600 rounded-2xl shadow-xl shadow-blue-600/30 rotate-3 transition-transform hover:rotate-0">
             <FlaskConical className="w-10 h-10 text-white" />
           </div>
           <div>
-            <h1 className={`text-3xl font-black tracking-tight ${theme === 'light' ? 'text-neutral-900' : 'text-white'}`}>Disease<span className="text-blue-600">2</span>Target</h1>
+            <h1 className={`text-3xl font-black tracking-tight ${theme === 'light' ? 'text-neutral-900' : 'text-white'}`}>
+              Disease<span className="text-blue-600">2</span>Target
+            </h1>
             <p className="text-[10px] font-bold uppercase tracking-[0.3em] text-neutral-400 dark:text-neutral-500 mt-2">Discovery Portal</p>
           </div>
         </div>
-        <form onSubmit={e=>{e.preventDefault(); if(password===HARDCODED_PASSWORD) onSignIn("Researcher");}} className="space-y-4">
+
+        {/* Tab switcher */}
+        <div className={`flex mx-10 mb-6 rounded-xl overflow-hidden border ${theme === 'dark' ? 'border-neutral-800' : 'border-neutral-200'}`}>
+          {(['signin', 'signup'] as const).map(m => (
+            <button
+              key={m} onClick={() => { setMode(m); setError(''); setInfo(''); }}
+              className={`flex-1 py-2.5 text-[11px] font-black uppercase tracking-widest transition-colors ${
+                mode === m
+                  ? 'bg-blue-600 text-white'
+                  : theme === 'dark' ? 'text-neutral-500 hover:text-neutral-300' : 'text-neutral-400 hover:text-neutral-700'
+              }`}
+            >{m === 'signin' ? 'Sign In' : 'Create Account'}</button>
+          ))}
+        </div>
+
+        {/* Form */}
+        <form onSubmit={mode === 'signin' ? handleSignIn : handleSignUp} className="px-10 pb-6 space-y-4">
           <div className="space-y-1.5">
-            <label className="text-[10px] font-bold uppercase text-neutral-500 dark:text-neutral-500 ml-1 tracking-widest">Username</label>
-            <input type="email" value={email} onChange={e=>setEmail(e.target.value)} className={`w-full p-4 rounded-xl border text-sm font-semibold outline-none transition-all ${theme === 'dark' ? 'bg-[#0a0a0a] border-neutral-800 text-white focus:border-blue-600' : 'bg-neutral-50 border-neutral-300 text-neutral-900 focus:border-blue-600 focus:bg-white'}`} placeholder="username@uab.edu" />
+            <label className="text-[10px] font-bold uppercase text-neutral-500 ml-1 tracking-widest">Email</label>
+            <input type="email" value={email} onChange={e => setEmail(e.target.value)} autoComplete="email" className={inputCls} placeholder="you@institution.edu" />
           </div>
           <div className="space-y-1.5">
-            <label className="text-[10px] font-bold uppercase text-neutral-500 dark:text-neutral-500 ml-1 tracking-widest">Password</label>
-            <input type="password" value={password} onChange={e=>setPassword(e.target.value)} className={`w-full p-4 rounded-xl border text-sm font-semibold outline-none transition-all ${theme === 'dark' ? 'bg-[#0a0a0a] border-neutral-800 text-white focus:border-blue-600' : 'bg-neutral-50 border-neutral-300 text-neutral-900 focus:border-blue-600 focus:bg-white'}`} placeholder="••••••••" />
+            <label className="text-[10px] font-bold uppercase text-neutral-500 ml-1 tracking-widest">Password</label>
+            <input type="password" value={password} onChange={e => setPassword(e.target.value)} autoComplete={mode === 'signin' ? 'current-password' : 'new-password'} className={inputCls} placeholder="••••••••" />
           </div>
-          <button type="submit" className="w-full mt-4 p-4 bg-blue-600 text-white rounded-xl font-bold uppercase text-[12px] tracking-widest shadow-xl shadow-blue-600/20 hover:bg-blue-700 active:scale-95 transition-all flex items-center justify-center gap-3">
-            <ShieldCheck className="w-5 h-5" /> Login
+          {mode === 'signup' && (
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-bold uppercase text-neutral-500 ml-1 tracking-widest">Confirm Password</label>
+              <input type="password" value={confirm} onChange={e => setConfirm(e.target.value)} autoComplete="new-password" className={inputCls} placeholder="••••••••" />
+            </div>
+          )}
+
+          {error && <p className="text-[11px] font-bold text-rose-500 flex items-center gap-1.5"><AlertCircle className="w-3.5 h-3.5 shrink-0" />{error}</p>}
+          {info  && <p className="text-[11px] font-bold text-emerald-500 flex items-center gap-1.5"><CheckCircle2 className="w-3.5 h-3.5 shrink-0" />{info}</p>}
+
+          <button
+            type="submit" disabled={busy}
+            className="w-full mt-2 p-4 bg-blue-600 text-white rounded-xl font-bold uppercase text-[12px] tracking-widest shadow-xl shadow-blue-600/20 hover:bg-blue-700 active:scale-95 transition-all flex items-center justify-center gap-3 disabled:opacity-60 disabled:cursor-not-allowed"
+          >
+            {busy ? <Loader2 className="w-5 h-5 animate-spin" /> : <ShieldCheck className="w-5 h-5" />}
+            {busy ? (mode === 'signin' ? 'Signing in…' : 'Creating account…') : (mode === 'signin' ? 'Sign In' : 'Create Account')}
           </button>
         </form>
-        <div className="mt-10 pt-10 border-t border-neutral-100 dark:border-neutral-800 flex justify-center">
+
+        <div className="pb-8 flex justify-center">
           <button onClick={toggleTheme} className="p-3 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded-xl transition-colors">
             {theme === 'dark' ? <Sun className="w-5 h-5 text-neutral-500" /> : <Moon className="w-5 h-5 text-neutral-600" />}
           </button>

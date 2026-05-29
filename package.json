@@ -13,6 +13,7 @@
   "dependencies": {
     "@google/genai": "1.32.0",
     "@notionhq/client": "^5.9.0",
+    "@supabase/supabase-js": "^2.106.2",
     "@tailwindcss/typography": "^0.5.19",
     "@tailwindcss/vite": "^4.2.2",
     "@types/express": "^5.0.6",

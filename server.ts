@@ -194,11 +194,16 @@ ${entry}
   fs.writeFileSync(filePath, content, 'utf-8');
 }
 
+
+// ── Auth & weights are now handled by Supabase (supabase.ts) ─────────────────
+// Express is kept for proxying external APIs (OT, PubTator, wiki, Notion)
+
 async function startServer() {
   const app = express();
   const PORT = 3000;
 
   app.use(express.json({ limit: '50mb' }));
+
 
   // ── Wiki Endpoints ─────────────────────────────────────────────────────────
 
@@ -489,203 +494,6 @@ async function startServer() {
     }
   });
 
-  // ── Paperclip Deep Literature ─────────────────────────────────────────────
-  const PAPERCLIP_API_KEY = 'gxl_NQ88ZL_0CIcCO0LGNepamJeHqhwy_v-i1rt7MoSjzDs7Oo2BW8X-0xdA-zrvx44n';
-
-  async function callPaperclip(command: string): Promise<string> {
-    try {
-      const resp = await fetch('https://paperclip.gxl.ai/mcp', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-API-Key': PAPERCLIP_API_KEY },
-        body: JSON.stringify({
-          jsonrpc: '2.0', id: Date.now(), method: 'tools/call',
-          params: { name: 'paperclip', arguments: { command } }
-        })
-      });
-      const text = await resp.text();
-      let data: any;
-      try { data = JSON.parse(text); } catch { return ''; }
-      return data?.result?.content?.[0]?.text || '';
-    } catch {
-      return '';
-    }
-  }
-
-  function parsePaperclipText(text: string): { title: string; source: string; year: string; url: string; summary: string }[] {
-    const results: { title: string; source: string; year: string; url: string; summary: string }[] = [];
-    // Split on numbered list entries "  1. Title"
-    const chunks = text.split(/\n\s{2}\d+\.\s+/).slice(1);
-    for (const chunk of chunks) {
-      const lines = chunk.split('\n').map((l: string) => l.trim()).filter(Boolean);
-      const title = lines[0] || '';
-      let source = '', year = '', url = '', summary = '';
-      for (const line of lines) {
-        if (line.includes(' · ')) {
-          const parts = line.split(' · ');
-          source = parts[1]?.trim() || '';
-          year = (parts[2]?.trim() || '').slice(0, 4);
-        } else if (line.startsWith('http')) {
-          url = line.trim();
-        } else if (line.startsWith('"') || line.startsWith('“')) {
-          summary = line.replace(/^[“""]|[”""]$/g, '').trim();
-        }
-      }
-      if (title) results.push({ title, source, year, url, summary });
-    }
-    return results;
-  }
-
-  // Parse "Found X papers" / "Found X documents" from Paperclip text
-  function parsePaperclipCount(text: string): number {
-    const m = text.match(/Found\s+([\d,]+)\s+\w+/i);
-    return m ? parseInt(m[1].replace(/,/g, ''), 10) : 0;
-  }
-
-  // ── SQL helpers ────────────────────────────────────────────────────────────
-
-  // ── SQL helpers ────────────────────────────────────────────────────────────
-
-  // sql is a subcommand of the paperclip MCP tool: sql "SELECT ..."
-  async function callPaperclipSQL(sql: string): Promise<string> {
-    try {
-      const resp = await fetch('https://paperclip.gxl.ai/mcp', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-API-Key': PAPERCLIP_API_KEY },
-        body: JSON.stringify({
-          jsonrpc: '2.0', id: Date.now(), method: 'tools/call',
-          params: { name: 'paperclip', arguments: { command: `sql "${sql}"` } }
-        })
-      });
-      const raw = await resp.text();
-      let data: any;
-      try { data = JSON.parse(raw); } catch { return ''; }
-      const text = data?.result?.content?.[0]?.text || '';
-      console.log(`[SQL] ${sql.slice(0, 80)} => ${text.slice(0, 80)}`);
-      return text;
-    } catch (e: any) {
-      console.error('[SQL error]', e.message);
-      return '';
-    }
-  }
-
-  // Response format: "total\n-----\n1\n0\n(2 rows, Xms) [...]"
-  // Sum all numeric data rows (each shard — bioRxiv, PMC — returns its own row)
-  function parseSQLCount(text: string): number {
-    if (!text || text.startsWith('ERR:')) return 0;
-    let afterSep = false, total = 0;
-    for (const line of text.split('\n')) {
-      const t = line.trim();
-      if (!t) continue;
-      if (t.startsWith('-')) { afterSep = true; continue; }
-      if (!afterSep) continue;
-      if (t.startsWith('(')) break;
-      const n = parseInt(t.split(/\s+/)[0], 10);
-      if (!isNaN(n)) total += n;
-    }
-    return total;
-  }
-
-  // Response format: "yr   | count\n-----+------\n2020 | 45\n..."
-  function parseSQLTrend(text: string): { year: number; count: number }[] {
-    if (!text || text.startsWith('ERR:')) return [];
-    const currentYear = new Date().getFullYear();
-    let afterSep = false;
-    const results: { year: number; count: number }[] = [];
-    for (const line of text.split('\n')) {
-      const t = line.trim();
-      if (!t) continue;
-      if (t.startsWith('-')) { afterSep = true; continue; }
-      if (!afterSep) continue;
-      if (t.startsWith('(')) break;
-      const parts = t.split('|').map((p: string) => p.trim());
-      if (parts.length >= 2) {
-        const year = parseInt(parts[0], 10);
-        const count = parseInt(parts[1], 10);
-        if (!isNaN(year) && !isNaN(count) && year >= 2000 && year <= currentYear)
-          results.push({ year, count });
-      }
-    }
-    return results;
-  }
-
-  // Strict SQL COUNT(*) — papers where gene AND disease appear in title or abstract
-  // More precise than semantic search (no false positives from tangential mentions)
-  app.post('/api/paperclip/metrics', async (req, res) => {
-    const { gene, disease } = req.body as { gene: string; disease: string };
-    if (!gene || !disease) return res.status(400).json({ error: 'gene and disease required' });
-    // Escape single quotes for SQL; strip double-quotes (used as outer delimiter in sql "...")
-    const g = gene.replace(/"/g, '').replace(/'/g, "''");
-    const d = disease.replace(/"/g, '').replace(/'/g, "''");
-    const gf = `(title ILIKE '%${g}%' OR abstract_text ILIKE '%${g}%')`;
-    const df = `(title ILIKE '%${d}%' OR abstract_text ILIKE '%${d}%')`;
-    const base = `${gf} AND ${df}`;
-    const oneYearAgo = new Date(); oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
-    const since = oneYearAgo.toISOString().slice(0, 10);
-    try {
-      const [pmcAll, pmcRec, preAll, preRec, fdaAll, fdaRec, triAll, triRec, trendRaw] = await Promise.all([
-        callPaperclipSQL(`SELECT COUNT(*) as total FROM documents WHERE ${base} AND source='pmc'`),
-        callPaperclipSQL(`SELECT COUNT(*) as total FROM documents WHERE ${base} AND source='pmc' AND pub_date >= '${since}'`),
-        callPaperclipSQL(`SELECT COUNT(*) as total FROM documents WHERE ${base} AND source IN ('biorxiv','medrxiv','arxiv')`),
-        callPaperclipSQL(`SELECT COUNT(*) as total FROM documents WHERE ${base} AND source IN ('biorxiv','medrxiv','arxiv') AND pub_date >= '${since}'`),
-        callPaperclipSQL(`SELECT COUNT(*) as total FROM documents WHERE ${base} AND source='fda'`),
-        callPaperclipSQL(`SELECT COUNT(*) as total FROM documents WHERE ${base} AND source='fda' AND pub_date >= '${since}'`),
-        callPaperclipSQL(`SELECT COUNT(*) as total FROM documents WHERE ${base} AND source='trials'`),
-        callPaperclipSQL(`SELECT COUNT(*) as total FROM documents WHERE ${base} AND source='trials' AND pub_date >= '${since}'`),
-        // Trend: PMC only — LEFT(pub_date,4) extracts year; bioRxiv schema differs and errors on GROUP BY
-        callPaperclipSQL(`SELECT LEFT(pub_date,4) as yr, COUNT(*) as count FROM documents WHERE ${base} AND source='pmc' AND pub_date >= '2015' GROUP BY yr ORDER BY yr`),
-      ]);
-      const metrics = {
-        papers:    { total: parseSQLCount(pmcAll),  recent: parseSQLCount(pmcRec)  },
-        preprints: { total: parseSQLCount(preAll),  recent: parseSQLCount(preRec)  },
-        fda:       { total: parseSQLCount(fdaAll),  recent: parseSQLCount(fdaRec)  },
-        trials:    { total: parseSQLCount(triAll),  recent: parseSQLCount(triRec)  },
-        trend:     parseSQLTrend(trendRaw),
-      };
-      console.log(`[Paperclip SQL] ${gene}+${disease}: papers=${metrics.papers.total} pre=${metrics.preprints.total} fda=${metrics.fda.total} trials=${metrics.trials.total} trend=${metrics.trend.length}pts`);
-      res.json(metrics);
-    } catch (err: any) {
-      console.error('[Paperclip SQL metrics]', err.message);
-      res.status(500).json({ error: err.message });
-    }
-  });
-
-  // Ask: free-form query → top results with summaries (for chat interface)
-  app.post('/api/paperclip/ask', async (req, res) => {
-    const { query, source } = req.body as { query: string; source?: string };
-    if (!query) return res.status(400).json({ error: 'query required' });
-    const srcFlag = source ? `-s ${source}` : '';
-    // Strip any quotes the AI may have added inside the query string to avoid double-quoting
-    const cleanQuery = query.replace(/["""]/g, '').replace(/'/g, '').trim();
-    try {
-      const text = await callPaperclip(`search ${srcFlag} "${cleanQuery}" -n 5 --sort date`);
-      const results = parsePaperclipText(text);
-      // Extract count
-      const total = parsePaperclipCount(text);
-      res.json({ results, total, raw: text });
-    } catch (err: any) {
-      res.status(500).json({ error: err.message });
-    }
-  });
-
-  app.post('/api/paperclip/search', async (req, res) => {
-    const { gene, disease } = req.body as { gene: string; disease: string };
-    if (!gene || !disease) return res.status(400).json({ error: 'gene and disease required' });
-    try {
-      const query = `${gene} ${disease}`;
-      console.log(`[Paperclip] Searching: "${query}"`);
-      const [papersText, trialsText] = await Promise.all([
-        callPaperclip(`search "${query}" -n 5`),
-        callPaperclip(`search -s trials "${query}" -n 3`)
-      ]);
-      const papers = parsePaperclipText(papersText);
-      const trials = parsePaperclipText(trialsText);
-      console.log(`[Paperclip] Found ${papers.length} papers, ${trials.length} trials`);
-      res.json({ papers, trials });
-    } catch (err: any) {
-      console.error('[Paperclip] Error:', err.message);
-      res.status(500).json({ error: err.message });
-    }
-  });
 
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
