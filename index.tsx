@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createRoot } from 'react-dom/client';
+import { createPortal } from 'react-dom';
 import { GoogleGenAI, Type, Chat, GenerateContentResponse } from "@google/genai";
 import * as d3 from "d3";
 import Markdown from 'react-markdown';
@@ -908,14 +909,33 @@ const ProfileDropdown = ({
   // mini-menu open / which full-page is open
   const [menuOpen, setMenuOpen] = React.useState(false);
   const [page, setPage]         = React.useState<null | 'settings' | 'docs'>(null);
-  const menuRef = React.useRef<HTMLDivElement>(null);
+  const menuRef    = React.useRef<HTMLDivElement>(null);
+  const triggerRef = React.useRef<HTMLButtonElement>(null);
+  const [menuPos, setMenuPos] = React.useState<{ top: number; right: number }>({ top: 0, right: 0 });
 
-  // close mini-menu on outside click
+  // compute portal position when opening
+  const openMenu = () => {
+    if (triggerRef.current) {
+      const r = triggerRef.current.getBoundingClientRect();
+      setMenuPos({ top: r.bottom + 6, right: window.innerWidth - r.right });
+    }
+    setMenuOpen(true);
+  };
+
+  // close mini-menu on outside click or scroll
   React.useEffect(() => {
     if (!menuOpen) return;
-    const h = (e: MouseEvent) => { if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false); };
-    document.addEventListener('mousedown', h);
-    return () => document.removeEventListener('mousedown', h);
+    const close = (e: MouseEvent) => {
+      const portal = document.getElementById('profile-menu-portal');
+      if (
+        triggerRef.current && !triggerRef.current.contains(e.target as Node) &&
+        portal && !portal.contains(e.target as Node)
+      ) setMenuOpen(false);
+    };
+    const closeOnScroll = () => setMenuOpen(false);
+    document.addEventListener('mousedown', close);
+    window.addEventListener('scroll', closeOnScroll, true);
+    return () => { document.removeEventListener('mousedown', close); window.removeEventListener('scroll', closeOnScroll, true); };
   }, [menuOpen]);
 
   const openPage = (p: 'settings' | 'docs') => { setMenuOpen(false); setPage(p); };
@@ -1017,12 +1037,50 @@ const ProfileDropdown = ({
     </div>
   );
 
+  const menuPortal = menuOpen ? createPortal(
+    <div
+      id="profile-menu-portal"
+      style={{ position: 'fixed', top: menuPos.top, right: menuPos.right, zIndex: 99999 }}
+      className={`w-52 rounded-xl border shadow-2xl overflow-hidden ${isDark ? 'bg-[#0d1424] border-slate-700' : 'bg-white border-slate-200'}`}
+    >
+      {/* Identity row */}
+      <div className={`px-3 py-2.5 border-b flex items-center gap-2 ${isDark ? 'border-slate-800 bg-slate-900/40' : 'border-slate-100 bg-slate-50'}`}>
+        <div className={`w-7 h-7 rounded-lg flex items-center justify-center text-[10px] font-black shrink-0 ${isAdmin ? 'bg-rose-500/15 text-rose-500' : 'bg-blue-500/10 text-blue-600'}`}>{initials}</div>
+        <div className="min-w-0">
+          <p className={`text-[11px] font-bold truncate ${isDark ? 'text-slate-200' : 'text-slate-700'}`}>{profile.name || currentUser.username}</p>
+          <p className={`text-[9px] truncate ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>{currentUser.username}</p>
+        </div>
+      </div>
+      {/* Menu items */}
+      {[
+        { label: isAdmin ? 'Settings & Users' : 'Settings', icon: Settings, page: 'settings' as const },
+        { label: 'Documentation', icon: BookOpen, page: 'docs' as const },
+      ].map(item => (
+        <button key={item.page} onClick={() => openPage(item.page)}
+          className={`w-full flex items-center gap-2.5 px-3 py-2.5 text-[12px] font-semibold transition-colors ${isDark ? 'hover:bg-slate-800 text-slate-300' : 'hover:bg-slate-50 text-slate-700'}`}>
+          <item.icon className="w-3.5 h-3.5 shrink-0 opacity-60" />
+          {item.label}
+          <ChevronRight className="w-3 h-3 ml-auto opacity-40" />
+        </button>
+      ))}
+      <div className={`border-t ${isDark ? 'border-slate-800' : 'border-slate-100'}`}>
+        <button onClick={() => { setMenuOpen(false); onSignOut(); }}
+          className={`w-full flex items-center gap-2.5 px-3 py-2.5 text-[12px] font-semibold transition-colors text-rose-500 ${isDark ? 'hover:bg-rose-500/10' : 'hover:bg-rose-50'}`}>
+          <LogOut className="w-3.5 h-3.5 shrink-0" />
+          Sign Out
+        </button>
+      </div>
+    </div>,
+    document.body
+  ) : null;
+
   return (
     <>
       {/* ── Trigger button ── */}
       <div ref={menuRef} className="relative">
         <button
-          onClick={() => setMenuOpen(o => !o)}
+          ref={triggerRef}
+          onClick={() => menuOpen ? setMenuOpen(false) : openMenu()}
           className={`flex items-center gap-2 px-2.5 py-1.5 rounded-xl border transition-all ${
             menuOpen
               ? isDark ? 'bg-slate-800 border-slate-700' : 'bg-slate-100 border-slate-300'
@@ -1040,40 +1098,10 @@ const ProfileDropdown = ({
           </span>
           <ChevronDown className={`w-3 h-3 transition-transform shrink-0 ${menuOpen ? 'rotate-180' : ''} ${isDark ? 'text-slate-500' : 'text-slate-400'}`} />
         </button>
-
-        {/* ── Mini menu (3 items only) ── */}
-        {menuOpen && (
-          <div className={`absolute right-0 top-full mt-1.5 w-52 rounded-xl border shadow-xl shadow-slate-900/10 z-[999] overflow-hidden ${isDark ? 'bg-[#0d1424] border-slate-800' : 'bg-white border-slate-200'}`}>
-            {/* Identity row */}
-            <div className={`px-3 py-2.5 border-b flex items-center gap-2 ${isDark ? 'border-slate-800 bg-slate-900/40' : 'border-slate-100 bg-slate-50'}`}>
-              <div className={`w-7 h-7 rounded-lg flex items-center justify-center text-[10px] font-black shrink-0 ${isAdmin ? 'bg-rose-500/15 text-rose-500' : 'bg-blue-500/10 text-blue-600'}`}>{initials}</div>
-              <div className="min-w-0">
-                <p className={`text-[11px] font-bold truncate ${isDark ? 'text-slate-200' : 'text-slate-700'}`}>{profile.name || currentUser.username}</p>
-                <p className={`text-[9px] truncate ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>{currentUser.username}</p>
-              </div>
-            </div>
-            {/* Menu items */}
-            {[
-              { label: isAdmin ? 'Settings & Users' : 'Settings', icon: Settings, page: 'settings' as const, color: isDark ? 'text-slate-300' : 'text-slate-700' },
-              { label: 'Documentation', icon: BookOpen, page: 'docs' as const, color: isDark ? 'text-slate-300' : 'text-slate-700' },
-            ].map(item => (
-              <button key={item.page} onClick={() => openPage(item.page)}
-                className={`w-full flex items-center gap-2.5 px-3 py-2.5 text-[12px] font-semibold transition-colors ${isDark ? 'hover:bg-slate-800' : 'hover:bg-slate-50'} ${item.color}`}>
-                <item.icon className="w-3.5 h-3.5 shrink-0 opacity-60" />
-                {item.label}
-                <ChevronRight className="w-3 h-3 ml-auto opacity-40" />
-              </button>
-            ))}
-            <div className={`border-t ${isDark ? 'border-slate-800' : 'border-slate-100'}`}>
-              <button onClick={() => { setMenuOpen(false); onSignOut(); }}
-                className={`w-full flex items-center gap-2.5 px-3 py-2.5 text-[12px] font-semibold transition-colors text-rose-500 ${isDark ? 'hover:bg-rose-500/10' : 'hover:bg-rose-50'}`}>
-                <LogOut className="w-3.5 h-3.5 shrink-0" />
-                Sign Out
-              </button>
-            </div>
-          </div>
-        )}
       </div>
+
+      {/* ── Portal menu (escapes header stacking context) ── */}
+      {menuPortal}
 
       {/* ── Settings full-page overlay ── */}
       {page === 'settings' && (
