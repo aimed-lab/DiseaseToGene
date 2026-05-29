@@ -1103,9 +1103,9 @@ const ProfileDropdown = ({
       {/* ── Portal menu (escapes header stacking context) ── */}
       {menuPortal}
 
-      {/* ── Settings full-page overlay ── */}
-      {page === 'settings' && (
-        <div className={`fixed inset-0 z-[500] flex flex-col ${isDark ? 'bg-[#080e18]' : 'bg-slate-50'}`}>
+      {/* ── Settings full-page overlay (portaled to body) ── */}
+      {page === 'settings' && createPortal(
+        <div className={`fixed inset-0 flex flex-col ${isDark ? 'bg-[#080e18]' : 'bg-slate-50'}`} style={{ zIndex: 99998 }}>
           <PageHeader title="Settings" subtitle={isAdmin ? 'Profile · Users · Admin' : 'Profile'} />
           <div className="flex-1 overflow-y-auto">
             <div className="max-w-2xl mx-auto px-6 py-8 space-y-8">
@@ -1173,11 +1173,9 @@ const ProfileDropdown = ({
                     <div className={`rounded-2xl border overflow-hidden ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
                       {adminUsers.map((u, idx) => (
                         <div key={u.id} className={`px-5 py-3.5 flex items-center gap-3 ${idx > 0 ? `border-t ${isDark ? 'border-slate-800' : 'border-slate-100'}` : ''} ${isDark ? 'bg-[#0d1424]' : 'bg-white'}`}>
-                          {/* Avatar */}
                           <div className={`w-9 h-9 rounded-xl flex items-center justify-center text-[11px] font-black shrink-0 ${u.role === 'admin' ? 'bg-rose-500/15 text-rose-500' : 'bg-blue-500/10 text-blue-600'}`}>
                             {(u.name || u.email).slice(0, 2).toUpperCase()}
                           </div>
-                          {/* Info */}
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center gap-2">
                               <p className={`text-[12px] font-bold truncate ${isDark ? 'text-slate-200' : 'text-slate-800'}`}>{u.name || <span className="opacity-40">No name</span>}</p>
@@ -1187,7 +1185,6 @@ const ProfileDropdown = ({
                             {u.institution && <p className={`text-[10px] truncate ${isDark ? 'text-slate-600' : 'text-slate-400'}`}>{u.institution}</p>}
                             <p className={`text-[9px] mt-0.5 ${isDark ? 'text-slate-700' : 'text-slate-300'}`}>Joined {new Date(u.created_at).toLocaleDateString()}</p>
                           </div>
-                          {/* Actions */}
                           <div className="flex flex-col items-end gap-1.5 shrink-0">
                             <button onClick={() => handleRoleToggle(u.id, u.role)} disabled={roleUpdating === u.id} title="Click to toggle role"
                               className={`flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-black border transition-all disabled:opacity-40 ${u.role === 'admin' ? isDark ? 'bg-rose-500/10 border-rose-500/30 text-rose-400 hover:bg-rose-500/20' : 'bg-rose-50 border-rose-200 text-rose-600 hover:bg-rose-100' : isDark ? 'bg-blue-500/10 border-blue-500/20 text-blue-400 hover:bg-blue-500/20' : 'bg-blue-50 border-blue-200 text-blue-600 hover:bg-blue-100'}`}>
@@ -1220,12 +1217,13 @@ const ProfileDropdown = ({
               )}
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
 
-      {/* ── Documentation full-page overlay ── */}
-      {page === 'docs' && (
-        <div className={`fixed inset-0 z-[500] flex flex-col ${isDark ? 'bg-[#080e18]' : 'bg-slate-50'}`}>
+      {/* ── Documentation full-page overlay (portaled to body) ── */}
+      {page === 'docs' && createPortal(
+        <div className={`fixed inset-0 flex flex-col ${isDark ? 'bg-[#080e18]' : 'bg-slate-50'}`} style={{ zIndex: 99998 }}>
           <PageHeader title="Documentation" subtitle="DiseaseToTarget" />
           <div className="flex-1 overflow-y-auto">
             <div className="max-w-2xl mx-auto px-6 py-8 space-y-3">
@@ -1251,7 +1249,8 @@ const ProfileDropdown = ({
               })}
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </>
   );
