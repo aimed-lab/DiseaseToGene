@@ -921,6 +921,74 @@ const CohortFilterSidebar = ({ theme, targets, activeDisease, onScoreRangesChang
     rwr: [0, 1], winner: [0, 1],
   });
 
+  // ── Admin: user management ────────────────────────────────────────────────
+  type AdminUser = {
+    id: string; email: string; name: string | null; institution: string | null;
+    role: 'admin' | 'user'; created_at: string; last_sign_in: string | null; confirmed: boolean;
+  };
+  const [adminUsers,      setAdminUsers]      = React.useState<AdminUser[]>([]);
+  const [adminUsersLoading, setAdminUsersLoading] = React.useState(false);
+  const [adminUsersError,   setAdminUsersError]   = React.useState<string | null>(null);
+  const [roleUpdating,    setRoleUpdating]    = React.useState<string | null>(null); // userId being updated
+  const [deleteConfirm,   setDeleteConfirm]   = React.useState<string | null>(null); // userId awaiting confirm
+  const [deleting,        setDeleting]        = React.useState<string | null>(null);
+
+  const fetchAdminUsers = React.useCallback(async () => {
+    setAdminUsersLoading(true);
+    setAdminUsersError(null);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token;
+      if (!token) throw new Error('Not authenticated');
+      const res = await fetch('/api/admin/users', {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error((await res.json()).error ?? res.statusText);
+      setAdminUsers(await res.json());
+    } catch (e: any) {
+      setAdminUsersError(e.message);
+    } finally {
+      setAdminUsersLoading(false);
+    }
+  }, []);
+
+  const handleRoleToggle = async (userId: string, currentRole: 'admin' | 'user') => {
+    const newRole = currentRole === 'admin' ? 'user' : 'admin';
+    setRoleUpdating(userId);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch(`/api/admin/users/${userId}/role`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session?.access_token}` },
+        body: JSON.stringify({ role: newRole }),
+      });
+      if (!res.ok) throw new Error((await res.json()).error);
+      setAdminUsers(prev => prev.map(u => u.id === userId ? { ...u, role: newRole } : u));
+    } catch (e: any) {
+      setAdminUsersError(e.message);
+    } finally {
+      setRoleUpdating(null);
+    }
+  };
+
+  const handleDeleteUser = async (userId: string) => {
+    setDeleting(userId);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch(`/api/admin/users/${userId}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${session?.access_token}` },
+      });
+      if (!res.ok) throw new Error((await res.json()).error);
+      setAdminUsers(prev => prev.filter(u => u.id !== userId));
+      setDeleteConfirm(null);
+    } catch (e: any) {
+      setAdminUsersError(e.message);
+    } finally {
+      setDeleting(null);
+    }
+  };
+
   // ── GET formula studio (admin) ────────────────────────────────────────────
   const [draftWeights, setDraftWeights] = React.useState(() => globalWeights ?? { genetic: 0.45, expression: 0.25, target: 0.30 });
   const [weightSaving, setWeightSaving] = React.useState(false);
@@ -1014,6 +1082,8 @@ const CohortFilterSidebar = ({ theme, targets, activeDisease, onScoreRangesChang
   const [profile, setProfile] = useState(() => {
     try { return JSON.parse(localStorage.getItem('dtt_profile') || '{}'); } catch { return {}; }
   });
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [profileSaved,  setProfileSaved]  = useState(false);
   const [openDocSections, setOpenDocSections] = useState<string[]>(['about']);
 
   // ── helpers ──────────────────────────────────────────────────────────────
@@ -1028,16 +1098,27 @@ const CohortFilterSidebar = ({ theme, targets, activeDisease, onScoreRangesChang
 
   const totalActive = Object.values(selected).flat().length;
 
+  // Update local draft only — Supabase is written when Save is clicked
   const saveProfile = (field: string, value: string) => {
     const updated = { ...profile, [field]: value };
     setProfile(updated);
     localStorage.setItem('dtt_profile', JSON.stringify(updated));
-    // Sync name / institution to Supabase
-    if (field === 'name' || field === 'institution') {
-      supabase.auth.getUser().then(({ data: { user } }) => {
-        if (user) updateUserProfile(user.id, { [field]: value });
-      });
-    }
+  };
+
+  const handleSaveProfile = async () => {
+    setProfileSaving(true);
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) {
+        await updateUserProfile(user.id, {
+          name:        profile.name        || null,
+          institution: profile.institution || null,
+        });
+      }
+      setProfileSaved(true);
+      setTimeout(() => setProfileSaved(false), 2500);
+    } catch { /* non-critical */ }
+    finally { setProfileSaving(false); }
   };
 
   const handleCompare = async () => {
@@ -1688,9 +1769,6 @@ Be concise, scientific, and use markdown. Max 350 words.`;
                     <p className={`text-[9px] uppercase tracking-wider font-black ${currentUser.role === 'admin' ? 'text-rose-500' : isDark ? 'text-slate-500' : 'text-slate-400'}`}>{currentUser.role}</p>
                   </div>
                 </div>
-                {currentUser.role === 'admin' && (
-                  <span className={`text-[8px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full ${isDark ? 'bg-rose-500/15 text-rose-400' : 'bg-rose-50 text-rose-600'}`}>Formula Control</span>
-                )}
               </div>
             )}
 
@@ -1700,25 +1778,209 @@ Be concise, scientific, and use markdown. Max 350 words.`;
                 <Users className={`w-3.5 h-3.5 ${isDark ? 'text-slate-400' : 'text-slate-500'}`} />
                 <span className={`text-[11px] font-bold ${isDark ? 'text-slate-200' : 'text-slate-700'}`}>User Profile</span>
               </div>
-              <div className={`p-3 space-y-2 border-t ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
-                {[
-                  { field: 'name',        label: 'Name',        ph: 'Full name'        },
-                  { field: 'email',       label: 'Email',       ph: 'you@institution.edu' },
-                  { field: 'institution', label: 'Institution', ph: 'e.g. UAB SPARC'   },
-                  { field: 'role',        label: 'Role',        ph: 'e.g. Researcher'  },
-                ].map(f => (
-                  <div key={f.field}>
-                    <label className={`text-[9px] font-bold uppercase tracking-wider block mb-0.5 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>{f.label}</label>
-                    <input
-                      value={profile[f.field] || ''}
-                      onChange={e => saveProfile(f.field, e.target.value)}
-                      placeholder={f.ph}
-                      className={`w-full px-2.5 py-1.5 rounded-md border text-[11px] outline-none transition-colors ${isDark ? 'bg-slate-900 border-slate-700 text-white placeholder-slate-600 focus:border-blue-500' : 'bg-white border-slate-300 text-slate-800 placeholder-slate-400 focus:border-blue-500 focus:ring-1 focus:ring-blue-500/10'}`}
-                    />
+              <div className={`p-3 space-y-2.5 border-t ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
+
+                {/* Read-only: email from Supabase Auth */}
+                <div>
+                  <label className={`text-[9px] font-bold uppercase tracking-wider block mb-0.5 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Email</label>
+                  <div className={`w-full px-2.5 py-1.5 rounded-md border text-[11px] select-all ${isDark ? 'bg-slate-800/50 border-slate-700 text-slate-400' : 'bg-slate-50 border-slate-200 text-slate-500'}`}>
+                    {currentUser?.username || '—'}
                   </div>
-                ))}
+                </div>
+
+                {/* Read-only: role badge */}
+                <div>
+                  <label className={`text-[9px] font-bold uppercase tracking-wider block mb-0.5 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Role</label>
+                  <div className="flex items-center gap-2 px-2.5 py-1.5">
+                    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider border ${
+                      currentUser?.role === 'admin'
+                        ? 'bg-rose-500/10 border-rose-500/30 text-rose-500'
+                        : 'bg-blue-500/10 border-blue-500/20 text-blue-600'
+                    }`}>
+                      <ShieldCheck className="w-2.5 h-2.5" />
+                      {currentUser?.role === 'admin' ? 'Admin' : 'Researcher'}
+                    </span>
+                    <span className={`text-[9px] ${isDark ? 'text-slate-600' : 'text-slate-400'}`}>assigned by system</span>
+                  </div>
+                </div>
+
+                {/* Editable: name */}
+                <div>
+                  <label className={`text-[9px] font-bold uppercase tracking-wider block mb-0.5 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Name</label>
+                  <input
+                    value={profile.name || ''}
+                    onChange={e => saveProfile('name', e.target.value)}
+                    placeholder="Full name"
+                    className={`w-full px-2.5 py-1.5 rounded-md border text-[11px] outline-none transition-colors ${isDark ? 'bg-slate-900 border-slate-700 text-white placeholder-slate-600 focus:border-blue-500' : 'bg-white border-slate-300 text-slate-800 placeholder-slate-400 focus:border-blue-500 focus:ring-1 focus:ring-blue-500/10'}`}
+                  />
+                </div>
+
+                {/* Editable: institution */}
+                <div>
+                  <label className={`text-[9px] font-bold uppercase tracking-wider block mb-0.5 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Institution</label>
+                  <input
+                    value={profile.institution || ''}
+                    onChange={e => saveProfile('institution', e.target.value)}
+                    placeholder="e.g. UAB SPARC"
+                    className={`w-full px-2.5 py-1.5 rounded-md border text-[11px] outline-none transition-colors ${isDark ? 'bg-slate-900 border-slate-700 text-white placeholder-slate-600 focus:border-blue-500' : 'bg-white border-slate-300 text-slate-800 placeholder-slate-400 focus:border-blue-500 focus:ring-1 focus:ring-blue-500/10'}`}
+                  />
+                </div>
+
+                {/* Save button */}
+                <button
+                  onClick={handleSaveProfile}
+                  disabled={profileSaving}
+                  className={`w-full py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider flex items-center justify-center gap-1.5 transition-all ${
+                    profileSaved
+                      ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-600'
+                      : isDark
+                        ? 'bg-blue-600 text-white hover:bg-blue-500 disabled:opacity-40'
+                        : 'bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40'
+                  }`}
+                >
+                  {profileSaving
+                    ? <><Loader2 className="w-3 h-3 animate-spin" /> Saving…</>
+                    : profileSaved
+                      ? <><CheckCircle2 className="w-3 h-3" /> Saved</>
+                      : <><Save className="w-3 h-3" /> Save Profile</>
+                  }
+                </button>
               </div>
             </div>
+
+            {/* ── Admin: User Management (admin only) ──────────────────── */}
+            {currentUser?.role === 'admin' && (
+              <div className={`rounded-xl border overflow-hidden ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
+                {/* Header */}
+                <div className={`px-3 py-2 flex items-center justify-between ${isDark ? 'bg-slate-900/40' : 'bg-slate-50'}`}>
+                  <div className="flex items-center gap-2">
+                    <Users className={`w-3.5 h-3.5 ${isDark ? 'text-rose-400' : 'text-rose-500'}`} />
+                    <span className={`text-[11px] font-bold ${isDark ? 'text-slate-200' : 'text-slate-700'}`}>User Management</span>
+                    {adminUsers.length > 0 && (
+                      <span className={`text-[9px] font-black px-1.5 py-0.5 rounded-full ${isDark ? 'bg-slate-800 text-slate-400' : 'bg-slate-200 text-slate-500'}`}>
+                        {adminUsers.length}
+                      </span>
+                    )}
+                  </div>
+                  <button
+                    onClick={fetchAdminUsers}
+                    disabled={adminUsersLoading}
+                    className={`flex items-center gap-1 px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-wider transition-all ${
+                      isDark ? 'bg-rose-600/20 text-rose-400 hover:bg-rose-600/30' : 'bg-rose-50 text-rose-600 hover:bg-rose-100'
+                    } disabled:opacity-40`}
+                  >
+                    {adminUsersLoading
+                      ? <Loader2 className="w-3 h-3 animate-spin" />
+                      : <RotateCcw className="w-3 h-3" />
+                    }
+                    {adminUsers.length === 0 ? 'Load' : 'Refresh'}
+                  </button>
+                </div>
+
+                <div className={`border-t ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
+                  {/* Error */}
+                  {adminUsersError && (
+                    <div className="px-3 py-2 flex items-center gap-2 text-rose-500 text-[10px]">
+                      <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                      {adminUsersError}
+                    </div>
+                  )}
+
+                  {/* Empty / not loaded yet */}
+                  {!adminUsersLoading && adminUsers.length === 0 && !adminUsersError && (
+                    <div className={`px-3 py-4 text-center text-[10px] ${isDark ? 'text-slate-600' : 'text-slate-400'}`}>
+                      Click Load to fetch all registered users
+                    </div>
+                  )}
+
+                  {/* User rows */}
+                  {adminUsers.length > 0 && (
+                    <div className="divide-y divide-inherit">
+                      {adminUsers.map(u => (
+                        <div key={u.id} className={`px-3 py-2.5 ${isDark ? 'divide-slate-800' : 'divide-slate-100'}`}>
+                          <div className="flex items-start justify-between gap-2">
+                            {/* Left: user info */}
+                            <div className="min-w-0 flex-1">
+                              <p className={`text-[11px] font-bold truncate ${isDark ? 'text-slate-200' : 'text-slate-800'}`}>
+                                {u.name || <span className={isDark ? 'text-slate-600' : 'text-slate-400'}>No name</span>}
+                              </p>
+                              <p className={`text-[10px] truncate ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>{u.email}</p>
+                              {u.institution && (
+                                <p className={`text-[9px] truncate mt-0.5 ${isDark ? 'text-slate-600' : 'text-slate-400'}`}>
+                                  {u.institution}
+                                </p>
+                              )}
+                              <div className="flex items-center gap-1.5 mt-1">
+                                {/* Confirmed badge */}
+                                <span className={`text-[8px] font-black px-1 py-0.5 rounded ${
+                                  u.confirmed
+                                    ? isDark ? 'bg-emerald-500/10 text-emerald-400' : 'bg-emerald-50 text-emerald-600'
+                                    : isDark ? 'bg-amber-500/10 text-amber-400' : 'bg-amber-50 text-amber-600'
+                                }`}>
+                                  {u.confirmed ? '✓ confirmed' : '⏳ unconfirmed'}
+                                </span>
+                                {/* Joined */}
+                                <span className={`text-[8px] ${isDark ? 'text-slate-700' : 'text-slate-400'}`}>
+                                  joined {new Date(u.created_at).toLocaleDateString()}
+                                </span>
+                              </div>
+                            </div>
+
+                            {/* Right: actions */}
+                            <div className="flex flex-col items-end gap-1.5 shrink-0">
+                              {/* Role toggle */}
+                              <button
+                                onClick={() => handleRoleToggle(u.id, u.role)}
+                                disabled={roleUpdating === u.id}
+                                title={`Click to make ${u.role === 'admin' ? 'Researcher' : 'Admin'}`}
+                                className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider border transition-all disabled:opacity-40 ${
+                                  u.role === 'admin'
+                                    ? isDark ? 'bg-rose-500/10 border-rose-500/30 text-rose-400 hover:bg-rose-500/20' : 'bg-rose-50 border-rose-200 text-rose-600 hover:bg-rose-100'
+                                    : isDark ? 'bg-blue-500/10 border-blue-500/20 text-blue-400 hover:bg-blue-500/20'  : 'bg-blue-50 border-blue-200 text-blue-600 hover:bg-blue-100'
+                                }`}
+                              >
+                                {roleUpdating === u.id
+                                  ? <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                                  : <ShieldCheck className="w-2.5 h-2.5" />
+                                }
+                                {u.role === 'admin' ? 'Admin' : 'Researcher'}
+                              </button>
+
+                              {/* Delete */}
+                              {deleteConfirm === u.id ? (
+                                <div className="flex items-center gap-1">
+                                  <button
+                                    onClick={() => handleDeleteUser(u.id)}
+                                    disabled={deleting === u.id}
+                                    className="px-1.5 py-0.5 rounded text-[8px] font-black bg-rose-600 text-white hover:bg-rose-700 disabled:opacity-40"
+                                  >
+                                    {deleting === u.id ? <Loader2 className="w-2.5 h-2.5 animate-spin inline" /> : 'Confirm'}
+                                  </button>
+                                  <button
+                                    onClick={() => setDeleteConfirm(null)}
+                                    className={`px-1.5 py-0.5 rounded text-[8px] font-black ${isDark ? 'bg-slate-800 text-slate-400 hover:bg-slate-700' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}
+                                  >
+                                    Cancel
+                                  </button>
+                                </div>
+                              ) : (
+                                <button
+                                  onClick={() => setDeleteConfirm(u.id)}
+                                  className={`p-1 rounded transition-colors ${isDark ? 'text-slate-700 hover:text-rose-400 hover:bg-rose-500/10' : 'text-slate-300 hover:text-rose-500 hover:bg-rose-50'}`}
+                                  title="Remove user"
+                                >
+                                  <Trash2 className="w-3 h-3" />
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
 
             {/* Documentation */}
             <div className={`rounded-xl border overflow-hidden ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
@@ -3491,6 +3753,16 @@ Return ONLY valid JSON.
       return { ...t, getScore, overallScore, clinical_flags };
     });
   };
+
+  // Re-score all loaded targets whenever the GET weights change (e.g. admin saves new weights,
+  // or Supabase returns weights that differ from the defaults on mount).
+  useEffect(() => {
+    setResearchState(prev => {
+      if (!prev.targets.length) return prev;
+      return { ...prev, targets: calculatePriorityScores(prev.targets, prev.weights) };
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [researchState.weights.genetic, researchState.weights.expression, researchState.weights.target]);
 
   const performRWR = async (genes: Target[], extraSymbols: string[] = []) => {
     if (genes.length === 0 && extraSymbols.length === 0) return genes;

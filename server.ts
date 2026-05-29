@@ -4,9 +4,49 @@ import { Client } from "@notionhq/client";
 import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
+import { createClient } from "@supabase/supabase-js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// ── Supabase admin client (service role — server-side only, never sent to browser) ──
+const supabaseAdmin = (() => {
+  const url = process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key) {
+    console.warn('[Admin] SUPABASE_SERVICE_ROLE_KEY not set — /api/admin/* routes will return 503');
+    return null;
+  }
+  return createClient(url, key, {
+    auth: { autoRefreshToken: false, persistSession: false },
+  });
+})();
+
+// Middleware: verify Supabase JWT and confirm caller is admin
+async function requireAdmin(
+  req: express.Request,
+  res: express.Response,
+  next: express.NextFunction
+) {
+  if (!supabaseAdmin) {
+    res.status(503).json({ error: 'Admin API not configured (missing SUPABASE_SERVICE_ROLE_KEY)' });
+    return;
+  }
+  const token = req.headers.authorization?.replace(/^Bearer\s+/i, '');
+  if (!token) { res.status(401).json({ error: 'Missing Authorization header' }); return; }
+
+  const { data: { user }, error } = await supabaseAdmin.auth.getUser(token);
+  if (error || !user) { res.status(401).json({ error: 'Invalid or expired token' }); return; }
+
+  const { data: profile } = await supabaseAdmin
+    .from('user_profiles')
+    .select('role')
+    .eq('id', user.id)
+    .single();
+
+  if (profile?.role !== 'admin') { res.status(403).json({ error: 'Admin role required' }); return; }
+  next();
+}
 
 // ── Wiki vault path — folder next to server.ts ─────────────────────────────
 const VAULT_PATH = process.env.WIKI_VAULT_PATH
@@ -494,6 +534,68 @@ async function startServer() {
     }
   });
 
+
+  // ── Admin User Management API ───────────────────────────────────────────────
+
+  // GET /api/admin/users — list all users with their profiles
+  app.get('/api/admin/users', requireAdmin, async (_req, res) => {
+    try {
+      const [{ data: authData, error: authErr }, { data: profiles }] = await Promise.all([
+        supabaseAdmin!.auth.admin.listUsers({ perPage: 1000 }),
+        supabaseAdmin!.from('user_profiles').select('id, name, institution, role, created_at'),
+      ]);
+      if (authErr) throw authErr;
+
+      const profileMap = new Map((profiles ?? []).map((p: any) => [p.id, p]));
+      const users = (authData?.users ?? []).map((u: any) => {
+        const p: any = profileMap.get(u.id) ?? {};
+        return {
+          id:          u.id,
+          email:       u.email ?? '—',
+          name:        p.name        ?? null,
+          institution: p.institution ?? null,
+          role:        p.role        ?? 'user',
+          created_at:  u.created_at,
+          last_sign_in: u.last_sign_in_at ?? null,
+          confirmed:   !!u.confirmed_at,
+        };
+      });
+
+      res.json(users);
+    } catch (err: any) {
+      console.error('[Admin] listUsers error:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // PATCH /api/admin/users/:id/role — promote / demote
+  app.patch('/api/admin/users/:id/role', requireAdmin, async (req, res) => {
+    const { role } = req.body as { role: string };
+    if (!['admin', 'user'].includes(role)) {
+      res.status(400).json({ error: 'role must be "admin" or "user"' }); return;
+    }
+    try {
+      const { error } = await supabaseAdmin!
+        .from('user_profiles')
+        .update({ role })
+        .eq('id', req.params.id);
+      if (error) throw error;
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // DELETE /api/admin/users/:id — remove user entirely
+  app.delete('/api/admin/users/:id', requireAdmin, async (req, res) => {
+    try {
+      const { error } = await supabaseAdmin!.auth.admin.deleteUser(req.params.id as string);
+      if (error) throw error;
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
 
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
