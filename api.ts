@@ -841,6 +841,8 @@ export const api = {
       }
 
       // ── Step 2: OT extended target profile (tractability, expression, drugs, function) ─
+      // Note: drug rows deliberately exclude `disease` sub-field — it causes OT to null the whole target.
+      // pathways { pathway } works on Target type (same as getGenes). knownDrugs needs no pagination args.
       const profileGql = `
         query GetTargetProfile($ensemblId: String!) {
           target(ensemblId: $ensemblId) {
@@ -852,7 +854,6 @@ export const api = {
               rows {
                 drug { id name mechanismsOfAction { rows { mechanismOfAction } } }
                 phase status
-                disease { id name }
               }
             }
             pathways { pathway }
@@ -860,41 +861,68 @@ export const api = {
         }`;
 
       // ── Step 3: Disease-gene association (if diseaseId provided) ─────────────
+      // OT v4: target.associatedDiseases with diseases filter returns specific association
       const assocGql = diseaseId ? `
-        query GetAssociation($efoId: String!, $targetId: String!) {
-          disease(efoId: $efoId) {
-            associatedTargets(
-              filter: { ids: [$targetId] }
+        query GetAssociation($targetId: String!, $efoId: String!) {
+          target(ensemblId: $targetId) {
+            associatedDiseases(
+              diseases: [$efoId]
               page: { index: 0, size: 1 }
             ) {
               rows {
                 score
                 datatypeScores { id score }
-                target { approvedSymbol }
+                disease { id name }
               }
             }
           }
         }` : null;
 
+      // Minimal fallback profile query (no pathways) in case full query has field issues
+      const profileGqlMinimal = `
+        query GetTargetProfileMin($ensemblId: String!) {
+          target(ensemblId: $ensemblId) {
+            id approvedSymbol approvedName biotype
+            functionDescriptions
+            tractability { label modality value }
+            expressions { tissue { label } rna { value } }
+            knownDrugs {
+              rows {
+                drug { id name mechanismsOfAction { rows { mechanismOfAction } } }
+                phase status
+              }
+            }
+          }
+        }`;
+
+      const fetchProfile = (gql: string) => fetch(OPEN_TARGETS_API, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: gql, variables: { ensemblId } })
+      }).then(r => r.json()).catch(() => null);
+
       // Run OT profile + association + clinical/literature in parallel
       const [profileRes, assocRes, drillDownData, pubmedData] = await Promise.all([
-        fetch(OPEN_TARGETS_API, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query: profileGql, variables: { ensemblId } })
-        }).then(r => r.json()).catch(() => null),
-
+        fetchProfile(profileGql),
         (assocGql && diseaseId) ? fetch(OPEN_TARGETS_API, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query: assocGql, variables: { efoId: diseaseId, targetId: ensemblId } })
+          body: JSON.stringify({ query: assocGql, variables: { targetId: ensemblId, efoId: diseaseId } })
         }).then(r => r.json()).catch(() => null) : Promise.resolve(null),
-
         this.getDrillDownData(symbol, diseaseName).catch(() => blank.drillDown),
         this.getPubMedStats(symbol, diseaseName).catch(() => blank.pubmed),
       ]);
 
-      // ── Parse target profile ─────────────────────────────────────────────────
-      const t = profileRes?.data?.target;
-      if (!t) { blank.error = `Failed to load Open Targets profile for ${symbol}`; blank.ensemblId = ensemblId; return blank; }
+      // ── Parse target profile — fallback to minimal query if full query errored ─
+      let profileData = profileRes?.data?.target
+        ? profileRes
+        : await fetchProfile(profileGqlMinimal).catch(() => null);
+
+      const t = profileData?.data?.target;
+      if (!t) {
+        console.error(`[getGeneFullProfile] OT profile null for ${symbol} (ensemblId=${ensemblId})`, profileRes?.errors);
+        blank.error = `Failed to load Open Targets profile for ${symbol}`;
+        blank.ensemblId = ensemblId;
+        return blank;
+      }
 
       blank.foundInOT = true;
       blank.ensemblId = ensemblId;
@@ -959,11 +987,14 @@ export const api = {
       blank.pathways = (t.pathways || []).map((p: any) => p.pathway).filter(Boolean).slice(0, 15);
 
       // ── Parse disease-gene association ──────────────────────────────────────
-      const assocRow = assocRes?.data?.disease?.associatedTargets?.rows?.[0];
-      if (assocRow) {
+      // assocRes: target.associatedDiseases (filtered by diseaseId)
+      const assocRow = assocRes?.data?.target?.associatedDiseases?.rows?.[0];
+
+      const bestRow = assocRow;
+      if (bestRow) {
         blank.foundInDisease = true;
-        blank.associationScore = assocRow.score || 0;
-        const ds = assocRow.datatypeScores || [];
+        blank.associationScore = bestRow.score || 0;
+        const ds = bestRow.datatypeScores || [];
         blank.geneticScore = Math.max(
           ds.find((d: any) => d.id === 'genetic_association')?.score || 0,
           ds.find((d: any) => d.id === 'somatic_mutation')?.score || 0,
