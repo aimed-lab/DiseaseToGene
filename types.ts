@@ -205,38 +205,32 @@ export interface PaperAnalysis {
 }
 
 // ── Target Assessment ────────────────────────────────────────────────────────
-export interface TractabilityEntry { label: string; modality: string; value: boolean }
-export interface AssessedDrug { id: string; name: string; phase: number; status: string; mechanism: string; diseases: string[] }
-export interface TissueSample { tissue: string; value: number }
-
 export interface GeneAssessmentData {
   symbol: string;
   name: string;
-  ensemblId: string;
-  biotype: string;
-  functionDescription: string;
-  // GET scores (0-1)
-  associationScore: number;
+  // GET scores — populated from ranked list if available, otherwise 0
+  overallScore: number;
   geneticScore: number;
   expressionScore: number;
   targetScore: number;
   getScore: number;
   literatureScore: number;
-  // Drug modality
-  tractability: TractabilityEntry[];
-  modalities: { sm: boolean; ab: boolean; pr: boolean; oc: boolean; ge: boolean }; // summary flags
-  drugs: AssessedDrug[];
-  // Expression
-  topTissues: TissueSample[];
-  // Clinical
+  pubTatorScore: number;
+  pubTatorVelocity: number;
+  pubTatorTotalPapers: number;
+  pubTatorRecentPapers: number;
+  // Tissue specificity — from ranked list
+  tauTissue: number;
+  tauSingleCell: number;
+  combinedExpression: number;
+  bimodalityScores: Record<string, number>;
+  // Pathways — from ranked list
+  pathways: { id: string; label: string }[];
+  // Clinical + literature — always fetched fresh
   drillDown: DrillDownData;
-  // Literature
   pubmed: { total: number; recent: number; topPapers: { title: string; id: string }[] };
-  // Pathways
-  pathways: string[];
-  // Status flags
-  foundInOT: boolean;
-  foundInDisease: boolean;
+  // Meta
+  foundInRankedList: boolean;
   error?: string;
 }
 

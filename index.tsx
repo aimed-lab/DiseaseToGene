@@ -1259,33 +1259,8 @@ const ProfileDropdown = ({
 };
 
 // =============================================================================
-// AssessmentView — deep per-gene evidence card + LLM trade-off report
+// AssessmentView — per-gene evidence cards using ranked-list data + clinical/lit
 // =============================================================================
-const MODALITY_META: Record<string, { label: string; color: string; bg: string }> = {
-  sm: { label: 'Small Molecule', color: 'text-blue-600',   bg: 'bg-blue-500/10'   },
-  ab: { label: 'Antibody',       color: 'text-purple-600', bg: 'bg-purple-500/10' },
-  pr: { label: 'PROTAC/Degrader',color: 'text-rose-600',   bg: 'bg-rose-500/10'   },
-  oc: { label: 'Other Clinical', color: 'text-amber-600',  bg: 'bg-amber-500/10'  },
-  ge: { label: 'Gene/Cell Tx',   color: 'text-emerald-600',bg: 'bg-emerald-500/10'},
-};
-
-const PhaseBar = ({ phase, isDark }: { phase: string; isDark: boolean }) => {
-  const order = ['EARLY_PHASE1','PHASE1','PHASE2','PHASE3','PHASE4'];
-  const idx = order.indexOf(phase ?? '');
-  const label = ['Early Ph1','Phase 1','Phase 2','Phase 3','Phase 4'];
-  return (
-    <div className="flex items-center gap-1 mt-1">
-      {order.map((p, i) => (
-        <div key={p} className={`flex-1 h-2 rounded-full transition-all ${
-          i <= idx
-            ? i >= 3 ? 'bg-emerald-500' : i >= 2 ? 'bg-blue-500' : 'bg-slate-400'
-            : isDark ? 'bg-slate-800' : 'bg-slate-200'
-        }`} title={label[i]} />
-      ))}
-    </div>
-  );
-};
-
 const ScoreChip = ({ val, label, color, isDark }: { val: number; label: string; color: string; isDark: boolean }) => (
   <div className={`flex flex-col items-center px-2.5 py-2 rounded-xl border ${isDark ? 'border-slate-800 bg-slate-900/40' : 'border-slate-200 bg-white'}`}>
     <span className={`text-[15px] font-black ${color}`}>{val.toFixed(2)}</span>
@@ -1296,15 +1271,26 @@ const ScoreChip = ({ val, label, color, isDark }: { val: number; label: string; 
   </div>
 );
 
-function buildAssessDocx(
-  genes: GeneAssessmentData[],
-  diseaseName: string,
-  narrative: string
-) {
+const PhaseBar = ({ phase, isDark }: { phase: string; isDark: boolean }) => {
+  const order = ['EARLY_PHASE1','PHASE1','PHASE2','PHASE3','PHASE4'];
+  const idx = order.indexOf(phase ?? '');
+  const labels = ['Early Ph1','Phase 1','Phase 2','Phase 3','Phase 4'];
+  return (
+    <div className="flex items-center gap-1 mt-1">
+      {order.map((p, i) => (
+        <div key={p} className={`flex-1 h-2 rounded-full transition-all ${
+          i <= idx ? (i >= 3 ? 'bg-emerald-500' : i >= 2 ? 'bg-blue-500' : 'bg-slate-400')
+                   : isDark ? 'bg-slate-800' : 'bg-slate-200'
+        }`} title={labels[i]} />
+      ))}
+    </div>
+  );
+};
 
+function buildAssessDocx(genes: GeneAssessmentData[], diseaseName: string, narrative: string) {
   const border = { style: BorderStyle.SINGLE, size: 1, color: 'D1D5DB' };
   const borders = { top: border, bottom: border, left: border, right: border };
-  const mkCell = (text: string, bold = false, shaded = false, w = 2000) =>
+  const mkCell = (text: string, bold = false, shaded = false, w = 2340) =>
     new TableCell({
       borders, width: { size: w, type: WidthType.DXA },
       shading: shaded ? { fill: 'F1F5F9', type: ShadingType.CLEAR } : undefined,
@@ -1312,88 +1298,83 @@ function buildAssessDocx(
       children: [new Paragraph({ children: [new TextRun({ text, bold, size: 18 })] })],
     });
 
-  const children: any[] = [];
-
-  // Title
-  children.push(
-    new Paragraph({ heading: HeadingLevel.HEADING_1, children: [new TextRun({ text: `Target Assessment Report`, bold: true, size: 36 })] }),
-    new Paragraph({ children: [new TextRun({ text: `Disease: ${diseaseName} | Generated: ${new Date().toLocaleDateString()}`, size: 20, color: '6B7280' })] }),
-    new Paragraph({ children: [] })
-  );
+  const children: any[] = [
+    new Paragraph({ heading: HeadingLevel.HEADING_1, children: [new TextRun({ text: 'Target Assessment Report', bold: true, size: 36 })] }),
+    new Paragraph({ children: [new TextRun({ text: `Disease: ${diseaseName}  |  Generated: ${new Date().toLocaleDateString()}`, size: 20, color: '6B7280' })] }),
+    new Paragraph({ children: [] }),
+  ];
 
   for (const g of genes) {
-    children.push(
-      new Paragraph({ heading: HeadingLevel.HEADING_2, children: [new TextRun({ text: `${g.symbol} — ${g.name}`, bold: true, size: 28 })] })
-    );
-    if (g.functionDescription) {
-      children.push(new Paragraph({ children: [new TextRun({ text: g.functionDescription, size: 20, color: '374151' })] }));
-    }
+    children.push(new Paragraph({ heading: HeadingLevel.HEADING_2, children: [new TextRun({ text: `${g.symbol} — ${g.name}`, bold: true, size: 28 })] }));
+    children.push(new Paragraph({ children: [new TextRun({ text: g.foundInRankedList ? 'Source: Ranked target list' : 'Source: Custom gene (clinical + literature only)', size: 18, color: '6B7280' })] }));
     children.push(new Paragraph({ children: [] }));
 
-    // Score table
-    children.push(new Paragraph({ children: [new TextRun({ text: 'Evidence Scores', bold: true, size: 22 })] }));
-    children.push(new Table({
-      width: { size: 9360, type: WidthType.DXA },
-      columnWidths: [2340, 2340, 2340, 2340],
-      rows: [
-        new TableRow({ children: [mkCell('Metric', true, true, 2340), mkCell('GET Score', true, true, 2340), mkCell('Genetic (G)', true, true, 2340), mkCell('Target (T)', true, true, 2340)] }),
-        new TableRow({ children: [mkCell('Value', false, false, 2340), mkCell(g.getScore.toFixed(3), false, false, 2340), mkCell(g.geneticScore.toFixed(3), false, false, 2340), mkCell(g.targetScore.toFixed(3), false, false, 2340)] }),
-      ],
-    }));
-    children.push(new Paragraph({ children: [] }));
-
-    // Drug modalities
-    const mods = Object.entries(g.modalities).filter(([, v]) => v).map(([k]) => MODALITY_META[k]?.label || k).join(', ');
-    children.push(new Paragraph({ children: [new TextRun({ text: `Drug Modalities: ${mods || 'None identified'}`, size: 20 })] }));
-
-    // Known drugs
-    if (g.drugs.length > 0) {
-      children.push(new Paragraph({ children: [new TextRun({ text: 'Known Drugs', bold: true, size: 22 })] }));
+    if (g.foundInRankedList) {
+      children.push(new Paragraph({ children: [new TextRun({ text: 'Evidence Scores (GET Framework)', bold: true, size: 22 })] }));
       children.push(new Table({
-        width: { size: 9360, type: WidthType.DXA },
-        columnWidths: [3120, 1560, 1560, 3120],
+        width: { size: 9360, type: WidthType.DXA }, columnWidths: [2340, 2340, 2340, 2340],
         rows: [
-          new TableRow({ children: [mkCell('Drug', true, true, 3120), mkCell('Phase', true, true, 1560), mkCell('Status', true, true, 1560), mkCell('Mechanism', true, true, 3120)] }),
-          ...g.drugs.slice(0, 8).map(d => new TableRow({ children: [mkCell(d.name, false, false, 3120), mkCell(String(d.phase || '—'), false, false, 1560), mkCell(d.status || '—', false, false, 1560), mkCell(d.mechanism, false, false, 3120)] })),
+          new TableRow({ children: [mkCell('GET Score', true, true), mkCell('Genetic (G)', true, true), mkCell('Expression (E)', true, true), mkCell('Target (T)', true, true)] }),
+          new TableRow({ children: [mkCell(g.getScore.toFixed(3)), mkCell(g.geneticScore.toFixed(3)), mkCell(g.expressionScore.toFixed(3)), mkCell(g.targetScore.toFixed(3))] }),
         ],
       }));
       children.push(new Paragraph({ children: [] }));
+
+      if (g.tauTissue > 0 || g.tauSingleCell > 0) {
+        children.push(new Paragraph({ children: [new TextRun({ text: `Tissue Specificity — Tau (bulk): ${g.tauTissue.toFixed(3)}  |  Tau (single-cell): ${g.tauSingleCell.toFixed(3)}  |  Expression: ${g.combinedExpression.toFixed(3)}`, size: 20 })] }));
+      }
+
+      const topBimodal = Object.entries(g.bimodalityScores)
+        .filter(([k]) => !k.startsWith('_'))
+        .sort(([, a], [, b]) => b - a).slice(0, 5)
+        .map(([tissue, score]) => `${tissue} (${score.toFixed(2)})`).join(', ');
+      if (topBimodal) {
+        children.push(new Paragraph({ children: [new TextRun({ text: `Top Bimodal Tissues: ${topBimodal}`, size: 20 })] }));
+      }
+
+      if (g.pathways.length > 0) {
+        children.push(new Paragraph({ children: [new TextRun({ text: `Key Pathways: ${g.pathways.slice(0, 5).map(p => p.label).join(', ')}`, size: 20 })] }));
+      }
+      children.push(new Paragraph({ children: [] }));
     }
 
-    // Clinical trials
     const dd = g.drillDown;
-    children.push(new Paragraph({ children: [new TextRun({ text: `Clinical Trials: ${dd.trial_count ?? 0} total | Max Phase: ${dd.max_phase ?? 'N/A'} | Active: ${dd.active_trial_present ? 'Yes' : 'No'}`, size: 20 })] }));
+    children.push(new Paragraph({ children: [new TextRun({ text: 'Clinical Trials (ClinicalTrials.gov)', bold: true, size: 22 })] }));
+    children.push(new Paragraph({ children: [new TextRun({ text: `${dd.trial_count ?? 0} trials  |  Max Phase: ${dd.max_phase ?? 'N/A'}  |  Active: ${dd.active_trial_present ? 'Yes' : 'No'}`, size: 20 })] }));
+    if (dd.top_drugs?.length) {
+      children.push(new Paragraph({ children: [new TextRun({ text: `Top drugs in trials: ${dd.top_drugs.slice(0, 5).map(d => d.name).join(', ')}`, size: 20 })] }));
+    }
+    children.push(new Paragraph({ children: [] }));
 
-    // Literature
-    children.push(new Paragraph({ children: [new TextRun({ text: `Literature: ${g.pubmed.total} PubMed papers (${g.pubmed.recent} last 3 years) | Europe PMC: ${dd.paper_count ?? 0}`, size: 20 })] }));
-
-    // Top tissues
-    if (g.topTissues.length > 0) {
-      const tissueStr = g.topTissues.slice(0, 5).map(t => `${t.tissue} (${t.value.toFixed(1)})`).join(', ');
-      children.push(new Paragraph({ children: [new TextRun({ text: `Top Expression Tissues: ${tissueStr}`, size: 20 })] }));
+    children.push(new Paragraph({ children: [new TextRun({ text: 'Literature (PubMed + Europe PMC)', bold: true, size: 22 })] }));
+    children.push(new Paragraph({ children: [new TextRun({ text: `PubMed: ${g.pubmed.total} total, ${g.pubmed.recent} last 3 years  |  Europe PMC: ${dd.paper_count ?? 0} (${dd.recent_paper_count ?? 0} recent)`, size: 20 })] }));
+    if (g.pubTatorScore > 0) {
+      children.push(new Paragraph({ children: [new TextRun({ text: `PubTator velocity score: ${g.pubTatorScore.toFixed(3)}  |  ${g.pubTatorTotalPapers} total papers, ${g.pubTatorRecentPapers} recent`, size: 20 })] }));
+    }
+    if (g.pubmed.topPapers.length > 0) {
+      children.push(new Paragraph({ children: [new TextRun({ text: 'Top papers:', bold: true, size: 20 })] }));
+      g.pubmed.topPapers.slice(0, 3).forEach(p => {
+        children.push(new Paragraph({ children: [new TextRun({ text: `• ${p.title} (PMID: ${p.id})`, size: 18 })] }));
+      });
     }
     children.push(new Paragraph({ children: [] }));
   }
 
-  // AI Narrative
   if (narrative) {
     children.push(
       new Paragraph({ heading: HeadingLevel.HEADING_2, children: [new TextRun({ text: 'AI Trade-off Analysis', bold: true, size: 28 })] }),
-      new Paragraph({ children: [new TextRun({ text: narrative, size: 20 })] })
+      new Paragraph({ children: [new TextRun({ text: narrative, size: 20 })] }),
     );
   }
 
   return new Document({ sections: [{ properties: { page: { size: { width: 12240, height: 15840 }, margin: { top: 1440, right: 1440, bottom: 1440, left: 1440 } } }, children }] });
 }
 
-const AssessmentView = ({
-  genes, data, loading, diseaseName, diseaseId, theme, onClose,
-}: {
+const AssessmentView = ({ genes, data, loading, diseaseName, theme, onClose }: {
   genes: string[];
   data: GeneAssessmentData[];
   loading: Record<string, boolean>;
   diseaseName: string;
-  diseaseId?: string | null;
   theme: Theme;
   onClose: () => void;
 }) => {
@@ -1409,43 +1390,42 @@ const AssessmentView = ({
     if (ready.length === 0) return;
     setNarrativeLoading(true);
     try {
-      const ctx = ready.map(g => `
-Gene: ${g.symbol} (${g.name})
-GET Score: ${g.getScore.toFixed(3)} | Genetic: ${g.geneticScore.toFixed(3)} | Expression: ${g.expressionScore.toFixed(3)} | Target Tractability: ${g.targetScore.toFixed(3)}
-Drug Modalities: ${Object.entries(g.modalities).filter(([,v])=>v).map(([k])=>MODALITY_META[k]?.label||k).join(', ')||'None identified'}
-Known Drugs: ${g.drugs.slice(0,5).map(d=>`${d.name} (Ph${d.phase})`).join(', ')||'None'}
-Clinical Trials: ${g.drillDown.trial_count??0} total, max phase ${g.drillDown.max_phase??'N/A'}, active=${g.drillDown.active_trial_present?'yes':'no'}
-Literature: ${g.pubmed.total} PubMed total, ${g.pubmed.recent} recent (3y)
-Top Tissues: ${g.topTissues.slice(0,3).map(t=>`${t.tissue}`).join(', ')||'—'}
-Pathways: ${g.pathways.slice(0,5).join(', ')||'—'}
-Function: ${g.functionDescription?.slice(0,200)||'N/A'}
-      `.trim()).join('\n\n---\n\n');
+      const ctx = ready.map(g => {
+        const topBio = Object.entries(g.bimodalityScores).filter(([k]) => !k.startsWith('_')).sort(([,a],[,b])=>b-a).slice(0,3).map(([t,s])=>`${t}(${s.toFixed(2)})`).join(', ');
+        return `Gene: ${g.symbol} (${g.name})
+Source: ${g.foundInRankedList ? 'Ranked target list' : 'Custom gene'}
+${g.foundInRankedList ? `GET Score: ${g.getScore.toFixed(3)} | Genetic: ${g.geneticScore.toFixed(3)} | Expression: ${g.expressionScore.toFixed(3)} | Target: ${g.targetScore.toFixed(3)}
+Literature Score: ${g.literatureScore.toFixed(3)} | PubTator velocity: ${g.pubTatorScore.toFixed(3)}
+Tau (tissue): ${g.tauTissue.toFixed(3)} | Tau (single-cell): ${g.tauSingleCell.toFixed(3)}
+Top bimodal tissues: ${topBio || '—'}
+Pathways: ${g.pathways.slice(0,5).map(p=>p.label).join(', ')||'—'}` : ''}
+Clinical Trials: ${g.drillDown.trial_count??0} total | Max phase: ${g.drillDown.max_phase??'N/A'} | Active: ${g.drillDown.active_trial_present?'yes':'no'}
+Top trial drugs: ${g.drillDown.top_drugs?.slice(0,3).map(d=>d.name).join(', ')||'—'}
+PubMed: ${g.pubmed.total} total, ${g.pubmed.recent} recent (3y) | Europe PMC: ${g.drillDown.paper_count??0}`.trim();
+      }).join('\n\n---\n\n');
 
       const prompt = `You are a drug discovery scientist evaluating therapeutic target candidates for ${diseaseName}.
 
-Here is the evidence data for ${ready.length} gene(s):
+Evidence data for ${ready.length} gene(s):
 
 ${ctx}
 
-Write a critical, evidence-based Target Assessment Report. For each gene:
-1. **Druggability Assessment** — evaluate which drug modality is most viable and why (small molecule binding pocket quality, antibody accessibility, PROTAC feasibility)
-2. **Clinical Validation** — what does the trial landscape tell us? Are we early or late in development?
-3. **Genetic Credentialing** — how strong is the human genetic link to this disease?
-4. **Expression & Tissue Risk** — are there off-target expression concerns?
-5. **Key Trade-offs** — if comparing multiple genes, which is best suited for which therapeutic strategy?
+Write a critical, evidence-based Target Assessment Report covering:
+1. **Clinical Validation** — what does the trial landscape reveal? Early-stage, mature, or untapped?
+2. **Literature Signal** — is research momentum growing or established? Any velocity insights?
+${ready.some(g=>g.foundInRankedList) ? `3. **Genetic & Expression Evidence** — strength of disease association and tissue risk
+4. **Tissue Specificity** — bimodality and tau scores; off-target concerns?` : ''}
+${ready.length > 1 ? `5. **Comparative Trade-offs** — which target offers the better risk/benefit profile and why?
+6. **Recommendation** — prioritize one for a new drug program with justification.` : ''}
 
-${ready.length > 1 ? '6. **Recommendation** — which target would you prioritize for a new drug program and why?' : ''}
-
-Be specific and cite the data. Do not fabricate information. Limit to ~500 words.`;
+Be specific, cite the numbers. Do not fabricate. ~400 words.`;
 
       const aiClient = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
       const resp = await aiClient.models.generateContent({ model: 'gemini-2.0-flash', contents: prompt });
       setNarrative(resp.text ?? '');
     } catch (e: any) {
-      setNarrative(`Error generating narrative: ${e.message}`);
-    } finally {
-      setNarrativeLoading(false);
-    }
+      setNarrative(`Error: ${e.message}`);
+    } finally { setNarrativeLoading(false); }
   };
 
   const downloadReport = async () => {
@@ -1454,17 +1434,14 @@ Be specific and cite the data. Do not fabricate information. Limit to ~500 words
     try {
       const doc = buildAssessDocx(data, diseaseName, narrative);
       const buffer = await Packer.toBuffer(doc);
-      saveAs(
-        new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }),
-        `Assessment_${genes.join('_')}_${diseaseName.replace(/\s+/g,'_').slice(0,30)}.docx`
-      );
-    } catch (e: any) {
-      console.error('DOCX export failed:', e);
-    } finally { setDlLoading(false); }
+      saveAs(new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }),
+        `Assessment_${genes.join('_')}_${diseaseName.replace(/\s+/g,'_').slice(0,30)}.docx`);
+    } catch (e: any) { console.error('DOCX export failed:', e); }
+    finally { setDlLoading(false); }
   };
 
   return (
-    <div className={`h-full flex flex-col rounded-2xl border overflow-hidden shadow-xl shadow-slate-950/5 ${isDark ? 'bg-[#0b111c]/95 border-slate-800/80' : 'bg-white/95 border-slate-200'}`}>
+    <div className={`h-full flex flex-col rounded-2xl border overflow-hidden shadow-xl ${isDark ? 'bg-[#0b111c]/95 border-slate-800/80' : 'bg-white/95 border-slate-200'}`}>
       {/* Header */}
       <div className={`flex items-center justify-between px-5 py-3.5 border-b flex-shrink-0 ${isDark ? 'bg-[#0b111c] border-slate-800' : 'bg-white border-slate-200'}`}>
         <div className="flex items-center gap-3">
@@ -1473,17 +1450,15 @@ Be specific and cite the data. Do not fabricate information. Limit to ~500 words
           </div>
           <div>
             <p className={`text-[9px] font-black uppercase tracking-widest ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Target Assessment</p>
-            <p className={`text-[13px] font-bold ${isDark ? 'text-slate-100' : 'text-slate-800'}`}>{diseaseName || 'Full Evidence Report'}</p>
+            <p className={`text-[13px] font-bold ${isDark ? 'text-slate-100' : 'text-slate-800'}`}>{diseaseName || 'Evidence Report'}</p>
           </div>
           <div className="flex items-center gap-1.5 ml-2">
             {genes.map(g => (
               <span key={g} className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
                 loading[g] ? 'bg-amber-500/10 border-amber-500/20 text-amber-500' :
                 data.find(d=>d.symbol===g)?.error ? 'bg-rose-500/10 border-rose-500/20 text-rose-500' :
-                'bg-blue-500/10 border-blue-500/20 text-blue-600'
-              }`}>
-                {loading[g] && <Loader2 className="w-2.5 h-2.5 animate-spin inline mr-1" />}
-                {g}
+                'bg-blue-500/10 border-blue-500/20 text-blue-600'}`}>
+                {loading[g] && <Loader2 className="w-2.5 h-2.5 animate-spin inline mr-1" />}{g}
               </span>
             ))}
           </div>
@@ -1493,13 +1468,11 @@ Be specific and cite the data. Do not fabricate information. Limit to ~500 words
             <>
               <button onClick={runNarrative} disabled={narrativeLoading}
                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-bold transition-all ${isDark ? 'bg-purple-600/15 text-purple-400 hover:bg-purple-600/25 border border-purple-500/20' : 'bg-purple-50 text-purple-600 hover:bg-purple-100 border border-purple-200'} disabled:opacity-40`}>
-                {narrativeLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
-                AI Trade-off
+                {narrativeLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}AI Trade-off
               </button>
               <button onClick={downloadReport} disabled={dlLoading}
                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-bold transition-all ${isDark ? 'bg-emerald-600/15 text-emerald-400 hover:bg-emerald-600/25 border border-emerald-500/20' : 'bg-emerald-50 text-emerald-600 hover:bg-emerald-100 border border-emerald-200'} disabled:opacity-40`}>
-                {dlLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FileDown className="w-3.5 h-3.5" />}
-                Download Report
+                {dlLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FileDown className="w-3.5 h-3.5" />}Download Report
               </button>
             </>
           )}
@@ -1510,132 +1483,104 @@ Be specific and cite the data. Do not fabricate information. Limit to ~500 words
       </div>
 
       {/* Body */}
-      <div className="flex-1 overflow-y-auto p-5 space-y-6">
-        {/* Gene Cards — side by side */}
-        <div className={`grid gap-4 ${data.length >= 2 ? 'grid-cols-2' : 'grid-cols-1 max-w-2xl mx-auto w-full'}`}>
+      <div className="flex-1 overflow-y-auto p-5 space-y-5">
+        {/* Gene Cards */}
+        <div className={`grid gap-4 ${genes.length >= 3 ? 'grid-cols-3' : genes.length === 2 ? 'grid-cols-2' : 'grid-cols-1 max-w-xl mx-auto w-full'}`}>
           {genes.map(sym => {
             const g = data.find(d => d.symbol === sym);
-            const isLoading = loading[sym];
-
-            if (isLoading || !g) return (
+            if (loading[sym] || !g) return (
               <div key={sym} className={`rounded-2xl border p-6 flex flex-col items-center justify-center gap-3 min-h-48 ${isDark ? 'border-slate-800 bg-slate-900/30' : 'border-slate-200 bg-slate-50'}`}>
                 <Loader2 className={`w-6 h-6 animate-spin ${isDark ? 'text-blue-400' : 'text-blue-600'}`} />
                 <p className={`text-[11px] font-bold ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>Loading {sym}…</p>
-                <p className={`text-[9px] ${isDark ? 'text-slate-600' : 'text-slate-400'}`}>Querying OT · ClinicalTrials · PubMed</p>
+                <p className={`text-[9px] ${isDark ? 'text-slate-600' : 'text-slate-400'}`}>ClinicalTrials.gov · PubMed</p>
               </div>
             );
 
-            if (g.error && !g.foundInOT) return (
-              <div key={sym} className={`rounded-2xl border p-6 ${isDark ? 'border-rose-800/40 bg-rose-900/10' : 'border-rose-200 bg-rose-50'}`}>
-                <AlertCircle className="w-5 h-5 text-rose-500 mb-2" />
-                <p className="text-[12px] font-bold text-rose-500">{sym} — Not Found</p>
-                <p className={`text-[10px] mt-1 ${isDark ? 'text-rose-400/60' : 'text-rose-500/70'}`}>{g.error}</p>
-              </div>
-            );
+            // Top bimodal tissues from bimodalityScores
+            const bioTissues = Object.entries(g.bimodalityScores)
+              .filter(([k]) => !k.startsWith('_') && typeof g.bimodalityScores[k] === 'number')
+              .sort(([,a],[,b]) => b - a).slice(0, 6);
 
             return (
               <div key={sym} className={`rounded-2xl border overflow-hidden ${isDark ? 'border-slate-800 bg-[#0d1424]' : 'border-slate-200 bg-white'}`}>
                 {/* Gene header */}
                 <div className={`px-4 py-3 border-b ${isDark ? 'border-slate-800 bg-slate-900/40' : 'border-slate-100 bg-slate-50'}`}>
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <h3 className={`text-[16px] font-black font-mono ${isDark ? 'text-blue-300' : 'text-blue-700'}`}>{g.symbol}</h3>
-                        {g.foundInDisease && (
-                          <span className={`text-[8px] font-black px-1.5 py-0.5 rounded-full border ${isDark ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' : 'bg-emerald-50 border-emerald-200 text-emerald-600'}`}>
-                            ✓ In disease
-                          </span>
-                        )}
-                        {!g.foundInDisease && (
-                          <span className={`text-[8px] font-black px-1.5 py-0.5 rounded-full border ${isDark ? 'bg-amber-500/10 border-amber-500/20 text-amber-400' : 'bg-amber-50 border-amber-200 text-amber-600'}`}>
-                            No direct assoc.
-                          </span>
-                        )}
-                      </div>
-                      <p className={`text-[11px] font-semibold mt-0.5 ${isDark ? 'text-slate-300' : 'text-slate-700'}`}>{g.name}</p>
-                      {g.biotype && <p className={`text-[9px] mt-0.5 ${isDark ? 'text-slate-600' : 'text-slate-400'}`}>{g.biotype.replace(/_/g,' ')}</p>}
-                    </div>
-                    <a href={`https://platform.opentargets.org/target/${g.ensemblId}`} target="_blank" rel="noopener noreferrer"
-                      className={`p-1.5 rounded-lg transition-colors flex-shrink-0 ${isDark ? 'text-slate-600 hover:text-blue-400 hover:bg-blue-500/10' : 'text-slate-300 hover:text-blue-600 hover:bg-blue-50'}`}>
-                      <ExternalLink className="w-3.5 h-3.5" />
-                    </a>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h3 className={`text-[16px] font-black font-mono ${isDark ? 'text-blue-300' : 'text-blue-700'}`}>{g.symbol}</h3>
+                    <span className={`text-[8px] font-black px-1.5 py-0.5 rounded-full border ${
+                      g.foundInRankedList
+                        ? isDark ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' : 'bg-emerald-50 border-emerald-200 text-emerald-600'
+                        : isDark ? 'bg-amber-500/10 border-amber-500/20 text-amber-400' : 'bg-amber-50 border-amber-200 text-amber-600'
+                    }`}>{g.foundInRankedList ? '✓ Ranked' : 'Custom'}</span>
                   </div>
-                  {g.functionDescription && (
-                    <p className={`text-[10px] leading-relaxed mt-2 line-clamp-2 ${isDark ? 'text-slate-500' : 'text-slate-500'}`}>{g.functionDescription}</p>
-                  )}
+                  <p className={`text-[11px] font-semibold mt-0.5 truncate ${isDark ? 'text-slate-300' : 'text-slate-700'}`}>{g.name}</p>
                 </div>
 
-                <div className="px-4 py-4 space-y-5">
-                  {/* GET Scores */}
-                  <div>
-                    <p className={`text-[9px] font-black uppercase tracking-widest mb-2 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Evidence Scores</p>
-                    <div className="grid grid-cols-4 gap-2">
-                      <ScoreChip val={g.getScore} label="GET" color="text-purple-600" isDark={isDark} />
-                      <ScoreChip val={g.geneticScore} label="Genetic" color="text-blue-600" isDark={isDark} />
-                      <ScoreChip val={g.expressionScore} label="Express." color="text-emerald-600" isDark={isDark} />
-                      <ScoreChip val={g.targetScore} label="Target" color="text-amber-600" isDark={isDark} />
-                    </div>
-                  </div>
-
-                  {/* Drug modalities */}
-                  <div>
-                    <p className={`text-[9px] font-black uppercase tracking-widest mb-2 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Drug Modality Tractability</p>
-                    <div className="flex flex-wrap gap-1.5">
-                      {Object.entries(g.modalities).map(([k, v]) => (
-                        <span key={k} className={`px-2 py-1 rounded-lg text-[10px] font-bold border transition-all ${
-                          v ? `${MODALITY_META[k]?.bg} ${MODALITY_META[k]?.color} border-current/20`
-                            : isDark ? 'bg-slate-900 border-slate-800 text-slate-700 line-through' : 'bg-slate-50 border-slate-200 text-slate-300 line-through'
-                        }`}>
-                          {MODALITY_META[k]?.label}
-                        </span>
-                      ))}
-                    </div>
-                    {Object.values(g.modalities).every(v => !v) && (
-                      <p className={`text-[10px] mt-1 ${isDark ? 'text-amber-400/70' : 'text-amber-600/70'}`}>⚠ No tractability identified in OT</p>
-                    )}
-                  </div>
-
-                  {/* Known drugs */}
-                  {g.drugs.length > 0 && (
+                <div className="px-4 py-3 space-y-4">
+                  {/* GET Scores — only for ranked genes */}
+                  {g.foundInRankedList && (
                     <div>
-                      <p className={`text-[9px] font-black uppercase tracking-widest mb-2 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
-                        Known Drugs <span className={`ml-1 text-[8px] px-1 rounded ${isDark ? 'bg-slate-800 text-slate-400' : 'bg-slate-100 text-slate-500'}`}>{g.drugs.length}</span>
-                      </p>
-                      <div className={`rounded-xl border overflow-hidden ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
-                        {g.drugs.slice(0, 5).map((d, i) => (
-                          <div key={d.id} className={`flex items-center gap-2 px-3 py-2 ${i > 0 ? `border-t ${isDark ? 'border-slate-800' : 'border-slate-100'}` : ''} ${isDark ? 'bg-[#0d1424]' : 'bg-white'}`}>
-                            <Pill className={`w-3 h-3 flex-shrink-0 ${d.phase >= 3 ? 'text-emerald-500' : d.phase >= 1 ? 'text-blue-500' : 'text-slate-400'}`} />
-                            <div className="flex-1 min-w-0">
-                              <p className={`text-[11px] font-bold truncate ${isDark ? 'text-slate-200' : 'text-slate-800'}`}>{d.name}</p>
-                              <p className={`text-[9px] truncate ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>{d.mechanism}</p>
-                            </div>
-                            <span className={`text-[9px] font-black px-1.5 py-0.5 rounded-full flex-shrink-0 ${
-                              d.phase >= 4 ? 'bg-emerald-500/15 text-emerald-500' :
-                              d.phase >= 3 ? 'bg-blue-500/15 text-blue-500' :
-                              d.phase >= 1 ? 'bg-amber-500/15 text-amber-500' :
-                              isDark ? 'bg-slate-800 text-slate-500' : 'bg-slate-100 text-slate-400'
-                            }`}>
-                              {d.phase >= 1 ? `Ph${d.phase}` : d.status || 'Pre-clinical'}
-                            </span>
+                      <p className={`text-[9px] font-black uppercase tracking-widest mb-2 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>GET Evidence Scores</p>
+                      <div className="grid grid-cols-2 gap-1.5">
+                        <ScoreChip val={g.getScore} label="GET" color="text-purple-600" isDark={isDark} />
+                        <ScoreChip val={g.geneticScore} label="Genetic" color="text-blue-600" isDark={isDark} />
+                        <ScoreChip val={g.expressionScore} label="Expression" color="text-emerald-600" isDark={isDark} />
+                        <ScoreChip val={g.targetScore} label="Target" color="text-amber-600" isDark={isDark} />
+                      </div>
+                      {g.pubTatorScore > 0 && (
+                        <div className={`mt-1.5 flex items-center gap-3 px-3 py-1.5 rounded-xl ${isDark ? 'bg-slate-900/40' : 'bg-slate-50'}`}>
+                          <div>
+                            <span className={`text-[9px] font-black ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>PubTator Velocity</span>
+                            <p className={`text-[13px] font-black ${isDark ? 'text-blue-300' : 'text-blue-700'}`}>{g.pubTatorScore.toFixed(3)}</p>
+                          </div>
+                          <div>
+                            <span className={`text-[9px] font-black ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Papers</span>
+                            <p className={`text-[13px] font-black ${isDark ? 'text-slate-200' : 'text-slate-800'}`}>{g.pubTatorTotalPapers}</p>
+                          </div>
+                          <div>
+                            <span className={`text-[9px] font-black ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Recent 3y</span>
+                            <p className={`text-[13px] font-black ${isDark ? 'text-slate-200' : 'text-slate-800'}`}>{g.pubTatorRecentPapers}</p>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Tissue Specificity — only for ranked genes */}
+                  {g.foundInRankedList && (g.tauTissue > 0 || bioTissues.length > 0) && (
+                    <div>
+                      <p className={`text-[9px] font-black uppercase tracking-widest mb-2 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Tissue Specificity</p>
+                      <div className="grid grid-cols-3 gap-1.5 mb-2">
+                        {[
+                          { label: 'Tau (bulk)', val: g.tauTissue },
+                          { label: 'Tau (scRNA)', val: g.tauSingleCell },
+                          { label: 'Expression', val: g.combinedExpression },
+                        ].map(s => (
+                          <div key={s.label} className={`rounded-xl border px-2 py-1.5 text-center ${isDark ? 'border-slate-800 bg-slate-900/30' : 'border-slate-200 bg-slate-50'}`}>
+                            <p className={`text-[13px] font-black ${s.val > 0.6 ? 'text-emerald-500' : s.val > 0.3 ? 'text-amber-500' : isDark ? 'text-slate-400' : 'text-slate-500'}`}>{s.val.toFixed(2)}</p>
+                            <p className={`text-[8px] font-bold ${isDark ? 'text-slate-600' : 'text-slate-400'}`}>{s.label}</p>
                           </div>
                         ))}
-                        {g.drugs.length > 5 && (
-                          <div className={`px-3 py-1.5 text-center ${isDark ? 'bg-slate-900/40 text-slate-600' : 'bg-slate-50 text-slate-400'}`}>
-                            <span className="text-[9px]">+{g.drugs.length - 5} more drugs</span>
-                          </div>
-                        )}
                       </div>
-                    </div>
-                  )}
-                  {g.drugs.length === 0 && (
-                    <div className={`text-[10px] px-3 py-2 rounded-xl border ${isDark ? 'border-slate-800 text-slate-600' : 'border-slate-200 text-slate-400'}`}>
-                      No known drugs in Open Targets database
+                      {bioTissues.length > 0 && (
+                        <div className="space-y-1">
+                          {bioTissues.map(([tissue, score]) => (
+                            <div key={tissue} className="flex items-center gap-2">
+                              <span className={`text-[9px] truncate w-24 flex-shrink-0 ${isDark ? 'text-slate-400' : 'text-slate-600'}`}>{tissue}</span>
+                              <div className={`flex-1 h-1.5 rounded-full ${isDark ? 'bg-slate-800' : 'bg-slate-200'}`}>
+                                <div className="h-full rounded-full bg-teal-500" style={{ width: `${Math.min(100, score * 100)}%` }} />
+                              </div>
+                              <span className={`text-[8px] font-mono w-8 text-right flex-shrink-0 ${isDark ? 'text-slate-600' : 'text-slate-400'}`}>{score.toFixed(2)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   )}
 
-                  {/* Clinical trials */}
+                  {/* Clinical Trials */}
                   <div>
-                    <p className={`text-[9px] font-black uppercase tracking-widest mb-2 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Clinical Trial Context</p>
+                    <p className={`text-[9px] font-black uppercase tracking-widest mb-2 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Clinical Trials</p>
                     <div className={`rounded-xl border p-3 space-y-2 ${isDark ? 'border-slate-800 bg-slate-900/30' : 'border-slate-200 bg-slate-50'}`}>
                       <div className="flex items-center justify-between">
                         <span className={`text-[11px] font-bold ${isDark ? 'text-slate-200' : 'text-slate-800'}`}>
@@ -1648,19 +1593,19 @@ Be specific and cite the data. Do not fabricate information. Limit to ~500 words
                       </div>
                       <PhaseBar phase={g.drillDown.max_phase ?? ''} isDark={isDark} />
                       {g.drillDown.top_drugs && g.drillDown.top_drugs.length > 0 && (
-                        <div className={`text-[9px] ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
-                          Top drugs in trials: {g.drillDown.top_drugs.slice(0, 3).map(d => d.name).join(', ')}
-                        </div>
+                        <p className={`text-[9px] ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
+                          Drugs in trials: {g.drillDown.top_drugs.slice(0,3).map(d=>d.name).join(', ')}
+                        </p>
                       )}
                     </div>
                   </div>
 
                   {/* Literature */}
                   <div>
-                    <p className={`text-[9px] font-black uppercase tracking-widest mb-2 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Literature Signal</p>
-                    <div className="grid grid-cols-2 gap-2">
+                    <p className={`text-[9px] font-black uppercase tracking-widest mb-2 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Literature</p>
+                    <div className="grid grid-cols-2 gap-1.5">
                       {[
-                        { label: 'PubMed Total', value: g.pubmed.total, sub: `${g.pubmed.recent} in last 3 yrs` },
+                        { label: 'PubMed', value: g.pubmed.total, sub: `${g.pubmed.recent} last 3y` },
                         { label: 'Europe PMC', value: g.drillDown.paper_count ?? 0, sub: `${g.drillDown.recent_paper_count ?? 0} recent` },
                       ].map(s => (
                         <div key={s.label} className={`rounded-xl border px-3 py-2 ${isDark ? 'border-slate-800 bg-slate-900/30' : 'border-slate-200 bg-slate-50'}`}>
@@ -1672,7 +1617,7 @@ Be specific and cite the data. Do not fabricate information. Limit to ~500 words
                     </div>
                     {g.pubmed.topPapers.length > 0 && (
                       <div className="mt-2 space-y-1">
-                        {g.pubmed.topPapers.slice(0, 2).map(p => (
+                        {g.pubmed.topPapers.slice(0,2).map(p => (
                           <a key={p.id} href={`https://pubmed.ncbi.nlm.nih.gov/${p.id}`} target="_blank" rel="noopener noreferrer"
                             className={`flex items-start gap-1.5 text-[9px] leading-relaxed hover:underline ${isDark ? 'text-blue-400/70' : 'text-blue-600/70'}`}>
                             <ExternalLink className="w-2.5 h-2.5 mt-0.5 flex-shrink-0" />
@@ -1683,34 +1628,13 @@ Be specific and cite the data. Do not fabricate information. Limit to ~500 words
                     )}
                   </div>
 
-                  {/* Top Tissues */}
-                  {g.topTissues.length > 0 && (
+                  {/* Pathways — ranked only */}
+                  {g.foundInRankedList && g.pathways.length > 0 && (
                     <div>
-                      <p className={`text-[9px] font-black uppercase tracking-widest mb-2 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Tissue Expression (RNA)</p>
-                      <div className="space-y-1.5">
-                        {g.topTissues.slice(0, 6).map(t => {
-                          const max = g.topTissues[0].value || 1;
-                          return (
-                            <div key={t.tissue} className="flex items-center gap-2">
-                              <span className={`text-[9px] w-28 truncate flex-shrink-0 ${isDark ? 'text-slate-400' : 'text-slate-600'}`}>{t.tissue}</span>
-                              <div className={`flex-1 h-1.5 rounded-full ${isDark ? 'bg-slate-800' : 'bg-slate-200'}`}>
-                                <div className="h-full rounded-full bg-emerald-500" style={{ width: `${(t.value / max) * 100}%` }} />
-                              </div>
-                              <span className={`text-[8px] font-mono w-10 text-right flex-shrink-0 ${isDark ? 'text-slate-600' : 'text-slate-400'}`}>{t.value.toFixed(1)}</span>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Pathways */}
-                  {g.pathways.length > 0 && (
-                    <div>
-                      <p className={`text-[9px] font-black uppercase tracking-widest mb-2 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Key Pathways</p>
+                      <p className={`text-[9px] font-black uppercase tracking-widest mb-2 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Pathways</p>
                       <div className="flex flex-wrap gap-1">
-                        {g.pathways.slice(0, 8).map(p => (
-                          <span key={p} className={`text-[9px] px-2 py-0.5 rounded-full border ${isDark ? 'border-slate-700 bg-slate-800 text-slate-400' : 'border-slate-200 bg-slate-50 text-slate-500'}`}>{p}</span>
+                        {g.pathways.slice(0,6).map(p => (
+                          <span key={p.id} className={`text-[8px] px-2 py-0.5 rounded-full border ${isDark ? 'border-slate-700 bg-slate-800 text-slate-400' : 'border-slate-200 bg-slate-50 text-slate-500'}`}>{p.label}</span>
                         ))}
                       </div>
                     </div>
@@ -1726,21 +1650,13 @@ Be specific and cite the data. Do not fabricate information. Limit to ~500 words
           <div className={`rounded-2xl border overflow-hidden ${isDark ? 'border-purple-800/40 bg-purple-900/10' : 'border-purple-200 bg-purple-50/50'}`}>
             <div className={`px-5 py-3 border-b flex items-center gap-2 ${isDark ? 'border-purple-800/30' : 'border-purple-200'}`}>
               <Sparkles className={`w-4 h-4 ${isDark ? 'text-purple-400' : 'text-purple-600'}`} />
-              <p className={`text-[11px] font-black uppercase tracking-widest ${isDark ? 'text-purple-400' : 'text-purple-700'}`}>
-                AI Trade-off Analysis — {diseaseName}
-              </p>
+              <p className={`text-[11px] font-black uppercase tracking-widest ${isDark ? 'text-purple-400' : 'text-purple-700'}`}>AI Trade-off Analysis — {diseaseName}</p>
             </div>
             <div className="px-5 py-4">
-              {narrativeLoading ? (
-                <div className="flex items-center gap-3">
-                  <Loader2 className="w-4 h-4 animate-spin text-purple-500" />
-                  <span className={`text-[12px] ${isDark ? 'text-slate-400' : 'text-slate-600'}`}>Generating trade-off analysis…</span>
-                </div>
-              ) : (
-                <div className="markdown-body prose prose-sm dark:prose-invert max-w-none">
-                  <Markdown>{narrative}</Markdown>
-                </div>
-              )}
+              {narrativeLoading
+                ? <div className="flex items-center gap-3"><Loader2 className="w-4 h-4 animate-spin text-purple-500" /><span className={`text-[12px] ${isDark ? 'text-slate-400' : 'text-slate-600'}`}>Generating…</span></div>
+                : <div className="prose prose-sm dark:prose-invert max-w-none"><Markdown>{narrative}</Markdown></div>
+              }
             </div>
           </div>
         )}
@@ -1748,12 +1664,10 @@ Be specific and cite the data. Do not fabricate information. Limit to ~500 words
         {!narrative && !narrativeLoading && allDone && (
           <div className={`rounded-2xl border px-6 py-8 text-center ${isDark ? 'border-slate-800 bg-slate-900/20' : 'border-slate-200 bg-slate-50'}`}>
             <Sparkles className={`w-8 h-8 mx-auto mb-3 ${isDark ? 'text-slate-700' : 'text-slate-300'}`} />
-            <p className={`text-[13px] font-bold mb-1 ${isDark ? 'text-slate-400' : 'text-slate-600'}`}>Ready for AI Trade-off Analysis</p>
-            <p className={`text-[11px] mb-4 ${isDark ? 'text-slate-600' : 'text-slate-400'}`}>Click "AI Trade-off" to get a critical discussion comparing these targets for {diseaseName}</p>
-            <button onClick={runNarrative}
-              className="px-5 py-2 rounded-xl bg-purple-600 text-white text-[11px] font-black uppercase tracking-wider hover:bg-purple-700 transition-colors flex items-center gap-2 mx-auto">
-              <Sparkles className="w-3.5 h-3.5" />
-              Generate AI Report
+            <p className={`text-[13px] font-bold mb-1 ${isDark ? 'text-slate-400' : 'text-slate-600'}`}>Ready for AI Analysis</p>
+            <p className={`text-[11px] mb-4 ${isDark ? 'text-slate-600' : 'text-slate-400'}`}>Click "AI Trade-off" for a critical comparison of these targets</p>
+            <button onClick={runNarrative} className="px-5 py-2 rounded-xl bg-purple-600 text-white text-[11px] font-black uppercase tracking-wider hover:bg-purple-700 transition-colors flex items-center gap-2 mx-auto">
+              <Sparkles className="w-3.5 h-3.5" />Generate AI Report
             </button>
           </div>
         )}
@@ -3553,14 +3467,15 @@ const App = () => {
         });
       } catch (e: any) {
         setAssessData(prev => [...prev, {
-          symbol: sym, name: sym, ensemblId: '', biotype: '', functionDescription: '',
-          associationScore: 0, geneticScore: 0, expressionScore: 0, targetScore: 0,
+          symbol: sym, name: sym,
+          overallScore: 0, geneticScore: 0, expressionScore: 0, targetScore: 0,
           getScore: 0, literatureScore: 0,
-          tractability: [], modalities: { sm: false, ab: false, pr: false, oc: false, ge: false },
-          drugs: [], topTissues: [],
+          pubTatorScore: 0, pubTatorVelocity: 0, pubTatorTotalPapers: 0, pubTatorRecentPapers: 0,
+          tauTissue: 0, tauSingleCell: 0, combinedExpression: 0,
+          bimodalityScores: {}, pathways: [],
           drillDown: { trial_count: 0, max_phase: 'N/A', active_trial_present: false, paper_count: 0, recent_paper_count: 0, latest_publication_date: 'N/A' },
           pubmed: { total: 0, recent: 0, topPapers: [] },
-          pathways: [], foundInOT: false, foundInDisease: false,
+          foundInRankedList: false,
           error: e.message,
         }]);
       } finally {
@@ -5359,7 +5274,6 @@ Return ONLY valid JSON.
                   data={assessData}
                   loading={assessLoading}
                   diseaseName={researchState.activeDisease?.name || 'Unknown Disease'}
-                  diseaseId={researchState.activeDisease?.id}
                   theme={theme}
                   onClose={() => setAssessMode(false)}
                 />
