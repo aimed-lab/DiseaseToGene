@@ -477,6 +477,27 @@ async function startServer() {
     }
   });
 
+  // Open Targets GraphQL proxy — server-side POST to avoid browser issues
+  app.post("/api/ot-graphql", async (req, res) => {
+    const { query, variables } = req.body;
+    if (!query) return res.status(400).json({ error: "Missing query" });
+    try {
+      const upstream = await fetch('https://api.platform.opentargets.org/api/v4/graphql', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body: JSON.stringify({ query, variables }),
+      });
+      const data = await upstream.json();
+      if (data.errors) {
+        console.warn('[OT GraphQL] errors:', JSON.stringify(data.errors).slice(0, 500));
+      }
+      res.status(upstream.status).json(data);
+    } catch (err: any) {
+      console.error('[OT GraphQL proxy] fetch failed:', err.message);
+      res.status(502).json({ error: err.message });
+    }
+  });
+
   // PubTator Shared Fetch Helper
   const fetchPubTator = async (url: string, retries = 3, backoff = 1000): Promise<any> => {
     try {

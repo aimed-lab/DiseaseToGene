@@ -817,121 +817,109 @@ export const api = {
       pathways: [], foundInOT: false, foundInDisease: false,
     };
 
+    // Helper: POST to OT via server-side proxy (avoids CORS + logs errors server-side)
+    const otPost = (gql: string, vars: Record<string, string>) =>
+      fetch('/api/ot-graphql', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: gql, variables: vars }),
+      }).then(r => r.json()).catch(() => null);
+
     try {
-      // ── Step 1: resolve gene symbol → ENSG id via OT search ────────────────
+      // ── Step 1: resolve gene symbol → ENSG id ──────────────────────────────
+      // Search returns hits where `id` = ENSG ID and `name` = approvedSymbol (v4)
       let ensemblId = existingTarget?.id || '';
 
       if (!ensemblId) {
         const searchGql = `
           query SearchTarget($q: String!) {
-            search(queryString: $q, entityNames: ["target"], page: {index: 0, size: 5}) {
+            search(queryString: $q, entityNames: ["target"], page: {index: 0, size: 10}) {
               hits { id name }
             }
           }`;
-        const sRes = await fetch(OPEN_TARGETS_API, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query: searchGql, variables: { q: symbol } })
-        });
-        const sData = await sRes.json();
-        const hits: { id: string; name: string }[] = sData.data?.search?.hits || [];
-        // Exact symbol match preferred, otherwise take first hit
-        const match = hits.find(h => h.name?.toUpperCase() === symbol.toUpperCase()) || hits[0];
-        if (!match) { blank.error = `Gene "${symbol}" not found in Open Targets`; return blank; }
+        const sData = await otPost(searchGql, { q: symbol });
+        const hits: { id: string; name: string }[] = sData?.data?.search?.hits || [];
+        // name in search hits = approvedSymbol in OT v4 search results
+        const match =
+          hits.find(h => h.name?.toUpperCase() === symbol.toUpperCase()) ||
+          hits.find(h => h.id?.toUpperCase().includes(symbol.toUpperCase())) ||
+          hits[0];
+        if (!match?.id) { blank.error = `Gene "${symbol}" not found in Open Targets`; return blank; }
         ensemblId = match.id;
       }
 
-      // ── Step 2: OT extended target profile (tractability, expression, drugs, function) ─
-      // Note: drug rows deliberately exclude `disease` sub-field — it causes OT to null the whole target.
-      // pathways { pathway } works on Target type (same as getGenes). knownDrugs needs no pagination args.
-      const profileGql = `
-        query GetTargetProfile($ensemblId: String!) {
+      blank.ensemblId = ensemblId;
+
+      // ── Step 2a: Core profile — only proven safe fields ────────────────────
+      // Based on fields confirmed working in getTargetDrugs + getGenes
+      const coreGql = `
+        query GetTargetCore($ensemblId: String!) {
           target(ensemblId: $ensemblId) {
-            id approvedSymbol approvedName biotype
-            functionDescriptions
+            id
+            approvedSymbol
+            approvedName
+            biotype
             tractability { label modality value }
-            expressions { tissue { label } rna { value } }
             knownDrugs {
               rows {
                 drug { id name mechanismsOfAction { rows { mechanismOfAction } } }
-                phase status
+                phase
+                status
               }
             }
-            pathways { pathway }
           }
         }`;
 
-      // ── Step 3: Disease-gene association (if diseaseId provided) ─────────────
-      // OT v4: target.associatedDiseases with diseases filter returns specific association
+      // ── Step 2b: Expression data (separate query — field may behave differently) ──
+      const exprGql = `
+        query GetTargetExpr($ensemblId: String!) {
+          target(ensemblId: $ensemblId) {
+            expressions { tissue { label } rna { value } }
+            pathways { pathway }
+            functionDescriptions
+          }
+        }`;
+
+      // ── Step 3: Association score via disease→associatedTargets ────────────
+      // Use proven pattern: same as getGenes but with a specific target filter
       const assocGql = diseaseId ? `
-        query GetAssociation($targetId: String!, $efoId: String!) {
-          target(ensemblId: $targetId) {
-            associatedDiseases(
-              diseases: [$efoId]
-              page: { index: 0, size: 1 }
+        query GetAssocScore($efoId: String!, $ensemblId: String!) {
+          disease(efoId: $efoId) {
+            associatedTargets(
+              page: { index: 0, size: 25 }
+              orderByScore: "overall"
             ) {
               rows {
                 score
                 datatypeScores { id score }
-                disease { id name }
+                target { id approvedSymbol }
               }
             }
           }
         }` : null;
 
-      // Minimal fallback profile query (no pathways) in case full query has field issues
-      const profileGqlMinimal = `
-        query GetTargetProfileMin($ensemblId: String!) {
-          target(ensemblId: $ensemblId) {
-            id approvedSymbol approvedName biotype
-            functionDescriptions
-            tractability { label modality value }
-            expressions { tissue { label } rna { value } }
-            knownDrugs {
-              rows {
-                drug { id name mechanismsOfAction { rows { mechanismOfAction } } }
-                phase status
-              }
-            }
-          }
-        }`;
-
-      const fetchProfile = (gql: string) => fetch(OPEN_TARGETS_API, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: gql, variables: { ensemblId } })
-      }).then(r => r.json()).catch(() => null);
-
-      // Run OT profile + association + clinical/literature in parallel
-      const [profileRes, assocRes, drillDownData, pubmedData] = await Promise.all([
-        fetchProfile(profileGql),
-        (assocGql && diseaseId) ? fetch(OPEN_TARGETS_API, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query: assocGql, variables: { targetId: ensemblId, efoId: diseaseId } })
-        }).then(r => r.json()).catch(() => null) : Promise.resolve(null),
+      // Run all in parallel
+      const [coreRes, exprRes, assocRes, drillDownData, pubmedData] = await Promise.all([
+        otPost(coreGql, { ensemblId }),
+        otPost(exprGql, { ensemblId }),
+        (assocGql && diseaseId) ? otPost(assocGql, { efoId: diseaseId, ensemblId }) : Promise.resolve(null),
         this.getDrillDownData(symbol, diseaseName).catch(() => blank.drillDown),
         this.getPubMedStats(symbol, diseaseName).catch(() => blank.pubmed),
       ]);
 
-      // ── Parse target profile — fallback to minimal query if full query errored ─
-      let profileData = profileRes?.data?.target
-        ? profileRes
-        : await fetchProfile(profileGqlMinimal).catch(() => null);
-
-      const t = profileData?.data?.target;
+      const t = coreRes?.data?.target;
       if (!t) {
-        console.error(`[getGeneFullProfile] OT profile null for ${symbol} (ensemblId=${ensemblId})`, profileRes?.errors);
-        blank.error = `Failed to load Open Targets profile for ${symbol}`;
-        blank.ensemblId = ensemblId;
+        blank.error = `Gene "${symbol}" not found in Open Targets (ENSG: ${ensemblId})`;
         return blank;
       }
+      const te = exprRes?.data?.target; // may be null if expression query fails — degrade gracefully
 
       blank.foundInOT = true;
-      blank.ensemblId = ensemblId;
       blank.name = t.approvedName || symbol;
       blank.biotype = t.biotype || '';
-      blank.functionDescription = (t.functionDescriptions || []).slice(0, 2).join(' ') || '';
+      blank.functionDescription = (te?.functionDescriptions || []).slice(0, 2).join(' ') || '';
 
-      // Expression — top 8 tissues by RNA value
-      const exprVals: { tissue: string; value: number }[] = (t.expressions || [])
+      // Expression — top 10 tissues by RNA value (from separate expr query)
+      const exprVals: { tissue: string; value: number }[] = (te?.expressions || [])
         .map((e: any) => ({ tissue: e.tissue?.label || 'Unknown', value: e.rna?.value || 0 }))
         .filter((e: any) => e.value > 0)
         .sort((a: any, b: any) => b.value - a.value);
@@ -984,11 +972,14 @@ export const api = {
       }
       blank.drugs.sort((a, b) => b.phase - a.phase);
 
-      blank.pathways = (t.pathways || []).map((p: any) => p.pathway).filter(Boolean).slice(0, 15);
+      blank.pathways = (te?.pathways || []).map((p: any) => p.pathway).filter(Boolean).slice(0, 15);
 
       // ── Parse disease-gene association ──────────────────────────────────────
-      // assocRes: target.associatedDiseases (filtered by diseaseId)
-      const assocRow = assocRes?.data?.target?.associatedDiseases?.rows?.[0];
+      // assocRes returns disease.associatedTargets rows — find the one matching our ensemblId
+      const assocRows: any[] = assocRes?.data?.disease?.associatedTargets?.rows || [];
+      const assocRow = assocRows.find(
+        (r: any) => r.target?.id === ensemblId || r.target?.approvedSymbol?.toUpperCase() === symbol.toUpperCase()
+      );
 
       const bestRow = assocRow;
       if (bestRow) {
