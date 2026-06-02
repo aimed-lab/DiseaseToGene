@@ -15,11 +15,11 @@ export default defineConfig(({ mode }) => {
       },
       plugins: [react(), tailwindcss()],
       define: {
-        'process.env.API_KEY':          JSON.stringify(env.GEMINI_API_KEY),
-        'process.env.GEMINI_API_KEY':   JSON.stringify(env.GEMINI_API_KEY),
-        'process.env.NVIDIA_API_KEY':   JSON.stringify(env.NVIDIA_API_KEY),
+        // Supabase anon key is safe to expose in the browser (RLS protects data)
         'process.env.SUPABASE_URL':     JSON.stringify(env.SUPABASE_URL),
         'process.env.SUPABASE_ANON_KEY':JSON.stringify(env.SUPABASE_ANON_KEY),
+        // GEMINI_API_KEY and NVIDIA_API_KEY are intentionally NOT here —
+        // all AI calls go through /api/ai/generate (server-side only)
       },
       resolve: {
         alias: {

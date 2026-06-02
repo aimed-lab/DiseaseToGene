@@ -1,5 +1,5 @@
 import { Target, DrugInfo, DiseaseInfo, EnrichmentResult, PubMedStats, ClinicalSample, ExpressionRow, DrillDownData, PubTatorResult, GeneAssessmentData } from './types';
-import { GoogleGenAI } from "@google/genai";
+// AI calls are routed through /api/ai/generate (server-side) — no API keys in browser
 
 const OPEN_TARGETS_API = 'https://api.platform.opentargets.org/api/v4/graphql';
 const ENRICHR_API = 'https://maayanlab.cloud/Enrichr';
@@ -55,26 +55,15 @@ export const api = {
     if (hits.length === 0 || query.length < 4 || /^[A-Z\s]+$/.test(query)) {
       try {
         let correctedQuery = "";
-        if (process.env.NVIDIA_API_KEY) {
-          const nvRes = await fetch("https://integrate.api.nvidia.com/v1/chat/completions", {
+        const aiRes = await fetch('/api/ai/generate', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${process.env.NVIDIA_API_KEY}` },
-            body: JSON.stringify({
-              model: "NVIDIABuild-Autogen-66",
-              messages: [{ role: 'user', content: `Identify the single most likely standard clinical disease name for the following potentially misspelled or imprecise term: "${query}". Return only the corrected name string, nothing else.` }],
-              temperature: 0.2
-            })
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ prompt: `Identify the single most likely standard clinical disease name for the following potentially misspelled or imprecise term: "${query}". Return only the corrected name string, nothing else.` })
           });
-          const nvData = await nvRes.json();
-          correctedQuery = nvData.choices?.[0]?.message?.content?.trim() || "";
-        } else if (process.env.GEMINI_API_KEY || process.env.API_KEY) {
-          const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || process.env.GEMINI_API_KEY! });
-          const correctionResponse = await ai.models.generateContent({
-            model: 'gemini-3-flash-preview',
-            contents: `Identify the single most likely standard clinical disease name for the following potentially misspelled or imprecise term: "${query}". Return only the corrected name string, nothing else.`,
-          });
-          correctedQuery = correctionResponse.text?.trim() || "";
-        }
+          if (aiRes.ok) {
+            const aiData = await aiRes.json();
+            correctedQuery = aiData.text?.trim() || "";
+          }
         
         if (correctedQuery && correctedQuery.toLowerCase() !== query.toLowerCase()) {
           const secondHits = await executeSearch(correctedQuery);
@@ -731,26 +720,16 @@ export const api = {
       
       Generate a concise, professional clinical insight (2-3 sentences). Focus on validation level, commercial interest, and standard-of-care potential. Do not use placeholders.`;
       
-      if (process.env.NVIDIA_API_KEY) {
-        const nvRes = await fetch("https://integrate.api.nvidia.com/v1/chat/completions", {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${process.env.NVIDIA_API_KEY}` },
-          body: JSON.stringify({
-            model: "NVIDIABuild-Autogen-66",
-            messages: [{ role: 'user', content: prompt }],
-            temperature: 0.5
-          })
-        });
-        const nvData = await nvRes.json();
-        return nvData.choices?.[0]?.message?.content?.trim() || "No summary available.";
-      } else {
-        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || process.env.GEMINI_API_KEY! });
-        const response = await ai.models.generateContent({
-          model: 'gemini-3-flash-preview',
-          contents: prompt,
-        });
-        return response.text?.trim() || "No summary available.";
+      const aiRes = await fetch('/api/ai/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt })
+      });
+      if (aiRes.ok) {
+        const aiData = await aiRes.json();
+        return aiData.text?.trim() || "No summary available.";
       }
+      return "No summary available.";
     } catch (e) {
       console.error("AI Clinical Summary failed", e);
       return "Failed to generate AI summary.";

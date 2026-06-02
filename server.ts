@@ -450,6 +450,36 @@ async function startServer() {
     }
   });
 
+  // Generic AI generate — server-side only, keeps API keys out of the browser bundle
+  // Used by api.ts for disease name correction and clinical insight summaries
+  app.post("/api/ai/generate", async (req, res) => {
+    const { prompt } = req.body || {};
+    if (!prompt) return res.status(400).json({ error: "prompt is required" });
+    try {
+      if (process.env.NVIDIA_API_KEY) {
+        const nvRes = await fetch("https://integrate.api.nvidia.com/v1/chat/completions", {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${process.env.NVIDIA_API_KEY}` },
+          body: JSON.stringify({ model: "NVIDIABuild-Autogen-66", messages: [{ role: 'user', content: prompt }], temperature: 0.3 })
+        });
+        const nvData = await nvRes.json();
+        return res.json({ text: nvData.choices?.[0]?.message?.content?.trim() || "" });
+      } else if (process.env.GEMINI_API_KEY) {
+        const geminiRes = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
+          { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }) }
+        );
+        const geminiData = await geminiRes.json();
+        const text = geminiData.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
+        return res.json({ text });
+      } else {
+        return res.status(503).json({ error: "No AI API key configured (GEMINI_API_KEY or NVIDIA_API_KEY)" });
+      }
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // Generic external API proxy — used for ClinicalTrials, EuropePMC, PubMed
   // Only allows the specific domains used by the app
   const ALLOWED_PROXY_HOSTS = [
