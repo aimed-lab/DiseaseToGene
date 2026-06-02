@@ -1,0 +1,12 @@
+node_modules
+dist
+.env
+.env.local
+.git
+.gitignore
+wiki-vault
+graphify-out
+*.docx
+*.ipynb
+*.csv
+.claude
