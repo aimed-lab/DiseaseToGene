@@ -48,12 +48,30 @@ async function requireAdmin(
   next();
 }
 
-// ── Wiki vault path — folder next to server.ts ─────────────────────────────
-const VAULT_PATH = process.env.WIKI_VAULT_PATH
-  || path.join(__dirname, "wiki-vault");
+// ── Wiki vault path ────────────────────────────────────────────────────────────
+const VAULT_PATH = process.env.WIKI_VAULT_PATH || path.join(__dirname, "wiki-vault");
 
-const sanitizeFolder = (name: string) =>
-  name.replace(/['"]/g, '').replace(/[^a-zA-Z0-9\s-]/g, '').replace(/\s+/g, '-').trim();
+// Fix #10 (path traversal): sanitize folder names and validate gene symbols
+const sanitizeFolder = (name: string) => {
+  const s = name.replace(/['"]/g, '').replace(/[^a-zA-Z0-9\s-]/g, '').replace(/\s+/g, '-').trim();
+  if (!s || s === '.') throw new Error(`Invalid folder name: "${name}"`);
+  return s;
+};
+
+// Fix #10: validate gene symbols to prevent path traversal
+const sanitizeGene = (gene: string) => {
+  if (!/^[A-Za-z][A-Za-z0-9]{0,19}$/.test(gene)) throw new Error(`Invalid gene symbol: "${gene}"`);
+  return gene.toUpperCase();
+};
+
+// Fix #10: ensure resolved path stays inside vault
+const safeVaultPath = (...parts: string[]) => {
+  const resolved = path.resolve(VAULT_PATH, ...parts);
+  if (!resolved.startsWith(path.resolve(VAULT_PATH))) {
+    throw new Error('Path traversal detected');
+  }
+  return resolved;
+};
 
 const signalEmoji = (val: number | undefined, thresholds = [0.7, 0.4]) => {
   if (val === undefined || val === null) return '—';
@@ -67,7 +85,6 @@ function buildWikiMarkdown(payload: any): string {
   const now = new Date().toISOString().split('T')[0];
   const diseaseFolderName = sanitizeFolder(diseaseName);
 
-  // ── YAML frontmatter — shows as Properties panel in Obsidian ──────────────
   const tags = ['disease2target'];
   if ((evidence.getScore ?? 0) >= 0.7) tags.push('high-priority');
   if ((evidence.litVelocityNum ?? 0) >= 30) tags.push('emerging');
@@ -102,7 +119,6 @@ tags: [${tags.join(', ')}]
 saved: "${now}"
 ---`;
 
-  // ── Score table with signal emoji ─────────────────────────────────────────
   const scoreTable = `| Metric | Value | Signal |
 |--------|-------|--------|
 | **GET Score** | ${evidence.getScore?.toFixed(4) ?? '—'} | ${signalEmoji(evidence.getScore)} |
@@ -122,19 +138,16 @@ saved: "${now}"
 | TAU Single Cell | ${evidence.tauSingleCell?.toFixed(4) ?? '—'} | ${signalEmoji(evidence.tauSingleCell)} |
 | Bimodality | ${evidence.bimodalityScore?.toFixed(4) ?? '—'} (${evidence.bimodalityTissue ?? '—'}) | ${signalEmoji(evidence.bimodalityScore)} |`;
 
-  // ── OT pathways as Obsidian wikilinks ─────────────────────────────────────
   const pathwayLinks = (evidence.pathways ?? []).length > 0
     ? (evidence.pathways as string[]).map((p: string) => `- [[${p}]]`).join('\n')
     : '- None loaded';
 
-  // ── Enriched pathways with p-value ────────────────────────────────────────
   const enrichedLinks = (evidence.enrichedPathways ?? []).length > 0
     ? (evidence.enrichedPathways as any[])
         .map((p: any) => `- [[${p.term}]] — ${p.source} (adj.p = \`${p.adjP}\`)`)
         .join('\n')
     : '- None';
 
-  // ── Related genes as wikilinks ────────────────────────────────────────────
   const relatedLinks = (relatedGenes ?? []).length > 0
     ? (relatedGenes as string[]).map((g: string) => `[[${g}]]`).join(' · ')
     : '—';
@@ -201,14 +214,12 @@ function updateIndexFile(filePath: string, gene: { symbol: string; name: string 
 
   if (fs.existsSync(filePath)) {
     content = fs.readFileSync(filePath, 'utf-8');
-    // Already listed — update score
     const lineRegex = new RegExp(`^\\| \\[\\[${gene.symbol}\\]\\].*$`, 'm');
     if (lineRegex.test(content)) {
       content = content.replace(lineRegex, entry);
       fs.writeFileSync(filePath, content, 'utf-8');
       return;
     }
-    // Append to table
     const tableEnd = content.lastIndexOf('\n| ');
     if (tableEnd !== -1) {
       const insertAt = content.indexOf('\n', tableEnd + 1);
@@ -234,73 +245,86 @@ ${entry}
   fs.writeFileSync(filePath, content, 'utf-8');
 }
 
-
-// ── Auth & weights are now handled by Supabase (supabase.ts) ─────────────────
-// Express is kept for proxying external APIs (OT, PubTator, wiki, Notion)
-
-// Module-level app instance — exported for Vercel serverless entry point
+// ── Module-level Express app — exported for Vercel serverless entry point ──────
 export const app = express();
 
-async function startServer() {
-  const PORT = parseInt(process.env.PORT || '3000', 10);
+// ── Shared Gemini REST helper (module-level so it's available at setup time) ───
+const geminiGenerate = async (contents: object[], model = 'gemini-2.0-flash', responseMimeType?: string) => {
+  const key = process.env.GEMINI_API_KEY;
+  if (!key) throw new Error('GEMINI_API_KEY not configured');
+  const body: Record<string, unknown> = { contents };
+  if (responseMimeType) body.generationConfig = { responseMimeType };
+  const r = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
+  );
+  const d = await r.json();
+  // Fix #11: surface API errors instead of silently returning empty string
+  if (d.error) throw new Error(`Gemini API error ${d.error.code}: ${d.error.message}`);
+  return d.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
+};
 
-  // Health check — used by Render, Railway, Docker, Vercel
-  app.get('/healthz', (_req, res) => res.json({ status: 'ok', ts: new Date().toISOString() }));
+// ── setupRoutes — synchronous, called at module level so Vercel gets a
+//    fully-configured app immediately on import (fixes critical async race) ────
+function setupRoutes() {
+  // Fix #6 CORS — allow same-origin and configured origin
+  app.use((_req, res, next) => {
+    const origin = process.env.ALLOWED_ORIGIN || '*';
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PATCH,DELETE,OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization');
+    if (_req.method === 'OPTIONS') { res.sendStatus(204); return; }
+    next();
+  });
 
+  // Fix #2: body-parse BEFORE all routes (including healthz)
   app.use(express.json({ limit: '2mb' }));
   app.use(express.urlencoded({ limit: '2mb', extended: true }));
 
+  // Fix #4: health check — used by Render, Railway, Docker, Vercel
+  app.get('/healthz', (_req, res) => res.json({ status: 'ok', ts: new Date().toISOString() }));
 
-  // ── Wiki Endpoints ─────────────────────────────────────────────────────────
+  // ── Wiki Endpoints ──────────────────────────────────────────────────────────
 
-  // POST /api/wiki/save — write gene page + update disease index
   app.post("/api/wiki/save", (req, res) => {
     try {
       const payload = req.body;
       const { diseaseName, gene, evidence } = payload;
       const diseaseFolderName = sanitizeFolder(diseaseName);
-      const diseaseFolder = path.join(VAULT_PATH, diseaseFolderName);
-
-      if (!fs.existsSync(diseaseFolder)) {
-        fs.mkdirSync(diseaseFolder, { recursive: true });
-      }
-
-      // Write gene page
-      const filePath = path.join(diseaseFolder, `${gene.symbol}.md`);
-      const md = buildWikiMarkdown(payload);
-      fs.writeFileSync(filePath, md, 'utf-8');
-
-      // Update disease _Index.md
-      const indexPath = path.join(diseaseFolder, '_Index.md');
+      const diseaseFolder = safeVaultPath(diseaseFolderName);
+      if (!fs.existsSync(diseaseFolder)) fs.mkdirSync(diseaseFolder, { recursive: true });
+      const filePath = safeVaultPath(diseaseFolderName, `${sanitizeGene(gene.symbol)}.md`);
+      fs.writeFileSync(filePath, buildWikiMarkdown(payload), 'utf-8');
+      const indexPath = safeVaultPath(diseaseFolderName, '_Index.md');
       updateIndexFile(indexPath, gene, evidence.getScore ?? 0);
-
-      console.log(`[Wiki] Saved: ${diseaseFolderName}/${gene.symbol}.md`);
       res.json({ success: true, path: filePath });
     } catch (err: any) {
-      console.error('[Wiki] Save error:', err);
       res.status(500).json({ error: err.message });
     }
   });
 
-  // GET /api/wiki/exists/:disease/:gene — check if page already saved
+  // Fix #10 (path traversal): sanitize both disease and gene params
   app.get("/api/wiki/exists/:disease/:gene", (req, res) => {
-    const folder = sanitizeFolder(decodeURIComponent(req.params.disease));
-    const filePath = path.join(VAULT_PATH, folder, `${req.params.gene}.md`);
-    res.json({ exists: fs.existsSync(filePath) });
+    try {
+      const folder = sanitizeFolder(decodeURIComponent(req.params.disease));
+      const gene = sanitizeGene(req.params.gene);
+      const filePath = safeVaultPath(folder, `${gene}.md`);
+      res.json({ exists: fs.existsSync(filePath) });
+    } catch { res.json({ exists: false }); }
   });
 
-  // GET /api/wiki/list/:disease — list saved genes for a disease
   app.get("/api/wiki/list/:disease", (req, res) => {
-    const folder = sanitizeFolder(decodeURIComponent(req.params.disease));
-    const diseaseFolder = path.join(VAULT_PATH, folder);
-    if (!fs.existsSync(diseaseFolder)) return res.json({ genes: [] });
-    const files = fs.readdirSync(diseaseFolder)
-      .filter(f => f.endsWith('.md') && !f.startsWith('_'))
-      .map(f => f.replace('.md', ''));
-    res.json({ genes: files });
+    try {
+      const folder = sanitizeFolder(decodeURIComponent(req.params.disease));
+      const diseaseFolder = safeVaultPath(folder);
+      if (!fs.existsSync(diseaseFolder)) return res.json({ genes: [] });
+      const files = fs.readdirSync(diseaseFolder)
+        .filter(f => f.endsWith('.md') && !f.startsWith('_'))
+        .map(f => f.replace('.md', ''));
+      res.json({ genes: files });
+    } catch { res.json({ genes: [] }); }
   });
 
-  // POST /api/wiki/save-batch — save all genes for a disease in one call
   app.post("/api/wiki/save-batch", (req, res) => {
     const { pages } = req.body as { pages: any[] };
     if (!Array.isArray(pages) || pages.length === 0) {
@@ -308,65 +332,45 @@ async function startServer() {
     }
     const saved: string[] = [];
     const errors: string[] = [];
-
-    console.log(`[Wiki] Batch saving ${pages.length} pages to: ${VAULT_PATH}`);
-
     for (const payload of pages) {
       try {
         const { diseaseName, gene, evidence } = payload;
         const diseaseFolderName = sanitizeFolder(diseaseName);
-        const diseaseFolder = path.join(VAULT_PATH, diseaseFolderName);
-
-        if (!fs.existsSync(diseaseFolder)) {
-          fs.mkdirSync(diseaseFolder, { recursive: true });
-        }
-
-        const filePath = path.join(diseaseFolder, `${gene.symbol}.md`);
+        const diseaseFolder = safeVaultPath(diseaseFolderName);
+        if (!fs.existsSync(diseaseFolder)) fs.mkdirSync(diseaseFolder, { recursive: true });
+        const filePath = safeVaultPath(diseaseFolderName, `${sanitizeGene(gene.symbol)}.md`);
         fs.writeFileSync(filePath, buildWikiMarkdown(payload), 'utf-8');
-
-        const indexPath = path.join(diseaseFolder, '_Index.md');
+        const indexPath = safeVaultPath(diseaseFolderName, '_Index.md');
         updateIndexFile(indexPath, gene, evidence.getScore ?? 0);
-
         saved.push(gene.symbol);
       } catch (err: any) {
         errors.push(`${payload?.gene?.symbol}: ${err.message}`);
-        console.error(`[Wiki] Failed ${payload?.gene?.symbol}:`, err.message);
       }
     }
-
-    console.log(`[Wiki] Batch done — saved: ${saved.length}, errors: ${errors.length}`);
     res.json({ saved, errors });
   });
 
-  // Notion Export Endpoint
+  // ── Notion Export ───────────────────────────────────────────────────────────
+
   app.post("/api/export/notion", async (req, res) => {
     const { targets, disease } = req.body;
     const notionToken = process.env.NOTION_TOKEN;
-    let databaseId = process.env.NOTION_DATABASE_ID || "fdc47e2c2e0b4c5fb79d62c4b76ec8f1";
-
-    // Robust ID extraction: if it's a URL, extract the 32-char UUID
+    // Fix #8: no hardcoded fallback UUID — require env var
+    let databaseId = process.env.NOTION_DATABASE_ID || '';
     if (databaseId.includes("notion.so/")) {
       const parts = databaseId.split("/");
       const lastPart = parts[parts.length - 1].split("?")[0];
       databaseId = lastPart;
     }
-
     if (!notionToken || !databaseId) {
-      return res.status(400).json({ 
-        error: "Notion configuration missing. Please set NOTION_TOKEN and NOTION_DATABASE_ID in environment variables." 
+      return res.status(400).json({
+        error: "Notion configuration missing. Set NOTION_TOKEN and NOTION_DATABASE_ID in environment variables."
       });
     }
-
-    console.log(`Using Notion Database ID: ${databaseId}`);
     const notion = new Client({ auth: notionToken });
-
     try {
-      console.log(`Exporting ${targets.length} targets to Notion for disease: ${disease?.name}`);
-      
       const results = [];
       const errors = [];
-      
-      // Export in batches to be safe
       const prioritizedTargets = targets
         .filter((t: any) => !t.usefulness || !Object.values(t.usefulness).includes('not-useful'))
         .sort((a: any, b: any) => {
@@ -374,62 +378,44 @@ async function startServer() {
           const bUseful = Object.values(b.usefulness || {}).filter(s => s === 'useful').length;
           return bUseful - aUseful;
         });
-
-      for (const target of prioritizedTargets.slice(0, 20)) { 
+      for (const target of prioritizedTargets.slice(0, 20)) {
         try {
           const usefulSources = Object.entries(target.usefulness || {})
             .filter(([_, status]) => status === 'useful')
             .map(([source]) => source.charAt(0).toUpperCase() + source.slice(1))
             .join(", ");
-
           const response = await notion.pages.create({
             parent: { database_id: databaseId },
             properties: {
-              Name: {
-                title: [{ text: { content: target.symbol } }],
-              },
-              Disease: {
-                rich_text: [{ text: { content: disease?.name || "Unknown" } }],
-              },
-              GeneticScore: {
-                number: target.geneticScore || 0,
-              },
-              OverallScore: {
-                number: target.overallScore || 0,
-              },
-              TargetScore: {
-                number: target.targetScore || 0,
-              },
-              Expression: {
-                number: target.combinedExpression || 0,
-              },
-              SupportingEvidence: {
-                rich_text: [{ text: { content: usefulSources || "None" } }],
-              }
+              Name: { title: [{ text: { content: target.symbol } }] },
+              Disease: { rich_text: [{ text: { content: disease?.name || "Unknown" } }] },
+              GeneticScore: { number: target.geneticScore || 0 },
+              OverallScore: { number: target.overallScore || 0 },
+              TargetScore: { number: target.targetScore || 0 },
+              Expression: { number: target.combinedExpression || 0 },
+              SupportingEvidence: { rich_text: [{ text: { content: usefulSources || "None" } }] }
             },
           });
           results.push(response.id);
         } catch (err: any) {
-          console.error(`Failed to export target ${target.symbol}:`, err.message);
           errors.push(`${target.symbol}: ${err.message}`);
         }
       }
-
       if (results.length === 0 && errors.length > 0) {
-        return res.status(500).json({ 
-          error: "All export attempts failed. Common issues: 1. Database not shared with integration. 2. Property names/types mismatch. 3. Invalid token.",
+        return res.status(500).json({
+          error: "All export attempts failed. Check database sharing, property names, and token.",
           details: errors.slice(0, 3)
         });
       }
-
       res.json({ success: true, count: results.length, partialErrors: errors.length > 0 ? errors.slice(0, 3) : undefined });
     } catch (error: any) {
-      console.error("Notion Export Error:", error);
       res.status(500).json({ error: error.message });
     }
   });
 
-  // NVIDIA AI Proxy — avoids browser CORS restrictions
+  // ── AI Endpoints ─────────────────────────────────────────────────────────────
+
+  // NVIDIA AI chat proxy
   app.post("/api/ai/chat", async (req, res) => {
     const apiKey = process.env.NVIDIA_API_KEY;
     if (!apiKey) return res.status(500).json({ error: "NVIDIA_API_KEY not configured" });
@@ -441,12 +427,9 @@ async function startServer() {
         body: JSON.stringify(payload),
       });
       const text = await response.text();
-      if (!text || !text.trim()) {
-        return res.status(502).json({ error: "Empty response from NVIDIA API" });
-      }
+      if (!text || !text.trim()) return res.status(502).json({ error: "Empty response from NVIDIA API" });
       try {
-        const data = JSON.parse(text);
-        res.json(data);
+        res.json(JSON.parse(text));
       } catch {
         if (process.env.NODE_ENV !== 'production') console.error("NVIDIA non-JSON response:", text.slice(0, 500));
         res.status(502).json({ error: "Invalid JSON from NVIDIA API", raw: text.slice(0, 300) });
@@ -456,21 +439,7 @@ async function startServer() {
     }
   });
 
-  // ── Shared Gemini REST helper ─────────────────────────────────────────────
-  const geminiGenerate = async (contents: object[], model = 'gemini-2.0-flash', responseMimeType?: string) => {
-    const key = process.env.GEMINI_API_KEY;
-    if (!key) throw new Error('GEMINI_API_KEY not configured');
-    const body: Record<string, unknown> = { contents };
-    if (responseMimeType) body.generationConfig = { responseMimeType };
-    const r = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
-      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
-    );
-    const d = await r.json();
-    return d.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
-  };
-
-  // Generic AI generate — server-side only, keeps API keys out of the browser bundle
+  // Generic AI generate — text prompt → text response
   app.post("/api/ai/generate", async (req, res) => {
     const { prompt } = req.body || {};
     if (!prompt) return res.status(400).json({ error: "prompt is required" });
@@ -494,7 +463,7 @@ async function startServer() {
     }
   });
 
-  // Multi-turn Gemini chat with optional tools + systemInstruction (AI chat panel)
+  // Multi-turn Gemini chat with optional tools + systemInstruction
   app.post("/api/ai/gemini-chat", async (req, res) => {
     const { messages, systemInstruction, tools } = req.body || {};
     if (!messages?.length) return res.status(400).json({ error: "messages required" });
@@ -514,6 +483,8 @@ async function startServer() {
         { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
       );
       const d = await r.json();
+      // Fix #11: surface Gemini errors
+      if (d.error) return res.status(502).json({ error: `Gemini API error ${d.error.code}: ${d.error.message}` });
       const candidate = d.candidates?.[0]?.content;
       const text = candidate?.parts?.find((p: any) => p.text)?.text?.trim() || "";
       const functionCalls = candidate?.parts?.filter((p: any) => p.functionCall).map((p: any) => p.functionCall) || [];
@@ -523,9 +494,8 @@ async function startServer() {
     }
   });
 
-  // PDF paper analysis (used by PaperExtractor in index.tsx)
-  // Accepts base64-encoded PDF + prompt, returns structured JSON from Gemini
-  app.post("/api/ai/analyze-paper", async (req, res) => {
+  // PDF paper analysis — Fix #3: route-specific 25mb limit for base64 PDFs
+  app.post("/api/ai/analyze-paper", express.json({ limit: '25mb' }), async (req, res) => {
     const { base64, mimeType = 'application/pdf', prompt } = req.body || {};
     if (!base64 || !prompt) return res.status(400).json({ error: "base64 and prompt required" });
     try {
@@ -537,14 +507,15 @@ async function startServer() {
     }
   });
 
-  // Generic external API proxy — used for ClinicalTrials, EuropePMC, PubMed
-  // Only allows the specific domains used by the app
+  // ── External API Proxy ───────────────────────────────────────────────────────
+
   const ALLOWED_PROXY_HOSTS = [
     'clinicaltrials.gov',
     'www.ebi.ac.uk',
     'eutils.ncbi.nlm.nih.gov',
     'www.proteinatlas.org',
   ];
+
   app.get("/api/proxy", async (req, res) => {
     const target = req.query.url as string;
     if (!target) return res.status(400).json({ error: "Missing url param" });
@@ -564,7 +535,6 @@ async function startServer() {
     }
   });
 
-  // Open Targets GraphQL proxy — server-side POST to avoid browser issues
   app.post("/api/ot-graphql", async (req, res) => {
     const { query, variables } = req.body;
     if (!query) return res.status(400).json({ error: "Missing query" });
@@ -575,35 +545,29 @@ async function startServer() {
         body: JSON.stringify({ query, variables }),
       });
       const data = await upstream.json();
-      if (data.errors) {
-        console.warn('[OT GraphQL] errors:', JSON.stringify(data.errors).slice(0, 500));
-      }
       res.status(upstream.status).json(data);
     } catch (err: any) {
-      console.error('[OT GraphQL proxy] fetch failed:', err.message);
       res.status(502).json({ error: err.message });
     }
   });
 
-  // PubTator Shared Fetch Helper
+  // ── PubTator Proxy ───────────────────────────────────────────────────────────
+
   const fetchPubTator = async (url: string, retries = 3, backoff = 1000): Promise<any> => {
     try {
       const response = await fetch(url, {
         headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'User-Agent': 'Mozilla/5.0 (compatible; DiseaseToTarget/2.0)',
           'Accept': 'application/json',
           'Connection': 'close'
         }
       });
-      
       if (response.status === 429 && retries > 0) {
         const retryAfter = response.headers.get('Retry-After');
         const waitTime = retryAfter ? parseInt(retryAfter) * 1000 : backoff;
-        console.warn(`PubTator 429 Rate Limit hit. Waiting ${waitTime}ms before retry...`);
         await new Promise(resolve => setTimeout(resolve, waitTime));
         return fetchPubTator(url, retries - 1, backoff * 2);
       }
-
       if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
       return await response.json();
     } catch (error) {
@@ -615,16 +579,12 @@ async function startServer() {
     }
   };
 
-  // PubTator Proxy Endpoint
   app.get("/api/pubtator/search", async (req, res) => {
     const queryParams = new URLSearchParams(req.query as any);
     const url = `https://www.ncbi.nlm.nih.gov/research/pubtator3-api/search/?${queryParams.toString()}`;
-    
     try {
-      const data = await fetchPubTator(url);
-      res.json(data);
+      res.json(await fetchPubTator(url));
     } catch (error: any) {
-      console.error("PubTator Search Proxy Error:", error);
       res.status(500).json({ error: error.message });
     }
   });
@@ -632,20 +592,15 @@ async function startServer() {
   app.get("/api/pubtator/export", async (req, res) => {
     const queryParams = new URLSearchParams(req.query as any);
     const url = `https://www.ncbi.nlm.nih.gov/research/pubtator3-api/publications/export/biocjson?${queryParams.toString()}`;
-    
     try {
-      const data = await fetchPubTator(url);
-      res.json(data);
+      res.json(await fetchPubTator(url));
     } catch (error: any) {
-      console.error("PubTator Export Proxy Error:", error);
       res.status(500).json({ error: error.message });
     }
   });
 
+  // ── Admin User Management ────────────────────────────────────────────────────
 
-  // ── Admin User Management API ───────────────────────────────────────────────
-
-  // GET /api/admin/users — list all users with their profiles
   app.get('/api/admin/users', requireAdmin, async (_req, res) => {
     try {
       const [{ data: authData, error: authErr }, { data: profiles }] = await Promise.all([
@@ -653,40 +608,29 @@ async function startServer() {
         supabaseAdmin!.from('user_profiles').select('id, name, institution, role, created_at'),
       ]);
       if (authErr) throw authErr;
-
       const profileMap = new Map((profiles ?? []).map((p: any) => [p.id, p]));
       const users = (authData?.users ?? []).map((u: any) => {
         const p: any = profileMap.get(u.id) ?? {};
         return {
-          id:          u.id,
-          email:       u.email ?? '—',
-          name:        p.name        ?? null,
-          institution: p.institution ?? null,
-          role:        p.role        ?? 'user',
-          created_at:  u.created_at,
-          last_sign_in: u.last_sign_in_at ?? null,
-          confirmed:   !!u.confirmed_at,
+          id: u.id, email: u.email ?? '—',
+          name: p.name ?? null, institution: p.institution ?? null,
+          role: p.role ?? 'user', created_at: u.created_at,
+          last_sign_in: u.last_sign_in_at ?? null, confirmed: !!u.confirmed_at,
         };
       });
-
       res.json(users);
     } catch (err: any) {
-      console.error('[Admin] listUsers error:', err);
       res.status(500).json({ error: err.message });
     }
   });
 
-  // PATCH /api/admin/users/:id/role — promote / demote
   app.patch('/api/admin/users/:id/role', requireAdmin, async (req, res) => {
     const { role } = req.body as { role: string };
     if (!['admin', 'user'].includes(role)) {
       res.status(400).json({ error: 'role must be "admin" or "user"' }); return;
     }
     try {
-      const { error } = await supabaseAdmin!
-        .from('user_profiles')
-        .update({ role })
-        .eq('id', req.params.id);
+      const { error } = await supabaseAdmin!.from('user_profiles').update({ role }).eq('id', req.params.id);
       if (error) throw error;
       res.json({ ok: true });
     } catch (err: any) {
@@ -694,7 +638,6 @@ async function startServer() {
     }
   });
 
-  // DELETE /api/admin/users/:id — remove user entirely
   app.delete('/api/admin/users/:id', requireAdmin, async (req, res) => {
     try {
       const { error } = await supabaseAdmin!.auth.admin.deleteUser(req.params.id as string);
@@ -705,22 +648,34 @@ async function startServer() {
     }
   });
 
-  // Vite middleware for development
-  if (process.env.NODE_ENV !== "production") {
+  // ── Static file serving (production, non-Vercel) ────────────────────────────
+  // Fix #7: use process.cwd() instead of __dirname so path resolves correctly
+  // regardless of whether server.ts is run directly or compiled to dist-server/
+  if (process.env.NODE_ENV === 'production' && !process.env.VERCEL) {
+    const distDir = path.resolve(process.cwd(), 'dist');
+    app.use(express.static(distDir));
+    app.get('*', (_req, res) => res.sendFile(path.join(distDir, 'index.html')));
+  }
+}
+
+// Call setupRoutes synchronously — app is fully configured before any await
+setupRoutes();
+
+// ── startServer — only runs when NOT on Vercel ───────────────────────────────
+// Handles Vite dev middleware (async) and app.listen()
+async function startServer() {
+  const PORT = parseInt(process.env.PORT || '3000', 10);
+
+  // Fix #12: guard with VERCEL too in case NODE_ENV isn't explicitly set
+  if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
     const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
     });
     app.use(vite.middlewares);
-  } else {
-    app.use(express.static("dist"));
-    app.get("*", (req, res) => {
-      res.sendFile(path.resolve(__dirname, "dist", "index.html"));
-    });
   }
 
-  // Only bind to a port when running as a standalone server (not Vercel serverless)
   if (!process.env.VERCEL) {
     app.listen(PORT, "0.0.0.0", () => {
       console.log(`Server running on http://localhost:${PORT}`);

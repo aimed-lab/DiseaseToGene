@@ -277,7 +277,7 @@ export const api = {
   },
 
   async getPubMedStats(symbol: string, diseaseName: string): Promise<PubMedStats> {
-    const apiKeyParam = process.env.NCBI_API_KEY ? `&api_key=${process.env.NCBI_API_KEY}` : '';
+    const apiKeyParam = '';
     const baseQuery = `("${diseaseName}"[Title/Abstract]) AND ("${symbol}"[Title/Abstract])`;
     const recentQuery = `${baseQuery} AND ("2024"[Date - Publication] : "2025"[Date - Publication])`;
 
@@ -501,8 +501,8 @@ export const api = {
 
       // PubMed Stats
       try {
-        const apiKeyParam = process.env.NCBI_API_KEY ? `&api_key=${process.env.NCBI_API_KEY}` : '';
-        const toolEmail = `&tool=GeneInsightExplorer&email=kurmachalamnikhil@gmail.com`;
+        const apiKeyParam = '';
+        const toolEmail = `&tool=DiseaseToTarget&email=nkurmach@uab.edu`;
         // Use broad field search — [Title/Abstract] was too restrictive, missed most papers
         // Strip qualifiers so "late-onset Alzheimer's disease" → "Alzheimers disease"
         const cleanDiseaseForPubmed = diseaseName

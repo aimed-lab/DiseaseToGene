@@ -2,7 +2,8 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { createRoot } from 'react-dom/client';
 import { createPortal } from 'react-dom';
 // AI calls routed through /api/ai/* server endpoints — no keys in browser
-import { Type } from "@google/genai";
+// Type enum values replaced with string literals so @google/genai is not needed in the browser bundle
+const Type = { OBJECT: 'OBJECT', STRING: 'STRING', ARRAY: 'ARRAY', NUMBER: 'NUMBER', BOOLEAN: 'BOOLEAN', INTEGER: 'INTEGER' } as const;
 import * as d3 from "d3";
 import Markdown from 'react-markdown';
 import { Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell, WidthType, AlignmentType, HeadingLevel, BorderStyle, ShadingType } from 'docx';
