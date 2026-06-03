@@ -787,7 +787,6 @@ const LEFT_NAV_ITEMS = [
   { id: 'targets',   icon: List,       label: 'Targets'   },
   { id: 'cohort',    icon: Users,      label: 'Cohort'    },
   { id: 'rankings',  icon: BarChart3,  label: 'Rankings'  },
-  { id: 'compare',   icon: Layers,     label: 'Compare'   },
   { id: 'assess',    icon: Microscope, label: 'Assess'    },
 ] as const;
 
@@ -1907,18 +1906,6 @@ const CohortFilterSidebar = ({ theme, targets, activeDisease, onScoreRangesChang
     e.target.value = '';
   };
 
-  // ── compare panel ────────────────────────────────────────────────────────
-  const [gene1, setGene1]         = useState('');
-  const [gene2, setGene2]         = useState('');
-  const [gene1Query, setGene1Query] = useState('');
-  const [gene2Query, setGene2Query] = useState('');
-  const [showDrop1, setShowDrop1] = useState(false);
-  const [showDrop2, setShowDrop2] = useState(false);
-  const [comparing, setComparing] = useState(false);
-  const [compareResult, setCompareResult] = useState<string>('');
-  const [compareError, setCompareError]   = useState('');
-
-
   // ── helpers ──────────────────────────────────────────────────────────────
   const toggleCheckbox = (group: CohortFilterKey, value: string) =>
     setSelected(prev => ({
@@ -1932,60 +1919,12 @@ const CohortFilterSidebar = ({ theme, targets, activeDisease, onScoreRangesChang
   const totalActive = Object.values(selected).flat().length;
 
 
-  const handleCompare = async () => {
-    if (!gene1.trim() || !gene2.trim()) return;
-    setComparing(true);
-    setCompareResult('');
-    setCompareError('');
-    try {
-      const g1Data = targets.find(t => t.symbol.toUpperCase() === gene1.trim().toUpperCase());
-      const g2Data = targets.find(t => t.symbol.toUpperCase() === gene2.trim().toUpperCase());
-      const fmt = (v: number | undefined) => v !== undefined ? v.toFixed(3) : 'N/A';
-      const ctx = (t: Target | undefined, name: string) => t ? `
-**${name}** (${t.name || name})
-- G Score (genetic association): ${fmt(t.geneticScore)}
-- E Score (expression selectivity): ${fmt(t.expressionScore)}
-- T Score (tractability): ${fmt(t.targetScore)}
-- L Score (literature): ${fmt(t.literatureScore)}
-- GET Score (combined priority): ${fmt(t.getScore ?? t.overallScore)}
-- RP Score (network propagation): ${fmt(t.rpScore)}
-- WINNER Score (network prioritization): ${fmt(t.winnerScore)}
-- Overall Score: ${fmt(t.overallScore)}
-- Pathways: ${t.pathways?.slice(0,3).map(p=>p.label).join(', ') || 'N/A'}` : `**${name}**: not found in current target list`;
-      const prompt = `You are a drug discovery AI assistant analyzing therapeutic targets for disease research.
-
-Compare these two genes as drug targets based on all their loaded metrics:
-${ctx(g1Data, gene1.trim())}
-${ctx(g2Data, gene2.trim())}
-
-Score legend: G=genetic evidence (0-1), E=expression selectivity (0-1), T=druggability/tractability (0-1), L=literature evidence (0-1), GET=combined priority score, RP=network propagation rank, WINNER=network-based prioritization.
-
-Provide a structured comparison covering:
-1. **Score Summary** — which gene leads on each metric and what that means
-2. **Mechanistic Differences** — known biology and disease relevance
-3. **Druggability** — which is more actionable as a drug target and why
-4. **Evidence Strength** — genetic, expression, and literature support
-5. **Clinical Landscape** — known drugs, trials, or compounds targeting each
-6. **Recommendation** — which to prioritize and the key reason
-
-Be concise, scientific, and use markdown. Max 350 words.`;
-      const response = await fetch('/api/ai/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt }) });
-      const data = await response.json();
-      setCompareResult(data.text ?? 'No response generated.');
-    } catch (err) {
-      setCompareError('AI comparison failed. Check your API key or network.');
-    } finally {
-      setComparing(false);
-    }
-  };
-
   // ── panel content ────────────────────────────────────────────────────────
   const panelConfig: Record<string, { icon: React.ElementType; title: string; sub: string }> = {
     workspace: { icon: Home,             title: 'Workspace',  sub: 'Overview'       },
     targets:   { icon: List,             title: 'Targets',    sub: 'Gene list'      },
     cohort:    { icon: Users,            title: 'Cohort',     sub: 'Cohort data'    },
     rankings:  { icon: BarChart3,         title: 'Rankings',   sub: 'Score ranges'   },
-    compare:   { icon: Layers,           title: 'Compare',    sub: 'AI gene compare'},
   };
   const pc = panelConfig[activeNav] ?? panelConfig['cohort'];
   const PanelIcon = pc.icon;
@@ -2377,91 +2316,6 @@ Be concise, scientific, and use markdown. Max 350 words.`;
               </button>
             </>)}
 
-          </div>
-        )}
-
-        {/* ── COMPARE panel ─────────────────────────────────────────────── */}
-        {activeNav === 'compare' && (
-          <div className="flex flex-col flex-1 overflow-hidden">
-            <div className="p-3 space-y-2.5 flex-shrink-0">
-              <p className={`text-[10px] leading-relaxed ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
-                Enter two gene symbols from your target list to get an AI-powered side-by-side comparison.
-              </p>
-              {/* Gene inputs */}
-              {([
-                { val: gene1, set: setGene1, query: gene1Query, setQuery: setGene1Query, show: showDrop1, setShow: setShowDrop1, ph: 'Search gene 1  e.g. APOE' },
-                { val: gene2, set: setGene2, query: gene2Query, setQuery: setGene2Query, show: showDrop2, setShow: setShowDrop2, ph: 'Search gene 2  e.g. TREM2' },
-              ] as const).map((inp, i) => {
-                const q = inp.query.toUpperCase();
-                const matches = q.length >= 1
-                  ? targets.filter(t => t.symbol.toUpperCase().includes(q) || t.name?.toUpperCase().includes(q)).slice(0, 8)
-                  : [];
-                return (
-                  <div key={i} className="relative">
-                    <input
-                      value={inp.query || inp.val}
-                      onChange={e => { inp.setQuery(e.target.value); inp.set(''); inp.setShow(true); }}
-                      onFocus={() => inp.setShow(true)}
-                      onBlur={() => setTimeout(() => inp.setShow(false), 150)}
-                      placeholder={inp.ph}
-                      className={`w-full px-3 py-2 rounded-lg border text-[11px] font-mono font-bold outline-none transition-colors ${
-                        inp.val
-                          ? isDark ? 'bg-blue-900/20 border-blue-500 text-blue-300' : 'bg-blue-50 border-blue-400 text-blue-700'
-                          : isDark ? 'bg-slate-900 border-slate-700 text-white placeholder-slate-600 focus:border-blue-500' : 'bg-white border-slate-300 text-slate-900 placeholder-slate-400 focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20'
-                      }`}
-                    />
-                    {inp.val && (
-                      <div className={`absolute right-2 top-2 text-[9px] font-black px-1.5 py-0.5 rounded ${isDark ? 'bg-blue-600/20 text-blue-400' : 'bg-blue-100 text-blue-600'}`}>✓</div>
-                    )}
-                    {inp.show && matches.length > 0 && (
-                      <div className={`absolute z-50 top-full mt-1 left-0 right-0 rounded-lg border shadow-xl overflow-hidden ${isDark ? 'bg-slate-900 border-slate-700' : 'bg-white border-slate-200'}`}>
-                        {matches.map(t => (
-                          <button
-                            key={t.symbol}
-                            onMouseDown={() => { inp.set(t.symbol); inp.setQuery(t.symbol); inp.setShow(false); }}
-                            className={`w-full px-3 py-2 text-left flex items-center justify-between gap-2 transition-colors ${isDark ? 'hover:bg-slate-800' : 'hover:bg-blue-50'}`}
-                          >
-                            <span className={`text-[11px] font-bold font-mono ${isDark ? 'text-blue-400' : 'text-blue-600'}`}>{t.symbol}</span>
-                            <span className={`text-[9px] truncate max-w-[100px] ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>{t.name}</span>
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-              <button
-                onClick={handleCompare}
-                disabled={comparing || !gene1.trim() || !gene2.trim()}
-                className={`w-full py-2 rounded-lg text-[11px] font-bold flex items-center justify-center gap-2 transition-all ${
-                  comparing || !gene1.trim() || !gene2.trim()
-                    ? 'opacity-40 cursor-not-allowed bg-blue-600 text-white'
-                    : 'bg-blue-600 text-white hover:bg-blue-700 shadow-md shadow-blue-600/20'
-                }`}
-              >
-                {comparing ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Comparing…</> : <><Sparkles className="w-3.5 h-3.5" /> Compare with AI</>}
-              </button>
-              {compareError && <p className="text-[10px] text-rose-500 font-medium">{compareError}</p>}
-            </div>
-
-            {/* AI result */}
-            {compareResult && (
-              <div className={`flex-1 overflow-y-auto mx-3 mb-3 p-3 rounded-xl border text-[11px] leading-relaxed ${isDark ? 'border-slate-800 bg-slate-900/40 text-slate-300' : 'border-slate-200 bg-slate-50 text-slate-700'}`}>
-                <div className="flex items-center gap-1.5 mb-2 pb-2 border-b border-slate-200 dark:border-slate-700">
-                  <Sparkles className="w-3 h-3 text-blue-500" />
-                  <span className={`text-[9px] font-black uppercase tracking-widest ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>AI Analysis — {gene1} vs {gene2}</span>
-                </div>
-                <div className="markdown-body prose prose-sm prose-neutral dark:prose-invert max-w-none">
-                  <Markdown>{compareResult}</Markdown>
-                </div>
-              </div>
-            )}
-            {!compareResult && !comparing && (
-              <div className={`flex-1 flex flex-col items-center justify-center px-4 pb-6 text-center ${isDark ? 'text-slate-600' : 'text-slate-300'}`}>
-                <Layers className="w-10 h-10 mb-3 opacity-30" />
-                <p className={`text-[10px] font-semibold ${isDark ? 'text-slate-600' : 'text-slate-400'}`}>Select two genes above and click Compare</p>
-              </div>
-            )}
           </div>
         )}
 
