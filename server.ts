@@ -470,12 +470,16 @@ function setupRoutes() {
     const key = process.env.GEMINI_API_KEY;
     if (!key) return res.status(503).json({ error: "GEMINI_API_KEY not configured" });
     try {
-      const body: Record<string, unknown> = {
-        contents: messages.map((m: { role: string; content: string }) => ({
-          role: m.role === 'user' ? 'user' : 'model',
-          parts: [{ text: m.content }],
-        })),
-      };
+      // Gemini REST API requires conversation to start with 'user' role
+      const mappedMessages = messages.map((m: { role: string; content: string }) => ({
+        role: m.role === 'user' ? 'user' : 'model',
+        parts: [{ text: m.content }],
+      }));
+      // Drop any leading 'model' turns (e.g. the initial assistant greeting)
+      const firstUserIdx = mappedMessages.findIndex((m: { role: string }) => m.role === 'user');
+      const contents = firstUserIdx >= 0 ? mappedMessages.slice(firstUserIdx) : mappedMessages;
+
+      const body: Record<string, unknown> = { contents };
       if (systemInstruction) body.systemInstruction = { parts: [{ text: systemInstruction }] };
       if (tools?.length) body.tools = [{ functionDeclarations: tools }];
       const r = await fetch(

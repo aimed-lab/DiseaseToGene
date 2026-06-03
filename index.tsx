@@ -5054,6 +5054,8 @@ Return ONLY valid JSON.
           body: JSON.stringify({ messages, systemInstruction, tools }),
         });
         const data = await res.json();
+        // Surface server-side errors (missing key, Gemini API errors) instead of silently returning empty
+        if (!res.ok) throw new Error(data.error || `AI request failed (${res.status})`);
         return { text: data.text as string | undefined, functionCalls: data.functionCalls as any[] | undefined };
       };
 
@@ -5092,7 +5094,7 @@ Return ONLY valid JSON.
           setMessages(prev => [...prev, { role: 'assistant', content: secondResponse.text!, timestamp: new Date() }]);
         }
       } else {
-        setMessages(prev => [...prev, { role: 'assistant', content: response.text || "Synthesizing response...", timestamp: new Date() }]);
+        setMessages(prev => [...prev, { role: 'assistant', content: response.text || "I received your message but couldn't generate a response. Please check that GEMINI_API_KEY is configured on the server.", timestamp: new Date() }]);
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
