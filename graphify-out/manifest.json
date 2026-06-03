@@ -1,0 +1,50 @@
+{
+  "N:\\diseasetotarget_version2\\api.ts": {
+    "mtime": 1778451534.2989683,
+    "hash": "b3235c964420ee537b82dc39fdbb2f76"
+  },
+  "N:\\diseasetotarget_version2\\index.tsx": {
+    "mtime": 1778455297.1099296,
+    "hash": "d8e1fc67efd2b442d3a890405f0c50d0"
+  },
+  "N:\\diseasetotarget_version2\\PaperExtractor.tsx": {
+    "mtime": 1777493960.7809196,
+    "hash": "58f43135073321bcf69e16b3276d5823"
+  },
+  "N:\\diseasetotarget_version2\\rwr.ts": {
+    "mtime": 1777493960.814498,
+    "hash": "d5d82b71d5dc04146894c8e9cf72e143"
+  },
+  "N:\\diseasetotarget_version2\\server.ts": {
+    "mtime": 1778285146.862759,
+    "hash": "bc6499a1ad9ca92a8a1d138662f6c2c4"
+  },
+  "N:\\diseasetotarget_version2\\types.ts": {
+    "mtime": 1778451519.9531715,
+    "hash": "057e525eeda6697d55a9632f29eda40e"
+  },
+  "N:\\diseasetotarget_version2\\vite.config.ts": {
+    "mtime": 1777493960.838481,
+    "hash": "e30140e52c8b4668cda16eb871db8482"
+  },
+  "N:\\diseasetotarget_version2\\winner.ts": {
+    "mtime": 1777493960.84548,
+    "hash": "a6f328447762f547039457950df6bc06"
+  },
+  "N:\\diseasetotarget_version2\\netlify\\functions\\pubtator-export.ts": {
+    "mtime": 1777493960.8664289,
+    "hash": "4e1cbb8833d0b65fc2d415077282cd06"
+  },
+  "N:\\diseasetotarget_version2\\netlify\\functions\\pubtator-search.ts": {
+    "mtime": 1777493960.8594286,
+    "hash": "691cac7f9f92fe34259cb0d2089141f5"
+  },
+  "N:\\diseasetotarget_version2\\index.html": {
+    "mtime": 1777493960.704337,
+    "hash": "93d10cfc5b09bd30399bef0333990e0b"
+  },
+  "N:\\diseasetotarget_version2\\README.md": {
+    "mtime": 1777493960.8734374,
+    "hash": "2abec39766790aaddd50526dd29d00fd"
+  }
+}

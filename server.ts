@@ -1,5 +1,5 @@
 import express from "express";
-import { createServer as createViteServer } from "vite";
+// Vite is a dev-only dependency — imported dynamically so it's never loaded in production
 import { Client } from "@notionhq/client";
 import path from "path";
 import fs from "fs";
@@ -238,9 +238,14 @@ ${entry}
 // ── Auth & weights are now handled by Supabase (supabase.ts) ─────────────────
 // Express is kept for proxying external APIs (OT, PubTator, wiki, Notion)
 
+// Module-level app instance — exported for Vercel serverless entry point
+export const app = express();
+
 async function startServer() {
-  const app = express();
-  const PORT = 3000;
+  const PORT = parseInt(process.env.PORT || '3000', 10);
+
+  // Health check — used by Render, Railway, Docker, Vercel
+  app.get('/healthz', (_req, res) => res.json({ status: 'ok', ts: new Date().toISOString() }));
 
   app.use(express.json({ limit: '2mb' }));
   app.use(express.urlencoded({ limit: '2mb', extended: true }));
@@ -443,7 +448,7 @@ async function startServer() {
         const data = JSON.parse(text);
         res.json(data);
       } catch {
-        console.error("NVIDIA non-JSON response:", text.slice(0, 500));
+        if (process.env.NODE_ENV !== 'production') console.error("NVIDIA non-JSON response:", text.slice(0, 500));
         res.status(502).json({ error: "Invalid JSON from NVIDIA API", raw: text.slice(0, 300) });
       }
     } catch (err: any) {
@@ -451,8 +456,21 @@ async function startServer() {
     }
   });
 
+  // ── Shared Gemini REST helper ─────────────────────────────────────────────
+  const geminiGenerate = async (contents: object[], model = 'gemini-2.0-flash', responseMimeType?: string) => {
+    const key = process.env.GEMINI_API_KEY;
+    if (!key) throw new Error('GEMINI_API_KEY not configured');
+    const body: Record<string, unknown> = { contents };
+    if (responseMimeType) body.generationConfig = { responseMimeType };
+    const r = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
+    );
+    const d = await r.json();
+    return d.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
+  };
+
   // Generic AI generate — server-side only, keeps API keys out of the browser bundle
-  // Used by api.ts for disease name correction and clinical insight summaries
   app.post("/api/ai/generate", async (req, res) => {
     const { prompt } = req.body || {};
     if (!prompt) return res.status(400).json({ error: "prompt is required" });
@@ -466,16 +484,54 @@ async function startServer() {
         const nvData = await nvRes.json();
         return res.json({ text: nvData.choices?.[0]?.message?.content?.trim() || "" });
       } else if (process.env.GEMINI_API_KEY) {
-        const geminiRes = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
-          { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }) }
-        );
-        const geminiData = await geminiRes.json();
-        const text = geminiData.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
+        const text = await geminiGenerate([{ parts: [{ text: prompt }] }]);
         return res.json({ text });
       } else {
         return res.status(503).json({ error: "No AI API key configured (GEMINI_API_KEY or NVIDIA_API_KEY)" });
       }
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Multi-turn Gemini chat with optional tools + systemInstruction (AI chat panel)
+  app.post("/api/ai/gemini-chat", async (req, res) => {
+    const { messages, systemInstruction, tools } = req.body || {};
+    if (!messages?.length) return res.status(400).json({ error: "messages required" });
+    const key = process.env.GEMINI_API_KEY;
+    if (!key) return res.status(503).json({ error: "GEMINI_API_KEY not configured" });
+    try {
+      const body: Record<string, unknown> = {
+        contents: messages.map((m: { role: string; content: string }) => ({
+          role: m.role === 'user' ? 'user' : 'model',
+          parts: [{ text: m.content }],
+        })),
+      };
+      if (systemInstruction) body.systemInstruction = { parts: [{ text: systemInstruction }] };
+      if (tools?.length) body.tools = [{ functionDeclarations: tools }];
+      const r = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${key}`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
+      );
+      const d = await r.json();
+      const candidate = d.candidates?.[0]?.content;
+      const text = candidate?.parts?.find((p: any) => p.text)?.text?.trim() || "";
+      const functionCalls = candidate?.parts?.filter((p: any) => p.functionCall).map((p: any) => p.functionCall) || [];
+      res.json({ text, functionCalls });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // PDF paper analysis (used by PaperExtractor in index.tsx)
+  // Accepts base64-encoded PDF + prompt, returns structured JSON from Gemini
+  app.post("/api/ai/analyze-paper", async (req, res) => {
+    const { base64, mimeType = 'application/pdf', prompt } = req.body || {};
+    if (!base64 || !prompt) return res.status(400).json({ error: "base64 and prompt required" });
+    try {
+      const contents = [{ parts: [{ inlineData: { mimeType, data: base64 } }, { text: prompt }] }];
+      const text = await geminiGenerate(contents, 'gemini-2.0-flash', 'application/json');
+      res.json({ text });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -651,6 +707,7 @@ async function startServer() {
 
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
@@ -663,9 +720,12 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-  });
+  // Only bind to a port when running as a standalone server (not Vercel serverless)
+  if (!process.env.VERCEL) {
+    app.listen(PORT, "0.0.0.0", () => {
+      console.log(`Server running on http://localhost:${PORT}`);
+    });
+  }
 }
 
 startServer();

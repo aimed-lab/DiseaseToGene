@@ -25,6 +25,18 @@ export default defineConfig(({ mode }) => {
         alias: {
           '@': path.resolve(__dirname, '.'),
         }
-      }
+      },
+      build: {
+        rollupOptions: {
+          output: {
+            manualChunks: {
+              'd3':       ['d3'],
+              'recharts': ['recharts'],
+              'docx':     ['docx', 'file-saver'],
+              'react':    ['react', 'react-dom', 'react-markdown'],
+            },
+          },
+        },
+      },
     };
 });

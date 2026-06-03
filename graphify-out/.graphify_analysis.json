@@ -1,0 +1,165 @@
+{
+  "communities": {
+    "0": [
+      "diseasetotarget_version2_index_app",
+      "diseasetotarget_version2_index_breadcrumbs",
+      "diseasetotarget_version2_index_cancer_type_map",
+      "diseasetotarget_version2_index_cohort_filter_groups",
+      "diseasetotarget_version2_index_cohortfilterkey",
+      "diseasetotarget_version2_index_cohortfiltersidebar",
+      "diseasetotarget_version2_index_detectcancertype",
+      "diseasetotarget_version2_index_druglandscape",
+      "diseasetotarget_version2_index_dualslider",
+      "diseasetotarget_version2_index_getgetvector",
+      "diseasetotarget_version2_index_getsigmaforzoom",
+      "diseasetotarget_version2_index_ispointincircle",
+      "diseasetotarget_version2_index_left_nav_items",
+      "diseasetotarget_version2_index_literaturestats",
+      "diseasetotarget_version2_index_pipelineprogress",
+      "diseasetotarget_version2_index_publicationsparkline",
+      "diseasetotarget_version2_index_pubtatorview",
+      "diseasetotarget_version2_index_radarchart",
+      "diseasetotarget_version2_index_ranking_sliders",
+      "diseasetotarget_version2_index_rawdataview",
+      "diseasetotarget_version2_index_rootelement",
+      "diseasetotarget_version2_index_score_sliders",
+      "diseasetotarget_version2_index_scorebar",
+      "diseasetotarget_version2_index_signinpage",
+      "diseasetotarget_version2_index_table_columns",
+      "diseasetotarget_version2_index_tablecolkey",
+      "diseasetotarget_version2_index_tabnavigation",
+      "diseasetotarget_version2_index_targetdetailview",
+      "diseasetotarget_version2_index_usefulnesscontrols",
+      "index_tsx"
+    ],
+    "1": [
+      "diseasetotarget_version2_types_chemicalresult",
+      "diseasetotarget_version2_types_druggenerelationship",
+      "diseasetotarget_version2_types_filtercondition",
+      "diseasetotarget_version2_types_generesult",
+      "diseasetotarget_version2_types_getweights",
+      "diseasetotarget_version2_types_literaturegenemetrics",
+      "diseasetotarget_version2_types_message",
+      "diseasetotarget_version2_types_paperanalysis",
+      "diseasetotarget_version2_types_pathway",
+      "diseasetotarget_version2_types_researchcontext",
+      "diseasetotarget_version2_types_sortcondition",
+      "diseasetotarget_version2_types_theme",
+      "diseasetotarget_version2_types_viewmode",
+      "paperextractor_tsx",
+      "types_ts"
+    ],
+    "2": [
+      "api_ts",
+      "diseasetotarget_version2_api_api",
+      "diseasetotarget_version2_api_fetchwithretry",
+      "diseasetotarget_version2_api_proxyfetch",
+      "diseasetotarget_version2_types_clinicalsample",
+      "diseasetotarget_version2_types_diseaseinfo",
+      "diseasetotarget_version2_types_drilldowndata",
+      "diseasetotarget_version2_types_druginfo",
+      "diseasetotarget_version2_types_enrichmentresult",
+      "diseasetotarget_version2_types_expressionrow",
+      "diseasetotarget_version2_types_pubmedstats",
+      "diseasetotarget_version2_types_pubtatorresult",
+      "diseasetotarget_version2_types_target"
+    ],
+    "3": [
+      "diseasetotarget_version2_server_dirname",
+      "diseasetotarget_version2_server_filename",
+      "diseasetotarget_version2_server_startserver",
+      "server_ts"
+    ],
+    "4": [
+      "diseasetotarget_version2_rwr_runrwr",
+      "diseasetotarget_version2_rwr_stringedge",
+      "rwr_ts"
+    ],
+    "5": [
+      "diseasetotarget_version2_winner_runwinner",
+      "diseasetotarget_version2_winner_winnerstringedge",
+      "winner_ts"
+    ],
+    "6": [
+      "functions_pubtator_export_handler",
+      "netlify_functions_pubtator_export_ts",
+      "netlify_functions_pubtator_search_ts"
+    ],
+    "7": [
+      "diseasetotarget_version2_index_computeforcepositions",
+      "diseasetotarget_version2_index_pearson"
+    ],
+    "8": [
+      "diseasetotarget_version2_vite_config_env",
+      "vite_config_ts"
+    ]
+  },
+  "cohesion": {
+    "0": 0.07,
+    "1": 0.15,
+    "2": 0.17,
+    "3": 0.5,
+    "4": 0.67,
+    "5": 0.67,
+    "6": 0.67,
+    "7": 1.0,
+    "8": 1.0
+  },
+  "gods": [
+    {
+      "id": "diseasetotarget_version2_types_pubtatorresult",
+      "label": "PubTatorResult",
+      "degree": 3
+    },
+    {
+      "id": "diseasetotarget_version2_types_target",
+      "label": "Target",
+      "degree": 3
+    },
+    {
+      "id": "diseasetotarget_version2_types_druginfo",
+      "label": "DrugInfo",
+      "degree": 3
+    },
+    {
+      "id": "diseasetotarget_version2_types_diseaseinfo",
+      "label": "DiseaseInfo",
+      "degree": 3
+    },
+    {
+      "id": "diseasetotarget_version2_types_enrichmentresult",
+      "label": "EnrichmentResult",
+      "degree": 3
+    },
+    {
+      "id": "diseasetotarget_version2_types_pubmedstats",
+      "label": "PubMedStats",
+      "degree": 3
+    },
+    {
+      "id": "diseasetotarget_version2_types_clinicalsample",
+      "label": "ClinicalSample",
+      "degree": 3
+    },
+    {
+      "id": "diseasetotarget_version2_types_expressionrow",
+      "label": "ExpressionRow",
+      "degree": 3
+    },
+    {
+      "id": "diseasetotarget_version2_types_generesult",
+      "label": "GeneResult",
+      "degree": 3
+    },
+    {
+      "id": "diseasetotarget_version2_types_paperanalysis",
+      "label": "PaperAnalysis",
+      "degree": 3
+    }
+  ],
+  "surprises": [],
+  "tokens": {
+    "input": 0,
+    "output": 0
+  }
+}

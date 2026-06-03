@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createRoot } from 'react-dom/client';
 import { createPortal } from 'react-dom';
-import { GoogleGenAI, Type, Chat, GenerateContentResponse } from "@google/genai";
+// AI calls routed through /api/ai/* server endpoints — no keys in browser
+import { Type } from "@google/genai";
 import * as d3 from "d3";
 import Markdown from 'react-markdown';
 import { Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell, WidthType, AlignmentType, HeadingLevel, BorderStyle, ShadingType } from 'docx';
@@ -1420,9 +1421,9 @@ ${ready.length > 1 ? `5. **Comparative Trade-offs** — which target offers the 
 
 Be specific, cite the numbers. Do not fabricate. ~400 words.`;
 
-      const aiClient = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
-      const resp = await aiClient.models.generateContent({ model: 'gemini-2.0-flash', contents: prompt });
-      setNarrative(resp.text ?? '');
+      const resp = await fetch('/api/ai/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt }) });
+      const data = await resp.json();
+      setNarrative(data.text ?? '');
     } catch (e: any) {
       setNarrative(`Error: ${e.message}`);
     } finally { setNarrativeLoading(false); }
@@ -1967,9 +1968,9 @@ Provide a structured comparison covering:
 6. **Recommendation** — which to prioritize and the key reason
 
 Be concise, scientific, and use markdown. Max 350 words.`;
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
-      const response = await ai.models.generateContent({ model: 'gemini-flash-latest', contents: prompt });
-      setCompareResult(response.text ?? 'No response generated.');
+      const response = await fetch('/api/ai/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt }) });
+      const data = await response.json();
+      setCompareResult(data.text ?? 'No response generated.');
     } catch (err) {
       setCompareError('AI comparison failed. Check your API key or network.');
     } finally {
@@ -3656,8 +3657,6 @@ const App = () => {
     const newResults: PaperAnalysis[] = [];
 
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
-      
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
         setLoadingMessage(`Processing ${file.name} (${i + 1}/${files.length})...`);
@@ -3700,17 +3699,12 @@ Return ONLY valid JSON.
   "conclusion": "2-3 sentence summary"
 }`;
 
-        const response = await ai.models.generateContent({
-          model: "gemini-flash-latest",
-          contents: [
-            { inlineData: { mimeType: "application/pdf", data: base64 } },
-            { text: prompt }
-          ],
-          config: {
-            responseMimeType: "application/json",
-            temperature: 0.1
-          }
+        const aiRes = await fetch('/api/ai/analyze-paper', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ base64, mimeType: 'application/pdf', prompt }),
         });
+        const response = await aiRes.json();
 
         if (!response.text) throw new Error("No response from AI");
         const parsed = JSON.parse(response.text) as PaperAnalysis;
@@ -5053,13 +5047,13 @@ Return ONLY valid JSON.
       - Always work in the context of the current Target List and its active filters.`;
 
       const callAI = async (messages: Message[]) => {
-        const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
-        const response = await ai.models.generateContent({
-          model: 'gemini-flash-latest',
-          contents: messages.map(m => ({ role: m.role === 'user' ? 'user' : 'model', parts: [{ text: m.content }] })),
-          config: { tools: [{ functionDeclarations: tools as any }], systemInstruction }
+        const res = await fetch('/api/ai/gemini-chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ messages, systemInstruction, tools }),
         });
-        return { text: response.text, functionCalls: response.functionCalls };
+        const data = await res.json();
+        return { text: data.text as string | undefined, functionCalls: data.functionCalls as any[] | undefined };
       };
 
       let response = await callAI(currentMessages);
