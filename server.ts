@@ -248,8 +248,11 @@ ${entry}
 // ── Module-level Express app — exported for Vercel serverless entry point ──────
 export const app = express();
 
+// ── Gemini model — single source of truth, overridable via env ────────────────
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
+
 // ── Shared Gemini REST helper (module-level so it's available at setup time) ───
-const geminiGenerate = async (contents: object[], model = 'gemini-2.0-flash', responseMimeType?: string) => {
+const geminiGenerate = async (contents: object[], model = GEMINI_MODEL, responseMimeType?: string) => {
   const key = process.env.GEMINI_API_KEY;
   if (!key) throw new Error('GEMINI_API_KEY not configured');
   const body: Record<string, unknown> = { contents };
@@ -483,7 +486,7 @@ function setupRoutes() {
       if (systemInstruction) body.systemInstruction = { parts: [{ text: systemInstruction }] };
       if (tools?.length) body.tools = [{ functionDeclarations: tools }];
       const r = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${key}`,
+        `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${key}`,
         { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
       );
       const d = await r.json();
@@ -504,7 +507,7 @@ function setupRoutes() {
     if (!base64 || !prompt) return res.status(400).json({ error: "base64 and prompt required" });
     try {
       const contents = [{ parts: [{ inlineData: { mimeType, data: base64 } }, { text: prompt }] }];
-      const text = await geminiGenerate(contents, 'gemini-2.0-flash', 'application/json');
+      const text = await geminiGenerate(contents, GEMINI_MODEL, 'application/json');
       res.json({ text });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
