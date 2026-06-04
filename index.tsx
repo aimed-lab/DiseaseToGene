@@ -89,6 +89,7 @@ import {
 } from 'lucide-react';
 
 import PaperExtractor from './PaperExtractor';
+import DruggabilityPanel from './DruggabilityPanel';
 import { supabase, fetchGlobalWeights, saveGlobalWeights, fetchUserProfile, updateUserProfile } from './supabase';
 import {
   Target,
@@ -3039,11 +3040,14 @@ const TargetDetailView = ({
             <div className={`mt-10 p-8 rounded-3xl border shadow-sm ${theme === 'dark' ? 'bg-[#171717] border-neutral-800' : 'bg-white border-neutral-200'}`}>
               <h4 className="text-[10px] font-bold uppercase text-neutral-500 dark:text-neutral-400 tracking-widest mb-4">Target Summary</h4>
               <p className={`text-sm leading-relaxed ${theme === 'dark' ? 'text-neutral-400' : 'text-neutral-600'}`}>
-                {target.name} ({target.symbol}) is a significant target in {diseaseName} research. 
+                {target.name} ({target.symbol}) is a significant target in {diseaseName} research.
                 With an overall evidence score of {target.overallScore.toFixed(4)}, it shows strong {target.geneticScore > 0.5 ? 'genetic' : 'molecular'} associations.
                 Explore the deep evidence intelligence above for detailed publication insights.
               </p>
             </div>
+
+            {/* ChEMBL Druggability (additive — fetched on demand from ChEMBL) */}
+            <DruggabilityPanel geneSymbol={target.symbol} currentDisease={diseaseName} theme={theme} />
           </div>
         ) : (
           <div className="pt-10 border-t border-neutral-100 dark:border-neutral-800 flex flex-col items-center justify-center py-12">
