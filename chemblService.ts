@@ -44,7 +44,7 @@ export interface ChEMBLDruggability {
   targetMaxPhase: number;          // highest trial phase of ANY drug acting on this target (from /mechanism)
   targetDrugCount: number;         // number of known drugs/mechanisms against this target
   druggabilityScore: number;       // 0.0 to 1.0
-  label: 'Known Drug Target' | 'Being Pursued' | 'Novel' | 'Uncharted';
+  label: 'Clinically Validated' | 'In Clinical Development' | 'Preclinical Only' | 'No Drug Data Found';
   error: string | null;
 }
 
@@ -241,11 +241,15 @@ function computeLabel(
 ): { label: ChEMBLDruggability['label']; score: number } {
   const hasPotentCompound = bestCompound?.ic50Nm !== null && bestCompound!.ic50Nm! < 100;
 
-  if (targetMaxPhase >= 4) return { label: 'Known Drug Target', score: 1.0 };
-  if (targetMaxPhase >= 1) return { label: 'Being Pursued', score: 0.85 };
-  if (totalCompounds > 0 && hasPotentCompound) return { label: 'Novel', score: 0.65 };
-  if (totalCompounds > 0) return { label: 'Novel', score: 0.5 };
-  return { label: 'Uncharted', score: 0.0 };
+  // Approved drug or Phase 4 exists
+  if (targetMaxPhase >= 4) return { label: 'Clinically Validated', score: 1.0 };
+  // Phase 1-3 trials active
+  if (targetMaxPhase >= 1) return { label: 'In Clinical Development', score: 0.85 };
+  // Compounds exist, never reached trials
+  if (totalCompounds > 0 && hasPotentCompound) return { label: 'Preclinical Only', score: 0.65 };
+  if (totalCompounds > 0) return { label: 'Preclinical Only', score: 0.5 };
+  // Nothing in ChEMBL — absence of evidence, not evidence of absence
+  return { label: 'No Drug Data Found', score: 0.0 };
 }
 
 // ─── Main exported function ───────────────────────────────────────────────────
@@ -261,7 +265,7 @@ export async function getChEMBLDruggability(geneSymbol: string): Promise<ChEMBLD
     targetMaxPhase: 0,
     targetDrugCount: 0,
     druggabilityScore: 0,
-    label: 'Uncharted',
+    label: 'No Drug Data Found',
     error: null,
   };
 

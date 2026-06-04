@@ -8,10 +8,10 @@ interface Props {
 }
 
 const LABEL_COLORS: Record<string, string> = {
-  'Known Drug Target': '#16a34a',   // green
-  'Being Pursued':     '#2563eb',   // blue
-  'Novel':             '#9333ea',   // purple
-  'Uncharted':         '#6b7280',   // gray
+  'Clinically Validated':    '#16a34a',   // green  — approved / Phase 4
+  'In Clinical Development':  '#2563eb',   // blue   — Phase 1-3
+  'Preclinical Only':         '#9333ea',   // purple — compounds, no trials
+  'No Drug Data Found':       '#6b7280',   // gray   — nothing in ChEMBL
 };
 
 // How thoroughly the target has been chemically characterized in ChEMBL.
