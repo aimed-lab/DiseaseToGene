@@ -5,6 +5,7 @@ import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
 import { createClient } from "@supabase/supabase-js";
+import { createHash } from "crypto";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -14,13 +15,72 @@ const supabaseAdmin = (() => {
   const url = process.env.SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!url || !key) {
-    console.warn('[Admin] SUPABASE_SERVICE_ROLE_KEY not set — /api/admin/* routes will return 503');
+    if (process.env.NODE_ENV !== 'production') {
+      console.warn('[Admin] SUPABASE_SERVICE_ROLE_KEY not set — /api/admin/* routes will return 503');
+    }
     return null;
   }
   return createClient(url, key, {
     auth: { autoRefreshToken: false, persistSession: false },
   });
 })();
+
+const isProduction = process.env.NODE_ENV === 'production';
+const logDev = (...args: unknown[]) => {
+  if (!isProduction) console.error(...args);
+};
+
+type CachedApiResponse = {
+  status: number;
+  body: unknown;
+  contentType?: string;
+};
+
+const API_CACHE_TABLE = process.env.SUPABASE_API_CACHE_TABLE || 'external_api_cache';
+const API_CACHE_TTL_SECONDS = Number(process.env.API_CACHE_TTL_SECONDS || 60 * 60 * 24);
+const apiCacheEnabled = !!supabaseAdmin && process.env.DISABLE_API_CACHE !== '1';
+
+const cacheKey = (namespace: string, value: string) =>
+  createHash('sha256').update(namespace).update('\0').update(value).digest('hex');
+
+async function readApiCache(key: string): Promise<CachedApiResponse | null> {
+  if (!apiCacheEnabled) return null;
+  try {
+    const { data, error } = await supabaseAdmin!
+      .from(API_CACHE_TABLE)
+      .select('response,status,content_type,expires_at')
+      .eq('cache_key', key)
+      .maybeSingle();
+    if (error || !data) return null;
+    if (data.expires_at && new Date(data.expires_at).getTime() <= Date.now()) return null;
+    return {
+      status: Number(data.status || 200),
+      body: data.response,
+      contentType: data.content_type || undefined,
+    };
+  } catch (err) {
+    logDev('[API cache] read failed:', err);
+    return null;
+  }
+}
+
+async function writeApiCache(key: string, cached: CachedApiResponse): Promise<void> {
+  if (!apiCacheEnabled || cached.status < 200 || cached.status >= 300) return;
+  try {
+    const expiresAt = new Date(Date.now() + API_CACHE_TTL_SECONDS * 1000).toISOString();
+    await supabaseAdmin!
+      .from(API_CACHE_TABLE)
+      .upsert({
+        cache_key: key,
+        response: cached.body,
+        status: cached.status,
+        content_type: cached.contentType || 'application/json',
+        expires_at: expiresAt,
+      }, { onConflict: 'cache_key' });
+  } catch (err) {
+    logDev('[API cache] write failed:', err);
+  }
+}
 
 // Middleware: verify Supabase JWT and confirm caller is admin
 async function requireAdmin(
@@ -531,12 +591,21 @@ function setupRoutes() {
     if (!ALLOWED_PROXY_HOSTS.some(h => parsed.hostname === h)) {
       return res.status(403).json({ error: "Host not allowed" });
     }
+    const key = cacheKey('proxy', target);
+    const cached = await readApiCache(key);
+    if (cached) {
+      res.status(cached.status).set('Content-Type', cached.contentType || 'application/json');
+      if (typeof cached.body === 'string') return res.send(cached.body);
+      return res.send(JSON.stringify(cached.body));
+    }
     try {
       const upstream = await fetch(target, {
         headers: { 'Accept': 'application/json', 'User-Agent': 'DiseaseToTarget/2.0' }
       });
       const text = await upstream.text();
-      res.status(upstream.status).set('Content-Type', 'application/json').send(text);
+      const contentType = upstream.headers.get('Content-Type') || 'application/json';
+      await writeApiCache(key, { status: upstream.status, body: text, contentType });
+      res.status(upstream.status).set('Content-Type', contentType).send(text);
     } catch (err: any) {
       res.status(502).json({ error: err.message });
     }
@@ -545,6 +614,9 @@ function setupRoutes() {
   app.post("/api/ot-graphql", async (req, res) => {
     const { query, variables } = req.body;
     if (!query) return res.status(400).json({ error: "Missing query" });
+    const key = cacheKey('ot-graphql', JSON.stringify({ query, variables }));
+    const cached = await readApiCache(key);
+    if (cached) return res.status(cached.status).json(cached.body);
     try {
       const upstream = await fetch('https://api.platform.opentargets.org/api/v4/graphql', {
         method: 'POST',
@@ -552,6 +624,7 @@ function setupRoutes() {
         body: JSON.stringify({ query, variables }),
       });
       const data = await upstream.json();
+      await writeApiCache(key, { status: upstream.status, body: data, contentType: 'application/json' });
       res.status(upstream.status).json(data);
     } catch (err: any) {
       res.status(502).json({ error: err.message });
@@ -561,6 +634,9 @@ function setupRoutes() {
   // ── PubTator Proxy ───────────────────────────────────────────────────────────
 
   const fetchPubTator = async (url: string, retries = 3, backoff = 1000): Promise<any> => {
+    const key = cacheKey('pubtator', url);
+    const cached = await readApiCache(key);
+    if (cached) return cached.body;
     try {
       const response = await fetch(url, {
         headers: {
@@ -576,7 +652,9 @@ function setupRoutes() {
         return fetchPubTator(url, retries - 1, backoff * 2);
       }
       if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-      return await response.json();
+      const data = await response.json();
+      await writeApiCache(key, { status: response.status, body: data, contentType: 'application/json' });
+      return data;
     } catch (error) {
       if (retries > 0) {
         await new Promise(resolve => setTimeout(resolve, backoff));
@@ -688,7 +766,7 @@ async function startServer() {
 
   if (!process.env.VERCEL) {
     app.listen(PORT, "0.0.0.0", () => {
-      console.log(`Server running on http://localhost:${PORT}`);
+      if (!isProduction) console.log(`Server running on http://localhost:${PORT}`);
     });
   }
 }

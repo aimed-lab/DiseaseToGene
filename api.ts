@@ -2,9 +2,12 @@ import { Target, DrugInfo, DiseaseInfo, EnrichmentResult, PubMedStats, ClinicalS
 import { getChEMBLDruggability } from './chemblService';
 // AI calls are routed through /api/ai/generate (server-side) — no API keys in browser
 
-const OPEN_TARGETS_API = 'https://api.platform.opentargets.org/api/v4/graphql';
 const ENRICHR_API = 'https://maayanlab.cloud/Enrichr';
 const PUBMED_API = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils';
+const isProduction = process.env.NODE_ENV === 'production';
+const logDev = (...args: unknown[]) => {
+  if (!isProduction) console.error(...args);
+};
 
 // Routes external calls through the Express proxy to avoid browser CORS/rate-limit issues
 const proxyFetch = (url: string) => fetchWithRetry(`/api/proxy?url=${encodeURIComponent(url)}`);
@@ -38,7 +41,7 @@ export const api = {
 
     const executeSearch = async (searchTerm: string) => {
       try {
-        const res = await fetch(OPEN_TARGETS_API, { 
+        const res = await fetch('/api/ot-graphql', {
           method: 'POST', 
           headers: { 'Content-Type': 'application/json' }, 
           body: JSON.stringify({ query: GQL_QUERY, variables: { queryString: searchTerm } }) 
@@ -73,7 +76,7 @@ export const api = {
           }
         }
       } catch (e) {
-        console.error("Semantic correction failed", e);
+        logDev("Semantic correction failed", e);
       }
     }
 
@@ -110,7 +113,7 @@ export const api = {
     `;
 
     try {
-      const res = await fetch(OPEN_TARGETS_API, { 
+      const res = await fetch('/api/ot-graphql', {
         method: 'POST', 
         headers: { 'Content-Type': 'application/json' }, 
         body: JSON.stringify({ query: GQL_QUERY, variables: { efoId, size, page } }) 
@@ -204,7 +207,7 @@ export const api = {
   async getTargetDrugs(ensemblId: string): Promise<DrugInfo[]> {
     const GQL_QUERY = `query GetTargetDrugs($ensemblId: String!) { target(ensemblId: $ensemblId) { knownDrugs { rows { drug { id name mechanismsOfAction { rows { mechanismOfAction } } } status phase } } } }`;
     try {
-      const res = await fetch(OPEN_TARGETS_API, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: GQL_QUERY, variables: { ensemblId } }) });
+      const res = await fetch('/api/ot-graphql', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: GQL_QUERY, variables: { ensemblId } }) });
       const data = await res.json();
       const rows = data.data?.target?.knownDrugs?.rows || [];
       const seen = new Set();
@@ -325,7 +328,7 @@ export const api = {
 
       return { total, recent, topPapers, searchLink, primarySearchLink };
     } catch (e) {
-      console.error(`PubMed fetch failed [${symbol}/${diseaseName}]:`, e);
+      logDev(`PubMed fetch failed [${symbol}/${diseaseName}]:`, e);
       return { total: 0, recent: 0, topPapers: [], searchLink, primarySearchLink };
     }
   },
@@ -453,7 +456,7 @@ export const api = {
           drillDown.total_trials_globally = globalCtData.totalCount || 0;
         }
       } catch (err) {
-        console.error('ClinicalTrials fetch failed:', err);
+        logDev('ClinicalTrials fetch failed:', err);
       }
 
       // Europe PMC
@@ -509,7 +512,7 @@ export const api = {
           }
         }
       } catch (err) {
-        console.error('Europe PMC fetch failed:', err);
+        logDev('Europe PMC fetch failed:', err);
       }
 
       // PubMed Stats
@@ -568,11 +571,11 @@ export const api = {
           }
         }
       } catch (e) {
-        console.error(`PubMed stats fetch failed in drilldown [${symbol}/${diseaseName}]:`, e);
+        logDev(`PubMed stats fetch failed in drilldown [${symbol}/${diseaseName}]:`, e);
       }
 
     } catch (e) {
-      console.error("Drill down fetch failed:", e);
+      logDev("Drill down fetch failed:", e);
     }
 
     return drillDown;
@@ -600,7 +603,7 @@ export const api = {
           (data.results || []).forEach((r: any) => pmids.push(String(r.pmid)));
         }
       } catch (e) {
-        console.error(`PubTator search failed on page ${page}:`, e);
+        logDev(`PubTator search failed on page ${page}:`, e);
       }
       await new Promise(resolve => setTimeout(resolve, 200));
     }
@@ -646,7 +649,7 @@ export const api = {
           }
         }
       } catch (e) {
-        console.error(`PubTator export failed for batch:`, e);
+        logDev(`PubTator export failed for batch:`, e);
       }
     }
 
@@ -744,7 +747,7 @@ export const api = {
       }
       return "No summary available.";
     } catch (e) {
-      console.error("AI Clinical Summary failed", e);
+      logDev("AI Clinical Summary failed", e);
       return "Failed to generate AI summary.";
     }
   },
@@ -757,7 +760,7 @@ export const api = {
       const data = await res.json();
       return data.items || data.rows || (Array.isArray(data) ? data : []);
     } catch (e) { 
-      console.error("getTcgaClinical failed:", e);
+      logDev("getTcgaClinical failed:", e);
       return []; 
     }
   },
@@ -769,7 +772,7 @@ export const api = {
       if (!res.ok) return [];
       return await res.json();
     } catch (e) {
-      console.error("getStringInteractions failed:", e);
+      logDev("getStringInteractions failed:", e);
       return [];
     }
   },
@@ -785,7 +788,7 @@ export const api = {
         hasMore: data.hasMore || false
       };
     } catch (e) {
-      console.error("getTcgaExpressionPage failed:", e);
+      logDev("getTcgaExpressionPage failed:", e);
       return { items: [], hasMore: false };
     }
   },
@@ -852,7 +855,7 @@ export const api = {
 
     } catch (err: any) {
       blank.error = err?.message || 'Unknown error';
-      console.error(`[getGeneFullProfile] ${symbol}:`, err);
+      logDev(`[getGeneFullProfile] ${symbol}:`, err);
     }
 
     return blank;

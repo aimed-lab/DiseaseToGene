@@ -16,23 +16,13 @@ FROM node:20-alpine AS production
 
 WORKDIR /app
 
-# Install only production dependencies + tsx (needed to run server.ts)
-COPY package*.json ./
-RUN npm ci --omit=dev && npm install tsx
-
-# Copy built frontend from builder
+# Copy compiled runtime artifacts from builder. The server is bundled by esbuild,
+# so production does not need Vite, tsx, or node_modules.
 COPY --from=builder /app/dist ./dist
-
-# Copy server source files
-COPY server.ts ./
-COPY tsconfig.json ./
-COPY supabase.ts ./
-
-# Copy any other files server.ts imports at runtime
-COPY vite.config.ts ./
+COPY --from=builder /app/dist-server ./dist-server
 
 EXPOSE 3000
 
 ENV NODE_ENV=production
 
-CMD ["npx", "tsx", "server.ts"]
+CMD ["node", "dist-server/server.js"]

@@ -6,8 +6,6 @@ import { createPortal } from 'react-dom';
 const Type = { OBJECT: 'OBJECT', STRING: 'STRING', ARRAY: 'ARRAY', NUMBER: 'NUMBER', BOOLEAN: 'BOOLEAN', INTEGER: 'INTEGER' } as const;
 import * as d3 from "d3";
 import Markdown from 'react-markdown';
-import { Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell, WidthType, AlignmentType, HeadingLevel, BorderStyle, ShadingType } from 'docx';
-import { saveAs } from 'file-saver';
 import './index.css';
 import { 
   BarChart, 
@@ -118,6 +116,17 @@ import { runWINNER } from './winner';
 
 // --- Configuration ---
 const MAX_WebGL_POINTS = 1024;
+const isProduction = process.env.NODE_ENV === 'production';
+const logDev = (...args: unknown[]) => {
+  if (!isProduction) console.error(...args);
+};
+const warnDev = (...args: unknown[]) => {
+  if (!isProduction) console.warn(...args);
+};
+const saveBlob = async (blob: Blob, filename: string) => {
+  const { saveAs } = await import('file-saver');
+  saveAs(blob, filename);
+};
 
 // --- Auth types ---
 type UserRole = 'admin' | 'user';
@@ -1297,7 +1306,8 @@ const PhaseBar = ({ phase, isDark }: { phase: string; isDark: boolean }) => {
   );
 };
 
-function buildAssessDocx(genes: GeneAssessmentData[], diseaseName: string, narrative: string) {
+async function buildAssessDocx(genes: GeneAssessmentData[], diseaseName: string, narrative: string) {
+  const { Document, Paragraph, TextRun, Table, TableRow, TableCell, WidthType, HeadingLevel, BorderStyle, ShadingType } = await import('docx');
   const border = { style: BorderStyle.SINGLE, size: 1, color: 'D1D5DB' };
   const borders = { top: border, bottom: border, left: border, right: border };
   const mkCell = (text: string, bold = false, shaded = false, w = 2340) =>
@@ -1442,11 +1452,12 @@ Be specific, cite the numbers. Do not fabricate. ~400 words.`;
     if (data.length === 0) return;
     setDlLoading(true);
     try {
-      const doc = buildAssessDocx(data, diseaseName, narrative);
+      const { Packer } = await import('docx');
+      const doc = await buildAssessDocx(data, diseaseName, narrative);
       const buffer = await Packer.toBuffer(doc);
-      saveAs(new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }),
+      await saveBlob(new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }),
         `Assessment_${genes.join('_')}_${diseaseName.replace(/\s+/g,'_').slice(0,30)}.docx`);
-    } catch (e: any) { console.error('DOCX export failed:', e); }
+    } catch (e: any) { logDev('DOCX export failed:', e); }
     finally { setDlLoading(false); }
   };
 
@@ -3251,11 +3262,11 @@ const App = () => {
         body: JSON.stringify({ pages }),
       });
       const data = await res.json();
-      console.log(`[Wiki] Auto-saved ${data.saved?.length ?? 0} pages for "${disease.name}"`);
+      if (!isProduction) console.log(`[Wiki] Auto-saved ${data.saved?.length ?? 0} pages for "${disease.name}"`);
       // Mark all as saved
       setWikiSavedGenes(new Set(targets.map(t => t.symbol)));
     } catch (err) {
-      console.warn('[Wiki] Auto-save failed:', err);
+      warnDev('[Wiki] Auto-save failed:', err);
     }
   };
 
@@ -3279,7 +3290,7 @@ const App = () => {
       setWikiSavedGenes(prev => new Set(prev).add(target.symbol));
       setWikiToast({ symbol: target.symbol, ok: true });
     } catch (err) {
-      console.error('[Wiki] Save failed:', err);
+      logDev('[Wiki] Save failed:', err);
       setWikiToast({ symbol: target.symbol, ok: false });
     } finally {
       setWikiSaving(null);
@@ -3493,7 +3504,7 @@ const App = () => {
           targets: prev.targets.map(t => t.symbol === gene.symbol ? { ...t, drillDown: dd } : t)
         }));
       } catch (err) {
-        console.error("Failed to fetch velocity for added gene:", err);
+        logDev("Failed to fetch velocity for added gene:", err);
       }
     }
   };
@@ -3533,7 +3544,7 @@ const App = () => {
       performRWR(researchState.targets, newResults.map(r => r.gene));
       
     } catch (err) {
-      console.error("Literature pagination error:", err);
+      logDev("Literature pagination error:", err);
     } finally {
       setLoading(false);
     }
@@ -3640,7 +3651,7 @@ Return ONLY valid JSON.
           } : t)
         }));
       } catch (e) {
-        console.error("Failed to load AI summary", e);
+        logDev("Failed to load AI summary", e);
       } finally {
         setAiSummaryLoading(null);
       }
@@ -3750,16 +3761,16 @@ Return ONLY valid JSON.
     return { headers, rows };
   };
 
-  const exportToCsv = () => {
+  const exportToCsv = async () => {
     if (!displayTargets.length) { alert("No data to export."); return; }
     const { headers, rows } = getExportRows();
     const escape = (s: string) => `"${s.replace(/"/g, '""')}"`;
     const csv = [headers.map(escape).join(','), ...rows.map(r => r.map(escape).join(','))].join('\n');
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-    saveAs(blob, `Target_Prioritization_${(researchState.activeDisease?.name || 'Unknown').replace(/\s+/g, '_')}.csv`);
+    await saveBlob(blob, `Target_Prioritization_${(researchState.activeDisease?.name || 'Unknown').replace(/\s+/g, '_')}.csv`);
   };
 
-  const exportCombinedCsv = () => {
+  const exportCombinedCsv = async () => {
     const disease = researchState.activeDisease?.name || 'Unknown';
     const escape = (s: string) => `"${s.replace(/"/g, '""')}"`;
     const visibleCols = TABLE_COLUMNS.filter(c => visibleColumns.includes(c.key));
@@ -3881,7 +3892,7 @@ Return ONLY valid JSON.
       : otRows;
     const csv = [headers.map(escape).join(','), ...allRows.map(r => r.map(escape).join(','))].join('\n');
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-    saveAs(blob, `Combined_OT_Literature_${disease.replace(/\s+/g, '_')}.csv`);
+    await saveBlob(blob, `Combined_OT_Literature_${disease.replace(/\s+/g, '_')}.csv`);
   };
 
   // ── Druggability CSV with ChEMBL (user-chosen gene count, batched + throttled) ──
@@ -3967,9 +3978,9 @@ Return ONLY valid JSON.
       ];
       const csv = [headers.map(esc).join(','), ...rows.map(r => r.map(esc).join(','))].join('\n');
       const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-      saveAs(blob, `Druggability_Report_${disease.replace(/\s+/g, '_')}_top${genes.length}.csv`);
+      await saveBlob(blob, `Druggability_Report_${disease.replace(/\s+/g, '_')}_top${genes.length}.csv`);
     } catch (e) {
-      console.error('ChEMBL export failed:', e);
+      logDev('ChEMBL export failed:', e);
     } finally {
       setIsExporting(false);
       setChemblProgress(null);
@@ -3983,6 +3994,7 @@ Return ONLY valid JSON.
     }
     setIsExporting(true);
     try {
+      const { Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell, WidthType, AlignmentType, BorderStyle, ShadingType } = await import('docx');
       const diseaseName = researchState.activeDisease?.name || 'Unknown Disease';
       const { headers, rows } = getExportRows();
 
@@ -4034,9 +4046,9 @@ Return ONLY valid JSON.
       });
 
       const blob = await Packer.toBlob(doc);
-      saveAs(blob, `Target_Prioritization_${diseaseName.replace(/\s+/g, '_')}.docx`);
+      await saveBlob(blob, `Target_Prioritization_${diseaseName.replace(/\s+/g, '_')}.docx`);
     } catch (err) {
-      console.error("DOCX Export Error:", err);
+      logDev("DOCX Export Error:", err);
       alert(`Export error: ${err}`);
     } finally {
       setIsExporting(false);
@@ -4283,7 +4295,7 @@ Return ONLY valid JSON.
           const data = await api.getPubTatorLiterature(researchState.activeDisease!.name);
           setResearchState(prev => ({ ...prev, pubtatorResults: data.results, pubtatorGenePool: data.pool, isFetchingPubTator: false }));
         } catch (e) {
-          console.error("PubTator fetch failed:", e);
+          logDev("PubTator fetch failed:", e);
           setResearchState(prev => ({ ...prev, isFetchingPubTator: false }));
         }
       };
@@ -4425,7 +4437,7 @@ Return ONLY valid JSON.
       
       return genes;
     } catch (e) {
-      console.error("RWR Pipeline failed:", e);
+      logDev("RWR Pipeline failed:", e);
       setResearchState(prev => ({ ...prev, rwrLoading: false, rwrStatus: 'Network analysis failed' }));
       return genes;
     }
