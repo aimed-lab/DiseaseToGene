@@ -90,6 +90,7 @@ import {
 
 import PaperExtractor from './PaperExtractor';
 import DruggabilityPanel from './DruggabilityPanel';
+import { getChEMBLDruggability } from './chemblService';
 import { supabase, fetchGlobalWeights, saveGlobalWeights, fetchUserProfile, updateUserProfile } from './supabase';
 import {
   Target,
@@ -1263,6 +1264,13 @@ const ProfileDropdown = ({
 // =============================================================================
 // AssessmentView — per-gene evidence cards using ranked-list data + clinical/lit
 // =============================================================================
+const ASSESS_CHEMBL_COLORS: Record<string, string> = {
+  'Clinically Validated':    '#16a34a',
+  'In Clinical Development':  '#2563eb',
+  'Preclinical Only':         '#9333ea',
+  'No Drug Data Found':       '#6b7280',
+};
+
 const ScoreChip = ({ val, label, color, isDark }: { val: number; label: string; color: string; isDark: boolean }) => (
   <div className={`flex flex-col items-center px-2.5 py-2 rounded-xl border ${isDark ? 'border-slate-800 bg-slate-900/40' : 'border-slate-200 bg-white'}`}>
     <span className={`text-[15px] font-black ${color}`}>{val.toFixed(2)}</span>
@@ -1619,6 +1627,38 @@ Be specific, cite the numbers. Do not fabricate. ~400 words.`;
                       </div>
                     )}
                   </div>
+
+                  {/* Druggability — ChEMBL (always fetched) */}
+                  {g.chembl && (
+                    <div>
+                      <p className={`text-[9px] font-black uppercase tracking-widest mb-2 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Druggability (ChEMBL)</p>
+                      {g.chembl.error ? (
+                        <p className={`text-[10px] italic ${isDark ? 'text-slate-600' : 'text-slate-400'}`}>{g.chembl.error}</p>
+                      ) : (
+                        <div className={`rounded-xl border p-3 space-y-2 ${isDark ? 'border-slate-800 bg-slate-900/30' : 'border-slate-200 bg-slate-50'}`}>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="px-2 py-0.5 rounded-full text-[9px] font-black text-white" style={{ backgroundColor: ASSESS_CHEMBL_COLORS[g.chembl.label] || '#6b7280' }}>{g.chembl.label}</span>
+                            <span className={`text-[10px] font-bold ${isDark ? 'text-slate-400' : 'text-slate-600'}`}>Score {g.chembl.druggabilityScore.toFixed(2)}</span>
+                          </div>
+                          <div className="flex items-center gap-1 flex-wrap">
+                            {([['AB','Antibody',g.chembl.modalities.antibody],['SM','Small Mol',g.chembl.modalities.smallMolecule],['PR','PROTAC',g.chembl.modalities.protac]] as const).map(([k,label,active]) => (
+                              <span key={k} className={`text-[8px] px-1.5 py-0.5 rounded font-bold ${active ? (isDark ? 'bg-emerald-500/15 text-emerald-400' : 'bg-emerald-100 text-emerald-700') : (isDark ? 'bg-slate-800 text-slate-600' : 'bg-slate-100 text-slate-400')}`}>{active ? '✓' : '✗'} {label}</span>
+                            ))}
+                          </div>
+                          <div className="grid grid-cols-2 gap-1.5">
+                            <div>
+                              <span className={`text-[8px] font-black uppercase ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Best IC50</span>
+                              <p className={`text-[12px] font-black ${isDark ? 'text-slate-200' : 'text-slate-800'}`}>{g.chembl.bestCompound?.ic50Nm != null ? `${g.chembl.bestCompound.ic50Nm.toFixed(1)} nM` : '—'}</p>
+                            </div>
+                            <div>
+                              <span className={`text-[8px] font-black uppercase ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Compounds</span>
+                              <p className={`text-[12px] font-black ${isDark ? 'text-slate-200' : 'text-slate-800'}`}>{g.chembl.totalCompounds.toLocaleString()}</p>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
 
                   {/* Pathways — ranked only */}
                   {g.foundInRankedList && g.pathways.length > 0 && (
@@ -3405,6 +3445,8 @@ const App = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   useEffect(() => { if (chatScrollRef.current) chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight; }, [messages]);
   const [isExporting, setIsExporting] = useState(false);
+  const [chemblExportOpen, setChemblExportOpen] = useState(false);
+  const [chemblProgress, setChemblProgress] = useState<{ done: number; total: number } | null>(null);
   const [focusSubPage, setFocusSubPage] = useState<'main' | 'literature' | 'clinical'>('main');
 
   useEffect(() => {
@@ -3840,6 +3882,98 @@ Return ONLY valid JSON.
     const csv = [headers.map(escape).join(','), ...allRows.map(r => r.map(escape).join(','))].join('\n');
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     saveAs(blob, `Combined_OT_Literature_${disease.replace(/\s+/g, '_')}.csv`);
+  };
+
+  // ── Druggability CSV with ChEMBL (user-chosen gene count, batched + throttled) ──
+  // Fetches the top-N disease-associated genes (paginating Open Targets as needed),
+  // then for each gene pulls fresh clinical/literature (drillDown) + ChEMBL data in
+  // small throttled batches with a live progress count. Self-contained — does not
+  // alter exportCombinedCsv or any existing export.
+  const exportTopNWithChembl = async (count: number) => {
+    setChemblExportOpen(false);
+    if (!researchState.activeDisease) return;
+    const efoId   = researchState.activeDisease.id;
+    const disease = researchState.activeDisease.name || 'Unknown';
+    const esc = (s: any) => `"${String(s).replace(/"/g, '""')}"`;
+    const num = (v?: number | null) => (v !== undefined && v !== null ? v.toFixed(4) : '—');
+
+    setIsExporting(true);
+    setChemblProgress({ done: 0, total: count });
+    try {
+      // 1) Build the gene list: reuse already-loaded targets, paginate OT for the rest
+      let genes: Target[] = [...researchState.targets];
+      const seen = new Set(genes.map(t => t.symbol.toUpperCase()));
+      let page = Math.ceil(genes.length / OT_PAGE_SIZE);
+      while (genes.length < count) {
+        const next = await api.getGenes(efoId, OT_PAGE_SIZE, page);
+        if (!next.length) break;
+        for (const g of next) {
+          if (!seen.has(g.symbol.toUpperCase())) { seen.add(g.symbol.toUpperCase()); genes.push(g); }
+        }
+        page++;
+      }
+      genes = genes.slice(0, count);
+      setChemblProgress({ done: 0, total: genes.length });
+
+      // 2) Fetch drillDown + ChEMBL per gene in throttled batches
+      const BATCH = 4;
+      let done = 0;
+      const rows: string[][] = [];
+      for (let i = 0; i < genes.length; i += BATCH) {
+        const batch = genes.slice(i, i + BATCH);
+        const results = await Promise.all(batch.map(async (t) => {
+          const dd = t.drillDown ?? await api.getDrillDownData(t.symbol, disease).catch(() => undefined);
+          const ch = await getChEMBLDruggability(t.symbol).catch(() => null);
+          return { t, dd, ch };
+        }));
+        for (const { t, dd, ch } of results) {
+          rows.push([
+            t.symbol, t.name ?? '—',
+            num(t.geneticScore), num(t.combinedExpression ?? t.expressionScore), num(t.targetScore),
+            num(t.getScore ?? t.overallScore), num(t.overallScore),
+            // Literature + clinical (same fields as the gene drill-down)
+            String(dd?.total_signals ?? '—'), String(dd?.recent_signals ?? '—'), dd?.signal_velocity ?? '—',
+            String(dd?.paper_count ?? '—'), String(dd?.recent_paper_count ?? '—'),
+            String(dd?.trial_count ?? '—'), dd?.max_phase ?? '—',
+            dd?.active_trial_present !== undefined ? String(dd.active_trial_present) : '—',
+            // ChEMBL druggability
+            ch?.label ?? '—',
+            ch ? ch.druggabilityScore.toFixed(2) : '—',
+            ch?.targetChemblId ?? '—',
+            ch ? (ch.modalities.smallMolecule ? 'Yes' : 'No') : '—',
+            ch ? (ch.modalities.antibody ? 'Yes' : 'No') : '—',
+            ch ? (ch.modalities.protac ? 'Yes' : 'No') : '—',
+            ch?.modalities.confidence ?? '—',
+            ch?.bestCompound?.ic50Nm != null ? ch.bestCompound.ic50Nm.toFixed(2) : '—',
+            String(ch?.totalCompounds ?? '—'),
+            ch ? String(ch.targetMaxPhase) : '—',
+            ch ? String(ch.targetDrugCount) : '—',
+            ch?.drugIndications?.[0]?.diseaseName ?? '—',
+          ]);
+          done++;
+          setChemblProgress({ done, total: genes.length });
+        }
+      }
+
+      const headers = [
+        'Gene', 'Gene Name',
+        'Genetic Score', 'Expression Score', 'Target Score', 'GET Score', 'Overall Score',
+        'Lit Total (PubMed)', 'Lit Recent 3y', 'Lit Velocity', 'EPMC Total Papers', 'EPMC Recent 3y',
+        'CT Total Trials', 'CT Max Phase', 'CT Active Trial',
+        'ChEMBL Druggability', 'ChEMBL Score', 'ChEMBL Target ID',
+        'ChEMBL Small Molecule', 'ChEMBL Antibody', 'ChEMBL PROTAC', 'ChEMBL Modality Confidence',
+        'ChEMBL Best IC50 (nM)', 'ChEMBL Total Compounds', 'ChEMBL Target Max Phase',
+        'ChEMBL Drugs On Target', 'ChEMBL Top Indication',
+      ];
+      const csv = [headers.map(esc).join(','), ...rows.map(r => r.map(esc).join(','))].join('\n');
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+      saveAs(blob, `Druggability_Report_${disease.replace(/\s+/g, '_')}_top${genes.length}.csv`);
+    } catch (e) {
+      console.error('ChEMBL export failed:', e);
+    } finally {
+      setIsExporting(false);
+      setChemblProgress(null);
+    }
   };
 
   const exportToDocx = async () => {
@@ -5028,7 +5162,7 @@ Return ONLY valid JSON.
                     {m.options && (
                       <div className="mt-3 space-y-2">
                         {m.options.map(o => (
-                          <button key={o.id} onClick={() => handleToolExecution('get_genes', { id: o.id, name: o.name }).then(res => setMessages(prev => [...prev, { role: 'assistant', content: typeof res === 'string' ? res : res.content, timestamp: new Date() }]))} className="w-full p-3 rounded-lg bg-blue-600/10 border border-blue-600/20 text-left text-[11px] font-semibold uppercase hover:bg-blue-600 hover:text-white transition-all shadow-sm">
+                          <button key={o.id} onClick={() => handleToolExecution('get_genes', { id: o.id, name: o.name }).then(res => setMessages(prev => [...prev, { role: 'assistant', content: typeof res === 'string' ? res : res.content, timestamp: new Date() }]))} className="w-full p-3 rounded-lg bg-blue-600/10 border border-blue-600/20 text-left text-[11px] font-semibold uppercase text-blue-700 dark:text-blue-300 hover:bg-blue-600 hover:text-white transition-all shadow-sm">
                             {o.name}
                           </button>
                         ))}
@@ -5040,7 +5174,7 @@ Return ONLY valid JSON.
                           <button 
                             key={idx} 
                             onClick={() => handleToolExecution('apply_filter', f).then(res => setMessages(prev => [...prev, { role: 'assistant', content: typeof res === 'string' ? res : res.content, timestamp: new Date() }]))}
-                            className="w-full p-3 rounded-lg bg-emerald-600/10 border border-emerald-600/20 text-left text-[11px] font-semibold uppercase hover:bg-emerald-600 hover:text-white transition-all shadow-sm flex items-center justify-between"
+                            className="w-full p-3 rounded-lg bg-emerald-600/10 border border-emerald-600/20 text-left text-[11px] font-semibold uppercase text-emerald-700 dark:text-emerald-300 hover:bg-emerald-600 hover:text-white transition-all shadow-sm flex items-center justify-between"
                           >
                             <span>{f.label}</span>
                             <span className="opacity-60 font-mono">{f.operator === 'gt' ? '>' : '<'} {f.threshold}</span>
@@ -5297,15 +5431,68 @@ Return ONLY valid JSON.
                                   <div className="p-1.5 rounded-md bg-emerald-50 dark:bg-emerald-900/20"><FileDown className="w-3.5 h-3.5 text-emerald-500" /></div>
                                   <span>Download CSV (OT)</span>
                                 </button>
-                                <button onClick={() => { exportCombinedCsv(); setIsExportDropdownOpen(false); }} className="w-full px-4 py-3 text-left text-[11px] font-semibold hover:bg-neutral-50 dark:hover:bg-neutral-800 flex items-center gap-3 transition-colors text-neutral-700 dark:text-neutral-300">
+                                <button onClick={() => { exportCombinedCsv(); setIsExportDropdownOpen(false); }} className="w-full px-4 py-3 text-left text-[11px] font-semibold hover:bg-neutral-50 dark:hover:bg-neutral-800 flex items-center gap-3 border-b border-neutral-100 dark:border-neutral-800 transition-colors text-neutral-700 dark:text-neutral-300">
                                   <div className="p-1.5 rounded-md bg-orange-50 dark:bg-orange-900/20"><FileDown className="w-3.5 h-3.5 text-orange-500" /></div>
                                   <span>Download Combined CSV</span>
+                                </button>
+                                <button onClick={() => { setChemblExportOpen(true); setIsExportDropdownOpen(false); }} className="w-full px-4 py-3 text-left text-[11px] font-semibold hover:bg-neutral-50 dark:hover:bg-neutral-800 flex items-center gap-3 transition-colors text-neutral-700 dark:text-neutral-300">
+                                  <div className="p-1.5 rounded-md bg-purple-50 dark:bg-purple-900/20"><FlaskConical className="w-3.5 h-3.5 text-purple-500" /></div>
+                                  <span>Druggability CSV (ChEMBL)…</span>
                                 </button>
                               </div>
                             )}
                           </div>
                         </div>
                       </div>
+
+                      {/* ChEMBL export — gene-count selector modal */}
+                      {chemblExportOpen && (
+                        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4" onClick={() => setChemblExportOpen(false)}>
+                          <div onClick={e => e.stopPropagation()} className={`w-full max-w-md rounded-2xl border shadow-2xl p-6 ${theme === 'dark' ? 'bg-[#0d1424] border-slate-800' : 'bg-white border-slate-200'}`}>
+                            <div className="flex items-center gap-2 mb-2">
+                              <FlaskConical className="w-5 h-5 text-purple-500" />
+                              <h3 className={`text-lg font-black ${theme === 'dark' ? 'text-slate-100' : 'text-slate-900'}`}>Druggability CSV Export</h3>
+                            </div>
+                            <p className={`text-[12px] leading-relaxed mb-4 ${theme === 'dark' ? 'text-slate-400' : 'text-slate-600'}`}>
+                              How many top genes to include? Each gene fetches fresh clinical, literature, and ChEMBL druggability data — more genes means more API calls and a longer wait.
+                            </p>
+                            <div className="grid grid-cols-3 gap-2 mb-4">
+                              {[50, 100, 250, 400, 500].map(n => (
+                                <button key={n} onClick={() => exportTopNWithChembl(n)}
+                                  className={`py-3 rounded-xl border text-[13px] font-black transition-all ${theme === 'dark' ? 'border-slate-700 bg-slate-900/40 text-slate-200 hover:border-purple-500 hover:bg-purple-600/15' : 'border-slate-200 bg-slate-50 text-slate-800 hover:border-purple-400 hover:bg-purple-50'}`}>
+                                  {n}
+                                </button>
+                              ))}
+                              <button onClick={() => exportTopNWithChembl(researchState.targets.length || 50)}
+                                className={`py-3 rounded-xl border text-[11px] font-bold transition-all ${theme === 'dark' ? 'border-slate-700 bg-slate-900/40 text-slate-300 hover:border-purple-500' : 'border-slate-200 bg-slate-50 text-slate-600 hover:border-purple-400'}`}>
+                                Loaded ({researchState.targets.length})
+                              </button>
+                            </div>
+                            <p className={`text-[10px] mb-3 ${theme === 'dark' ? 'text-slate-600' : 'text-slate-400'}`}>
+                              Estimate: ~0.5–1s per gene. 500 genes ≈ 5–8 min. You can keep using other tabs while it runs.
+                            </p>
+                            <button onClick={() => setChemblExportOpen(false)} className={`w-full py-2 rounded-xl text-[12px] font-bold ${theme === 'dark' ? 'bg-slate-800 text-slate-300 hover:bg-slate-700' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>Cancel</button>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* ChEMBL export — progress overlay */}
+                      {chemblProgress && (
+                        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+                          <div className={`w-full max-w-sm rounded-2xl border shadow-2xl p-6 text-center ${theme === 'dark' ? 'bg-[#0d1424] border-slate-800' : 'bg-white border-slate-200'}`}>
+                            <Loader2 className="w-8 h-8 animate-spin text-purple-500 mx-auto mb-4" />
+                            <p className={`text-[13px] font-bold mb-1 ${theme === 'dark' ? 'text-slate-200' : 'text-slate-800'}`}>Building druggability report…</p>
+                            <p className={`text-[11px] mb-4 ${theme === 'dark' ? 'text-slate-500' : 'text-slate-500'}`}>
+                              {chemblProgress.done} / {chemblProgress.total} genes
+                            </p>
+                            <div className={`w-full h-2 rounded-full overflow-hidden ${theme === 'dark' ? 'bg-slate-800' : 'bg-slate-200'}`}>
+                              <div className="h-full bg-purple-500 transition-all duration-300" style={{ width: `${chemblProgress.total ? (chemblProgress.done / chemblProgress.total) * 100 : 0}%` }} />
+                            </div>
+                            <p className={`text-[9px] mt-3 ${theme === 'dark' ? 'text-slate-600' : 'text-slate-400'}`}>Fetching ClinicalTrials · PubMed · ChEMBL per gene</p>
+                          </div>
+                        </div>
+                      )}
+
                       <div className="flex-1 overflow-auto relative">
                         {/* col(key) helper — true if that column is toggled on; sortTh — clickable sort header */}
                         {(() => {

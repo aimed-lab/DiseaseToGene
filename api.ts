@@ -1,4 +1,5 @@
 import { Target, DrugInfo, DiseaseInfo, EnrichmentResult, PubMedStats, ClinicalSample, ExpressionRow, DrillDownData, PubTatorResult, GeneAssessmentData } from './types';
+import { getChEMBLDruggability } from './chemblService';
 // AI calls are routed through /api/ai/generate (server-side) — no API keys in browser
 
 const OPEN_TARGETS_API = 'https://api.platform.opentargets.org/api/v4/graphql';
@@ -278,28 +279,29 @@ export const api = {
 
   async getPubMedStats(symbol: string, diseaseName: string): Promise<PubMedStats> {
     const apiKeyParam = '';
-    // Clean OT ontology suffixes / clinical prefixes that return 0 results with
-    // strict [Title/Abstract] matching — mirrors the cleaning in getDrillDownData.
-    // e.g. "Alzheimer's disease biomarker measurement" → "Alzheimer disease"
+    const toolEmail = `&tool=DiseaseToTarget&email=nkurmach@uab.edu`;
+    // Use the SAME query that the gene drill-down uses (getDrillDownData), which
+    // returns correct counts. The strict [Title/Abstract] form returned 0 — the
+    // broad [Gene Name] + [pdat] form is what works.
     const cleanDisease = diseaseName
       .replace(/['"]/g, '')
-      .replace(/\b(biomarker measurement|measurement|pathology|disorder|syndrome)\b.*$/i, '')
       .replace(/^(late|early)[- ]onset\s+/i, '')
-      .replace(/^(juvenile|familial|sporadic|idiopathic)\s+/i, '')
+      .replace(/^(juvenile|familial|sporadic)\s+/i, '')
       .trim() || diseaseName;
-    const baseQuery = `("${cleanDisease}"[Title/Abstract]) AND ("${symbol}"[Title/Abstract])`;
-    // Dynamic last-3-years window instead of a hardcoded 2024–2025 range
+    const baseQuery = `${symbol}[Gene Name] AND ${cleanDisease}`;
     const currentYear = new Date().getFullYear();
-    const recentQuery = `${baseQuery} AND ("${currentYear - 2}"[Date - Publication] : "${currentYear}"[Date - Publication])`;
+    const threeYearsAgo = currentYear - 3;
+    // PubMed publication-date filter uses [pdat]
+    const recentQuery = `${baseQuery} AND ${threeYearsAgo}:${currentYear}[pdat]`;
 
     const searchLink = `https://pubmed.ncbi.nlm.nih.gov/?term=${encodeURIComponent(recentQuery)}&sort=pubdate`;
     const primarySearchLink = searchLink;
 
     try {
       const [totalData, recentData] = await Promise.all([
-        proxyFetch(`${PUBMED_API}/esearch.fcgi?db=pubmed&term=${encodeURIComponent(baseQuery)}&retmode=json${apiKeyParam}`)
+        proxyFetch(`${PUBMED_API}/esearch.fcgi?db=pubmed&term=${encodeURIComponent(baseQuery)}&retmode=json${apiKeyParam}${toolEmail}`)
           .then(r => r.json()),
-        proxyFetch(`${PUBMED_API}/esearch.fcgi?db=pubmed&term=${encodeURIComponent(recentQuery)}&retmode=json${apiKeyParam}`)
+        proxyFetch(`${PUBMED_API}/esearch.fcgi?db=pubmed&term=${encodeURIComponent(recentQuery)}&retmode=json${apiKeyParam}${toolEmail}`)
           .then(r => r.json())
       ]);
 
@@ -310,7 +312,7 @@ export const api = {
       let topPapers: { title: string; id: string }[] = [];
       if (recentIds) {
         const summaryData = await proxyFetch(
-          `${PUBMED_API}/esummary.fcgi?db=pubmed&id=${recentIds}&retmode=json${apiKeyParam}`
+          `${PUBMED_API}/esummary.fcgi?db=pubmed&id=${recentIds}&retmode=json${apiKeyParam}${toolEmail}`
         ).then(r => r.json());
 
         topPapers = (summaryData.result.uids ?? [])
@@ -835,16 +837,18 @@ export const api = {
         if (existingTarget.drillDown) blank.drillDown = existingTarget.drillDown as typeof blank.drillDown;
       }
 
-      // ── Always fetch fresh clinical + literature data in parallel ──────────
-      const [drillDown, pubmed] = await Promise.all([
+      // ── Always fetch fresh clinical + literature + druggability in parallel ──
+      const [drillDown, pubmed, chembl] = await Promise.all([
         this.getDrillDownData(symbol, diseaseName).catch(() => blank.drillDown),
         this.getPubMedStats(symbol, diseaseName).catch(() => blank.pubmed),
+        getChEMBLDruggability(symbol).catch(() => null),
       ]);
 
       blank.drillDown = drillDown || blank.drillDown;
       blank.pubmed    = pubmed
         ? { total: pubmed.total ?? 0, recent: pubmed.recent ?? 0, topPapers: pubmed.topPapers ?? [] }
         : blank.pubmed;
+      blank.chembl    = chembl;
 
     } catch (err: any) {
       blank.error = err?.message || 'Unknown error';

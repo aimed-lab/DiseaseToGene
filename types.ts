@@ -229,6 +229,8 @@ export interface GeneAssessmentData {
   // Clinical + literature — always fetched fresh
   drillDown: DrillDownData;
   pubmed: { total: number; recent: number; topPapers: { title: string; id: string }[] };
+  // ChEMBL druggability — always fetched fresh (see chemblService)
+  chembl?: import('./chemblService').ChEMBLDruggability | null;
   // Meta
   foundInRankedList: boolean;
   error?: string;
