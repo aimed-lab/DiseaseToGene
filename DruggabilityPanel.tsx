@@ -14,6 +14,11 @@ const LABEL_COLORS: Record<string, string> = {
   'Uncharted':         '#6b7280',   // gray
 };
 
+// How thoroughly the target has been chemically characterized in ChEMBL.
+//  >100 → heavily studied · 10–100 → moderate · <10 → sparse
+const compoundTier = (n: number): string =>
+  n > 100 ? 'heavily studied' : n >= 10 ? 'moderate' : n > 0 ? 'sparse' : '';
+
 export const DruggabilityPanel: React.FC<Props> = ({ geneSymbol, currentDisease = '', theme = 'light' }) => {
   const [data, setData] = useState<ChEMBLDruggability | null>(null);
   const [loading, setLoading] = useState(true);
@@ -68,7 +73,10 @@ export const DruggabilityPanel: React.FC<Props> = ({ geneSymbol, currentDisease 
         <ModalityTag active={data.modalities.antibody} label="Antibody" />
         <ModalityTag active={data.modalities.smallMolecule} label="Small Molecule" />
         <ModalityTag active={data.modalities.protac} label="PROTAC" />
-        <span className="confidence-note">
+        <span
+          className="confidence-note"
+          title="Modalities are predicted from the target's cellular location (Gene Ontology) data — not experimentally confirmed."
+        >
           Confidence: {data.modalities.confidence}
         </span>
       </div>
@@ -82,7 +90,12 @@ export const DruggabilityPanel: React.FC<Props> = ({ geneSymbol, currentDisease 
           </div>
           <div className="stat">
             <span className="stat-label">Total compounds</span>
-            <span className="stat-value">{data.totalCompounds}</span>
+            <span className="stat-value">
+              {data.totalCompounds}
+              <span style={{ fontSize: 11, fontWeight: 500, color: '#9ca3af', marginLeft: 6 }}>
+                {compoundTier(data.totalCompounds)}
+              </span>
+            </span>
           </div>
           {data.bestCompound.documentYear && (
             <div className="stat">

@@ -41,6 +41,8 @@ export interface ChEMBLDruggability {
   bestCompound: ChEMBLCompound | null;
   totalCompounds: number;
   drugIndications: ChEMBLDrugIndication[];
+  targetMaxPhase: number;          // highest trial phase of ANY drug acting on this target (from /mechanism)
+  targetDrugCount: number;         // number of known drugs/mechanisms against this target
   druggabilityScore: number;       // 0.0 to 1.0
   label: 'Known Drug Target' | 'Being Pursued' | 'Novel' | 'Uncharted';
   error: string | null;
@@ -205,19 +207,42 @@ export async function getMoleculeDetails(moleculeChemblId: string): Promise<{
   }
 }
 
+// ─── Target-level drug status (fixes the "best-IC50-only" label bug) ──────────
+// The /drug_indication endpoint cannot be filtered by target (the param is
+// silently ignored and returns the entire table). The correct ChEMBL endpoint
+// for "all drugs against a target" is /mechanism, whose records carry max_phase.
+// This gives the highest trial phase reached by ANY drug acting on the target,
+// so heavily-drugged targets (ACE, PCSK9, EGFR) are labeled correctly even when
+// the approved drug is not the single most-potent research compound.
+async function getTargetDrugStatus(targetChemblId: string): Promise<{ maxPhase: number; drugCount: number }> {
+  try {
+    const url = `${CHEMBL_BASE}/mechanism?target_chembl_id=${targetChemblId}&format=json&limit=100`;
+    const res = await proxyGet(url);
+    if (!res.ok) return { maxPhase: 0, drugCount: 0 };
+    const data = await res.json();
+    const mechanisms: any[] = data.mechanisms || [];
+    let maxPhase = 0;
+    for (const m of mechanisms) {
+      const p = typeof m.max_phase === 'number' ? m.max_phase : parseFloat(m.max_phase) || 0;
+      if (p > maxPhase) maxPhase = p;
+    }
+    return { maxPhase, drugCount: mechanisms.length };
+  } catch {
+    return { maxPhase: 0, drugCount: 0 };
+  }
+}
+
 // ─── Scoring + Label logic ────────────────────────────────────────────────────
 
 function computeLabel(
-  drugIndications: ChEMBLDrugIndication[],
+  targetMaxPhase: number,
   totalCompounds: number,
   bestCompound: ChEMBLCompound | null
 ): { label: ChEMBLDruggability['label']; score: number } {
-  const hasApprovedDrug = drugIndications.some(d => d.maxPhase >= 4);
-  const hasClinicalDrug = drugIndications.some(d => d.maxPhase >= 1);
   const hasPotentCompound = bestCompound?.ic50Nm !== null && bestCompound!.ic50Nm! < 100;
 
-  if (hasApprovedDrug) return { label: 'Known Drug Target', score: 1.0 };
-  if (hasClinicalDrug) return { label: 'Being Pursued', score: 0.85 };
+  if (targetMaxPhase >= 4) return { label: 'Known Drug Target', score: 1.0 };
+  if (targetMaxPhase >= 1) return { label: 'Being Pursued', score: 0.85 };
   if (totalCompounds > 0 && hasPotentCompound) return { label: 'Novel', score: 0.65 };
   if (totalCompounds > 0) return { label: 'Novel', score: 0.5 };
   return { label: 'Uncharted', score: 0.0 };
@@ -233,6 +258,8 @@ export async function getChEMBLDruggability(geneSymbol: string): Promise<ChEMBLD
     bestCompound: null,
     totalCompounds: 0,
     drugIndications: [],
+    targetMaxPhase: 0,
+    targetDrugCount: 0,
     druggabilityScore: 0,
     label: 'Uncharted',
     error: null,
@@ -246,23 +273,28 @@ export async function getChEMBLDruggability(geneSymbol: string): Promise<ChEMBLD
     }
     base.targetChemblId = targetChemblId;
 
-    // Steps 2, 3 in parallel
-    const [modalities, compoundResult] = await Promise.all([
+    // Steps 2, 3, and target-level drug status in parallel
+    const [modalities, compoundResult, drugStatus] = await Promise.all([
       getModalities(targetChemblId),
       getCompounds(targetChemblId),
+      getTargetDrugStatus(targetChemblId),
     ]);
 
     base.modalities = modalities;
     base.bestCompound = compoundResult.best;
     base.totalCompounds = compoundResult.total;
+    base.targetMaxPhase = drugStatus.maxPhase;
+    base.targetDrugCount = drugStatus.drugCount;
 
-    // Step 4 — drug indications from best compound
+    // Step 4 — molecule-level indications from the best compound, for the
+    // "Tested in diseases" display rows (kept as-is, per the spec)
     if (compoundResult.best) {
       base.drugIndications = await getDrugIndications(compoundResult.best.moleculeChemblId);
     }
 
-    // Score + label
-    const { label, score } = computeLabel(base.drugIndications, base.totalCompounds, base.bestCompound);
+    // Score + label now come from target-level drug status (any drug on the
+    // target), not just the single best-IC50 compound's indications
+    const { label, score } = computeLabel(drugStatus.maxPhase, base.totalCompounds, base.bestCompound);
     base.label = label;
     base.druggabilityScore = score;
 
