@@ -673,9 +673,12 @@ setupRoutes();
 async function startServer() {
   const PORT = parseInt(process.env.PORT || '3000', 10);
 
-  // Fix #12: guard with VERCEL too in case NODE_ENV isn't explicitly set
+  // Fix #12: guard with VERCEL too in case NODE_ENV isn't explicitly set.
+  // The specifier is held in a variable so bundlers (Vercel/esbuild, nft) do NOT
+  // statically pull vite — a devDependency — into the serverless function.
   if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
-    const { createServer: createViteServer } = await import("vite");
+    const vitePkg = 'vite';
+    const { createServer: createViteServer } = await import(vitePkg);
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
@@ -690,4 +693,6 @@ async function startServer() {
   }
 }
 
+// On Vercel, the serverless entry (api/index.ts) imports `app` directly; the
+// dev/standalone bootstrap below is skipped there (guards above no-op listen).
 startServer();

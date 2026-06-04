@@ -4,7 +4,11 @@ import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 
 export default defineConfig(({ mode }) => {
-    const env = loadEnv(mode, '.', '');
+    // loadEnv reads .env files (local dev). On Vercel/CI there is no .env file —
+    // build-time vars live in process.env. Merge both so SUPABASE_* resolve in
+    // local dev AND production deploys.
+    const fileEnv = loadEnv(mode, '.', '');
+    const env = { ...fileEnv, ...process.env } as Record<string, string | undefined>;
     return {
       server: {
         port: 3000,
