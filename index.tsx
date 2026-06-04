@@ -2546,9 +2546,6 @@ const TargetDetailView = ({
   onToggleUsefulness,
   onNavigateSubPage,
   onSave,
-  onSaveToWiki,
-  wikiSaved,
-  wikiSaving,
   onBack,
   onLoadAiSummary,
   aiSummaryLoading,
@@ -2561,9 +2558,6 @@ const TargetDetailView = ({
   onToggleUsefulness: (symbol: string, source: string, status: 'useful' | 'not-useful' | 'pinned' | null) => void;
   onNavigateSubPage: (page: 'main' | 'literature' | 'clinical') => void;
   onSave?: () => void;
-  onSaveToWiki?: () => void;
-  wikiSaved?: boolean;
-  wikiSaving?: boolean;
   onBack: () => void;
   onLoadAiSummary: (symbol: string) => void;
   aiSummaryLoading: boolean;
@@ -2896,24 +2890,6 @@ const TargetDetailView = ({
           </div>
         </div>
         <div className="flex items-center gap-3">
-          {/* Save to Obsidian Wiki button */}
-          <button
-            onClick={onSaveToWiki}
-            disabled={wikiSaving}
-            title={wikiSaved ? 'Update Wiki page' : 'Save to Obsidian Wiki'}
-            className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-[10px] font-bold uppercase tracking-wider transition-all ${
-              wikiSaved
-                ? 'bg-purple-50 border-purple-300 text-purple-700 dark:bg-purple-900/20 dark:border-purple-700 dark:text-purple-300 hover:bg-purple-100 dark:hover:bg-purple-900/40'
-                : 'bg-neutral-50 border-neutral-200 text-neutral-500 dark:bg-neutral-800 dark:border-neutral-700 dark:text-neutral-400 hover:border-purple-400 hover:text-purple-600 dark:hover:border-purple-600 dark:hover:text-purple-400'
-            } disabled:opacity-50`}
-          >
-            {wikiSaving ? (
-              <Loader2 className="w-3 h-3 animate-spin" />
-            ) : (
-              <BookOpen className="w-3 h-3" />
-            )}
-            {wikiSaving ? 'Saving…' : wikiSaved ? '✓ Wiki Saved' : 'Save to Wiki'}
-          </button>
           <UsefulnessControls
             symbol={target.symbol}
             source="overall"
@@ -3182,122 +3158,6 @@ const App = () => {
   const [sidebarNav, setSidebarNav] = useState<string>('cohort');
   const OT_PAGE_SIZE = 50;
 
-  const [wikiSavedGenes, setWikiSavedGenes] = useState<Set<string>>(new Set());
-  const [wikiSaving, setWikiSaving] = useState<string | null>(null); // symbol currently saving
-  const [wikiToast, setWikiToast] = useState<{ symbol: string; ok: boolean } | null>(null);
-
-  // Build the payload for a single gene — shared by manual and auto-save
-  const buildWikiPayload = (
-    target: Target,
-    diseaseId: string,
-    diseaseName: string,
-    enrichment: typeof researchState.enrichment,
-    allTargets: Target[]
-  ) => {
-    const dd = target.drillDown;
-    const enrichedPathways = enrichment
-      .filter(e => e.genes.some(g => g.toUpperCase() === target.symbol.toUpperCase()))
-      .sort((a, b) => a.adjustedPValue - b.adjustedPValue)
-      .slice(0, 5)
-      .map(e => ({ term: e.term, source: e.source, adjP: e.adjustedPValue.toExponential(2) }));
-
-    const enrichedTerms = new Set(enrichedPathways.map(e => e.term));
-    const relatedGenes = allTargets
-      .filter(t => t.symbol !== target.symbol)
-      .filter(t => enrichment.some(
-        e => enrichedTerms.has(e.term) && e.genes.some(g => g.toUpperCase() === t.symbol.toUpperCase())
-      ))
-      .sort((a, b) => (b.getScore ?? 0) - (a.getScore ?? 0))
-      .slice(0, 6)
-      .map(t => t.symbol);
-
-    const litVelocityNum = dd?.signal_velocity
-      ? parseFloat(dd.signal_velocity.replace('%', ''))
-      : undefined;
-
-    return {
-      diseaseId,
-      diseaseName,
-      gene: { symbol: target.symbol, name: target.name, id: target.id },
-      evidence: {
-        getScore: target.getScore,
-        geneticScore: target.geneticScore,
-        expressionScore: target.combinedExpression,
-        targetScore: target.targetScore,
-        litVelocity: dd?.signal_velocity,
-        litVelocityNum,
-        litTotal: dd?.total_signals,
-        litRecent: dd?.recent_signals,
-        ctTrials: dd?.trial_count,
-        maxPhase: dd?.max_phase,
-        ctActive: dd?.active_trial_present,
-        epmcTotal: dd?.paper_count,
-        epmcRecent: dd?.recent_paper_count,
-        epmcVelocity: dd?.epmc_velocity,
-        tauTissue: target.tauTissue,
-        tauSingleCell: target.tauSingleCell,
-        bimodalityScore: target.bimodalityScores?._max_score,
-        bimodalityTissue: target.bimodalityScores?._max_tissue,
-        pathways: target.pathways?.slice(0, 5).map(p => p.label) ?? [],
-        enrichedPathways,
-      },
-      aiSummary: dd?.clinical_summary ?? '',
-      relatedGenes,
-    };
-  };
-
-  // Silent batch auto-save — fires after disease loads, no toast
-  const autoSaveAllToWiki = async (
-    targets: Target[],
-    disease: { id: string; name: string },
-    enrichment: typeof researchState.enrichment
-  ) => {
-    try {
-      const pages = targets.map(t =>
-        buildWikiPayload(t, disease.id, disease.name, enrichment, targets)
-      );
-      const res = await fetch('/api/wiki/save-batch', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pages }),
-      });
-      const data = await res.json();
-      if (!isProduction) console.log(`[Wiki] Auto-saved ${data.saved?.length ?? 0} pages for "${disease.name}"`);
-      // Mark all as saved
-      setWikiSavedGenes(new Set(targets.map(t => t.symbol)));
-    } catch (err) {
-      warnDev('[Wiki] Auto-save failed:', err);
-    }
-  };
-
-  const handleSaveToWiki = async (target: Target) => {
-    if (!researchState.activeDisease) return;
-    setWikiSaving(target.symbol);
-    try {
-      const payload = buildWikiPayload(
-        target,
-        researchState.activeDisease.id,
-        researchState.activeDisease.name,
-        researchState.enrichment,
-        researchState.targets
-      );
-      const res = await fetch('/api/wiki/save', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      if (!res.ok) throw new Error(await res.text());
-      setWikiSavedGenes(prev => new Set(prev).add(target.symbol));
-      setWikiToast({ symbol: target.symbol, ok: true });
-    } catch (err) {
-      logDev('[Wiki] Save failed:', err);
-      setWikiToast({ symbol: target.symbol, ok: false });
-    } finally {
-      setWikiSaving(null);
-      setTimeout(() => setWikiToast(null), 3000);
-    }
-  };
-
   const [loading, setLoading] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState("Mapping Intelligence...");
 
@@ -3456,8 +3316,8 @@ const App = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   useEffect(() => { if (chatScrollRef.current) chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight; }, [messages]);
   const [isExporting, setIsExporting] = useState(false);
-  const [chemblExportOpen, setChemblExportOpen] = useState(false);
-  const [chemblProgress, setChemblProgress] = useState<{ done: number; total: number } | null>(null);
+  const [allMetricsExportOpen, setAllMetricsExportOpen] = useState(false);
+  const [allMetricsProgress, setAllMetricsProgress] = useState<{ done: number; total: number; stage: string; startedAt: number } | null>(null);
   const [focusSubPage, setFocusSubPage] = useState<'main' | 'literature' | 'clinical'>('main');
 
   useEffect(() => {
@@ -3716,36 +3576,6 @@ Return ONLY valid JSON.
     });
   };
 
-  const exportToNotion = async () => {
-    if (!researchState.targets.length) {
-      alert("No data to export. Please search for a disease first.");
-      return;
-    }
-    setIsExporting(true);
-    try {
-      const response = await fetch('/api/export/notion', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          targets: researchState.targets,
-          disease: researchState.activeDisease
-        })
-      });
-      const data = await response.json();
-      if (data.success && data.count > 0) {
-        alert(`Successfully exported ${data.count} targets to Notion!`);
-      } else {
-        const errorMsg = data.error || 'Unknown error';
-        const details = data.details ? `\n\nDetails:\n${data.details.join('\n')}` : '';
-        alert(`Export failed: ${errorMsg}${details}`);
-      }
-    } catch (err) {
-      alert(`Export error: ${err}`);
-    } finally {
-      setIsExporting(false);
-    }
-  };
-
   // All columns available for export (fixed + optional visible ones)
   const getExportRows = () => {
     const visibleCols = TABLE_COLUMNS.filter(c => visibleColumns.includes(c.key));
@@ -3754,7 +3584,7 @@ Return ONLY valid JSON.
       const fixed = [t.symbol, t.name];
       const scores = visibleCols.map(c => {
         const v = (t as any)[c.key];
-        return v !== undefined && v !== null ? (typeof v === 'number' ? v.toFixed(4) : String(v)) : '—';
+        return v !== undefined && v !== null ? (typeof v === 'number' ? v.toFixed(4) : String(v)) : '';
       });
       return [...fixed, ...scores];
     });
@@ -3770,223 +3600,174 @@ Return ONLY valid JSON.
     await saveBlob(blob, `Target_Prioritization_${(researchState.activeDisease?.name || 'Unknown').replace(/\s+/g, '_')}.csv`);
   };
 
-  const exportCombinedCsv = async () => {
-    const disease = researchState.activeDisease?.name || 'Unknown';
-    const escape = (s: string) => `"${s.replace(/"/g, '""')}"`;
-    const visibleCols = TABLE_COLUMNS.filter(c => visibleColumns.includes(c.key));
+  const exportAllMetricsCsv = async (selection: 'loaded' | 100 | 500) => {
+    setAllMetricsExportOpen(false);
+    if (!researchState.activeDisease) {
+      alert("No disease loaded. Please search for a disease first.");
+      return;
+    }
 
-    // Helper: for a given gene symbol, find which enriched pathways it appears in
-    const getEnrichedPathways = (symbol: string) => {
-      const sym = symbol.toUpperCase();
-      return researchState.enrichment
-        .filter(e => e.genes.some(g => g.toUpperCase() === sym))
-        .sort((a, b) => a.adjustedPValue - b.adjustedPValue);
-    };
-
-    const headers = [
-      'Source', 'Gene', 'Gene Name',
-      // Score columns (user-selected)
-      ...visibleCols.map(c => c.label),
-      // Literature (PubMed)
-      'Lit Total Papers', 'Lit Recent (3y)', 'Lit Velocity', 'Lit Top Paper',
-      // Europe PMC
-      'EPMC Total Papers', 'EPMC Recent (3y)', 'EPMC Velocity', 'EPMC Top Paper', 'EPMC Journal', 'EPMC Year',
-      // Clinical Trials
-      'CT Total Trials', 'CT Max Phase', 'CT Interventional', 'CT Active Trial', 'CT Global Trials',
-      // Pathway — OT annotations
-      'OT Pathway 1', 'OT Pathway 2', 'OT Pathway 3',
-      // Pathway — Enrichr enrichment membership
-      'Enriched Pathway 1', 'Enriched Pathway 1 (adj.p)', 'Enriched Pathway 1 Source',
-      'Enriched Pathway 2', 'Enriched Pathway 2 (adj.p)', 'Enriched Pathway 2 Source',
-      'Enriched Pathway 3', 'Enriched Pathway 3 (adj.p)', 'Enriched Pathway 3 Source',
-      // Bimodality
-      'Bimodality Max Score', 'Bimodality Max Tissue',
-      // Tissue specificity (TAU)
-      'TAU Tissue', 'TAU Single Cell',
-    ];
-
-    const buildEvidenceCols = (t: Target, litTotal: string, litRecent: string, litVelocity: string, litTopPaper: string) => {
-      const dd = t.drillDown;
-      const ep = getEnrichedPathways(t.symbol);
-
-      return [
-        // Literature
-        litTotal, litRecent, litVelocity, litTopPaper,
-        // Europe PMC
-        String(dd?.paper_count ?? '—'),
-        String(dd?.recent_paper_count ?? '—'),
-        dd?.epmc_velocity ?? '—',
-        dd?.epmc_top_paper ?? '—',
-        dd?.epmc_journal ?? '—',
-        dd?.epmc_year ?? '—',
-        // Clinical Trials
-        String(dd?.trial_count ?? '—'),
-        dd?.max_phase ?? '—',
-        String(dd?.interventional_count ?? '—'),
-        dd?.active_trial_present !== undefined ? String(dd.active_trial_present) : '—',
-        String(dd?.total_trials_globally ?? '—'),
-        // OT pathways (top 3 labels)
-        t.pathways?.[0]?.label ?? '—',
-        t.pathways?.[1]?.label ?? '—',
-        t.pathways?.[2]?.label ?? '—',
-        // Enriched pathways (top 3 with adj.p and source)
-        ep[0]?.term ?? '—', ep[0] ? ep[0].adjustedPValue.toExponential(2) : '—', ep[0]?.source ?? '—',
-        ep[1]?.term ?? '—', ep[1] ? ep[1].adjustedPValue.toExponential(2) : '—', ep[1]?.source ?? '—',
-        ep[2]?.term ?? '—', ep[2] ? ep[2].adjustedPValue.toExponential(2) : '—', ep[2]?.source ?? '—',
-        // Bimodality
-        t.bimodalityScores?._max_score !== undefined ? t.bimodalityScores._max_score.toFixed(4) : '—',
-        t.bimodalityScores?._max_tissue !== undefined ? String(t.bimodalityScores._max_tissue) : '—',
-        // TAU
-        t.tauTissue !== undefined ? t.tauTissue.toFixed(4) : '—',
-        t.tauSingleCell !== undefined ? t.tauSingleCell.toFixed(4) : '—',
-      ];
-    };
-
-    const otRows = displayTargets.map(t => {
-      const scores = visibleCols.map(c => {
-        const v = (t as any)[c.key];
-        return v !== undefined && v !== null ? (typeof v === 'number' ? v.toFixed(4) : String(v)) : '—';
-      });
-      const dd = t.drillDown;
-      return [
-        'OT', t.symbol, t.name,
-        ...scores,
-        ...buildEvidenceCols(
-          t,
-          String(dd?.total_signals ?? '—'),
-          String(dd?.recent_signals ?? '—'),
-          dd?.signal_velocity ?? '—',
-          dd?.top_papers?.[0]?.title ?? '—',
-        ),
-      ];
-    });
-
-    const litRows = (researchState.pubtatorResults || []).map(r => {
-      const ot = researchState.targets.find(t => t.symbol.toUpperCase() === r.gene.toUpperCase());
-      const scores = visibleCols.map(c => {
-        const v = (ot as any)?.[c.key];
-        return v !== undefined && v !== null ? (typeof v === 'number' ? v.toFixed(4) : String(v)) : '—';
-      });
-      const targetForEvidence: Target = ot ?? {
-        id: r.gene, symbol: r.gene, name: '—', overallScore: 0,
-        geneticScore: 0, expressionScore: 0, targetScore: 0, pathways: [],
-      };
-      return [
-        'LIT', r.gene, ot?.name ?? '—',
-        ...scores,
-        ...buildEvidenceCols(
-          targetForEvidence,
-          String(r.totalPapers),
-          String(r.recentPapers),
-          r.velocity.toFixed(1) + '%',
-          r.topPaper ?? '—',
-        ),
-      ];
-    });
-
-    const emptyExtra = Array(headers.length - 3).fill('');
-    const blankRow = ['', '', '', ...emptyExtra];
-    const sectionHeader = [`# Literature genes (${litRows.length})`, '', '', ...emptyExtra];
-    const allRows = litRows.length
-      ? [...otRows, blankRow, sectionHeader, ...litRows]
-      : otRows;
-    const csv = [headers.map(escape).join(','), ...allRows.map(r => r.map(escape).join(','))].join('\n');
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-    await saveBlob(blob, `Combined_OT_Literature_${disease.replace(/\s+/g, '_')}.csv`);
-  };
-
-  // ── Druggability CSV with ChEMBL (user-chosen gene count, batched + throttled) ──
-  // Fetches the top-N disease-associated genes (paginating Open Targets as needed),
-  // then for each gene pulls fresh clinical/literature (drillDown) + ChEMBL data in
-  // small throttled batches with a live progress count. Self-contained — does not
-  // alter exportCombinedCsv or any existing export.
-  const exportTopNWithChembl = async (count: number) => {
-    setChemblExportOpen(false);
-    if (!researchState.activeDisease) return;
-    const efoId   = researchState.activeDisease.id;
+    const startedAt = Date.now();
+    const requestedTotal = selection === 'loaded' ? displayTargets.length : selection;
     const disease = researchState.activeDisease.name || 'Unknown';
-    const esc = (s: any) => `"${String(s).replace(/"/g, '""')}"`;
-    const num = (v?: number | null) => (v !== undefined && v !== null ? v.toFixed(4) : '—');
+    const efoId = researchState.activeDisease.id;
+    const escape = (value: unknown) => `"${String(value ?? '').replace(/"/g, '""')}"`;
+    const cell = (value: unknown) => value === undefined || value === null ? '' : String(value);
+    const num = (value: unknown, digits = 4) => typeof value === 'number' && Number.isFinite(value) ? value.toFixed(digits) : '';
+    const bool = (value: unknown) => typeof value === 'boolean' ? (value ? 'TRUE' : 'FALSE') : '';
+    const list = (values?: { name?: string; count?: number }[]) => values?.map(v => `${v.name}${v.count !== undefined ? ` (${v.count})` : ''}`).join('; ') ?? '';
+    const json = (value: unknown) => value && typeof value === 'object' ? JSON.stringify(value) : '';
+    const updateProgress = (done: number, total: number, stage: string) => {
+      setAllMetricsProgress({ done, total, stage, startedAt });
+    };
 
     setIsExporting(true);
-    setChemblProgress({ done: 0, total: count });
-    try {
-      // 1) Build the gene list: reuse already-loaded targets, paginate OT for the rest
-      let genes: Target[] = [...researchState.targets];
-      const seen = new Set(genes.map(t => t.symbol.toUpperCase()));
-      let page = Math.ceil(genes.length / OT_PAGE_SIZE);
-      while (genes.length < count) {
-        const next = await api.getGenes(efoId, OT_PAGE_SIZE, page);
-        if (!next.length) break;
-        for (const g of next) {
-          if (!seen.has(g.symbol.toUpperCase())) { seen.add(g.symbol.toUpperCase()); genes.push(g); }
-        }
-        page++;
-      }
-      genes = genes.slice(0, count);
-      setChemblProgress({ done: 0, total: genes.length });
+    updateProgress(0, requestedTotal, 'Preparing gene list');
 
-      // 2) Fetch drillDown + ChEMBL per gene in throttled batches
-      const BATCH = 4;
-      let done = 0;
-      const rows: string[][] = [];
-      for (let i = 0; i < genes.length; i += BATCH) {
-        const batch = genes.slice(i, i + BATCH);
-        const results = await Promise.all(batch.map(async (t) => {
-          const dd = t.drillDown ?? await api.getDrillDownData(t.symbol, disease).catch(() => undefined);
-          const ch = await getChEMBLDruggability(t.symbol).catch(() => null);
-          return { t, dd, ch };
-        }));
-        for (const { t, dd, ch } of results) {
-          rows.push([
-            t.symbol, t.name ?? '—',
-            num(t.geneticScore), num(t.combinedExpression ?? t.expressionScore), num(t.targetScore),
-            num(t.getScore ?? t.overallScore), num(t.overallScore),
-            // Literature + clinical (same fields as the gene drill-down)
-            String(dd?.total_signals ?? '—'), String(dd?.recent_signals ?? '—'), dd?.signal_velocity ?? '—',
-            String(dd?.paper_count ?? '—'), String(dd?.recent_paper_count ?? '—'),
-            String(dd?.trial_count ?? '—'), dd?.max_phase ?? '—',
-            dd?.active_trial_present !== undefined ? String(dd.active_trial_present) : '—',
-            // ChEMBL druggability
-            ch?.label ?? '—',
-            ch ? ch.druggabilityScore.toFixed(2) : '—',
-            ch?.targetChemblId ?? '—',
-            ch ? (ch.modalities.smallMolecule ? 'Yes' : 'No') : '—',
-            ch ? (ch.modalities.antibody ? 'Yes' : 'No') : '—',
-            ch ? (ch.modalities.protac ? 'Yes' : 'No') : '—',
-            ch?.modalities.confidence ?? '—',
-            ch?.bestCompound?.ic50Nm != null ? ch.bestCompound.ic50Nm.toFixed(2) : '—',
-            String(ch?.totalCompounds ?? '—'),
-            ch ? String(ch.targetMaxPhase) : '—',
-            ch ? String(ch.targetDrugCount) : '—',
-            ch?.drugIndications?.[0]?.diseaseName ?? '—',
-          ]);
-          done++;
-          setChemblProgress({ done, total: genes.length });
+    try {
+      let genes: Target[] = selection === 'loaded' ? [...displayTargets] : [...researchState.targets];
+      const targetCount = Math.min(selection === 'loaded' ? genes.length : selection, 500);
+      const seen = new Set(genes.map(t => t.symbol.toUpperCase()));
+
+      if (selection !== 'loaded') {
+        let page = Math.ceil(genes.length / OT_PAGE_SIZE);
+        while (genes.length < targetCount) {
+          updateProgress(Math.min(genes.length, targetCount), targetCount, 'Fetching Open Targets genes');
+          const next = await api.getGenes(efoId, OT_PAGE_SIZE, page);
+          if (!next.length) break;
+          for (const g of next) {
+            const symbol = g.symbol.toUpperCase();
+            if (!seen.has(symbol)) {
+              seen.add(symbol);
+              genes.push(g);
+            }
+          }
+          page++;
         }
+        genes = genes.slice(0, targetCount);
       }
+
+      if (!genes.length) {
+        alert('No genes available for export.');
+        return;
+      }
+
+      updateProgress(0, genes.length, 'Scoring Open Targets metrics');
+      genes = calculatePriorityScores(genes.map(t => ({ ...t })), researchState.weights);
+
+      updateProgress(0, genes.length, 'Fetching TAU tissue specificity');
+      await api.enrichTau(genes).catch(() => undefined);
+
+      updateProgress(0, genes.length, 'Loading bimodality metrics');
+      let bimodalityLookup = bimodalityCache.current;
+      if (!bimodalityLookup) {
+        bimodalityLookup = await fetch('/bimodality.json').then(r => r.json()).catch(() => null);
+        bimodalityCache.current = bimodalityLookup;
+      }
+      if (bimodalityLookup) {
+        genes = genes.map(t => ({ ...t, bimodalityScores: t.bimodalityScores ?? bimodalityLookup?.[t.id] ?? {} }));
+      }
+
+      updateProgress(0, genes.length, 'Fetching pathway enrichment');
+      const exportEnrichment = await api.getEnrichment(genes.map(g => g.symbol)).catch(() => researchState.enrichment);
+      const enrichedByGene = (symbol: string) => {
+        const upper = symbol.toUpperCase();
+        return exportEnrichment
+          .filter(e => e.genes.some(g => g.toUpperCase() === upper))
+          .sort((a, b) => a.adjustedPValue - b.adjustedPValue);
+      };
 
       const headers = [
-        'Gene', 'Gene Name',
-        'Genetic Score', 'Expression Score', 'Target Score', 'GET Score', 'Overall Score',
-        'Lit Total (PubMed)', 'Lit Recent 3y', 'Lit Velocity', 'EPMC Total Papers', 'EPMC Recent 3y',
-        'CT Total Trials', 'CT Max Phase', 'CT Active Trial',
-        'ChEMBL Druggability', 'ChEMBL Score', 'ChEMBL Target ID',
+        'Rank', 'Source', 'Target ID', 'Gene', 'Gene Name',
+        'Open Targets Overall Score', 'GET Score', 'Genetic Score', 'Expression Score', 'Target Score', 'Literature Score', 'Priority Score', 'Final Score',
+        'RP Score', 'WINNER Score', 'WINNER Raw Score',
+        'PubTator Total Papers', 'PubTator Recent Papers', 'PubTator Velocity',
+        'PubMed Total Signals', 'PubMed Recent Signals', 'PubMed Signal Velocity', 'PubMed Top Paper', 'PubMed Top Paper ID',
+        'Europe PMC Total Papers', 'Europe PMC Recent Papers', 'Europe PMC Velocity', 'Europe PMC Latest Date', 'Europe PMC Top Paper', 'Europe PMC Journal', 'Europe PMC Year',
+        'Clinical Trials Total', 'Clinical Trials Interventional', 'Clinical Trials Max Phase', 'Clinical Trials Active Present', 'Clinical Trials Global Total',
+        'Clinical Phase Breakdown', 'Clinical Top Conditions', 'Clinical Top Drugs', 'Clinical Sponsor Breakdown', 'Clinical Flags',
+        'OT Pathway 1', 'OT Pathway 2', 'OT Pathway 3', 'OT Pathway 4', 'OT Pathway 5',
+        'Enriched Pathway 1', 'Enriched Pathway 1 Source', 'Enriched Pathway 1 Adjusted P',
+        'Enriched Pathway 2', 'Enriched Pathway 2 Source', 'Enriched Pathway 2 Adjusted P',
+        'Enriched Pathway 3', 'Enriched Pathway 3 Source', 'Enriched Pathway 3 Adjusted P',
+        'Enriched Pathway 4', 'Enriched Pathway 4 Source', 'Enriched Pathway 4 Adjusted P',
+        'Enriched Pathway 5', 'Enriched Pathway 5 Source', 'Enriched Pathway 5 Adjusted P',
+        'TAU Tissue', 'TAU Single Cell', 'Bimodality Max Score', 'Bimodality Max Tissue',
+        ...BIMODALITY_TISSUES.map(tissue => `Bimodality ${tissue}`),
+        'ChEMBL Druggability Label', 'ChEMBL Druggability Score', 'ChEMBL Target ID', 'ChEMBL Error',
         'ChEMBL Small Molecule', 'ChEMBL Antibody', 'ChEMBL PROTAC', 'ChEMBL Modality Confidence',
-        'ChEMBL Best IC50 (nM)', 'ChEMBL Total Compounds', 'ChEMBL Target Max Phase',
-        'ChEMBL Drugs On Target', 'ChEMBL Top Indication',
+        'ChEMBL Best Compound ID', 'ChEMBL Best IC50 nM', 'ChEMBL Best pChEMBL', 'ChEMBL Best Assay', 'ChEMBL Best Document Year',
+        'ChEMBL Total Compounds', 'ChEMBL Target Max Phase', 'ChEMBL Target Drug Count',
+        'ChEMBL Top Indication', 'ChEMBL Top Indication Max Phase', 'ChEMBL Top Indication Trials', 'ChEMBL All Indications',
       ];
-      const csv = [headers.map(esc).join(','), ...rows.map(r => r.map(esc).join(','))].join('\n');
+
+      const rows: string[][] = [];
+      const BATCH = 4;
+      let done = 0;
+
+      for (let i = 0; i < genes.length; i += BATCH) {
+        const batch = genes.slice(i, i + BATCH);
+        updateProgress(done, genes.length, 'Fetching drill-down and ChEMBL metrics');
+        const batchResults = await Promise.all(batch.map(async (target) => {
+          const [drillDown, chembl] = await Promise.all([
+            target.drillDown ? Promise.resolve(target.drillDown) : api.getDrillDownData(target.symbol, disease).catch(() => undefined),
+            getChEMBLDruggability(target.symbol).catch(() => null),
+          ]);
+          return { target: { ...target, drillDown }, drillDown, chembl };
+        }));
+
+        for (const { target, drillDown, chembl } of batchResults) {
+          const enriched = enrichedByGene(target.symbol);
+          const bimodality = target.bimodalityScores as Record<string, any> | undefined;
+          const topPaper = drillDown?.top_papers?.[0];
+          const indication = chembl?.drugIndications?.[0];
+          const pathway = (idx: number) => cell(target.pathways?.[idx]?.label);
+          const enrichedTriplet = (idx: number) => [
+            cell(enriched[idx]?.term),
+            cell(enriched[idx]?.source),
+            enriched[idx] ? enriched[idx].adjustedPValue.toExponential(3) : '',
+          ];
+
+          rows.push([
+            String(rows.length + 1), cell(target.source ?? 'OT'), cell(target.id), cell(target.symbol), cell(target.name),
+            num(target.overallScore), num(target.getScore), num(target.geneticScore), num(target.combinedExpression ?? target.expressionScore), num(target.targetScore), num(target.literatureScore), num(target.priorityScore), num(target.finalScore),
+            num(target.rpScore ?? researchState.rpScores?.[target.symbol]), num(target.winnerScore ?? researchState.winnerScores?.[target.symbol]), num(target.winnerRawScore ?? researchState.winnerRawScores?.[target.symbol]),
+            cell(target.pubTatorTotalPapers), cell(target.pubTatorRecentPapers), num(target.pubTatorVelocity, 2),
+            cell(drillDown?.total_signals), cell(drillDown?.recent_signals), cell(drillDown?.signal_velocity), cell(topPaper?.title), cell(topPaper?.id),
+            cell(drillDown?.paper_count), cell(drillDown?.recent_paper_count), cell(drillDown?.epmc_velocity), cell(drillDown?.latest_publication_date), cell(drillDown?.epmc_top_paper), cell(drillDown?.epmc_journal), cell(drillDown?.epmc_year),
+            cell(drillDown?.trial_count), cell(drillDown?.interventional_count), cell(drillDown?.max_phase), bool(drillDown?.active_trial_present), cell(drillDown?.total_trials_globally),
+            json(drillDown?.phase_breakdown), list(drillDown?.top_conditions), list(drillDown?.top_drugs), json(drillDown?.sponsor_breakdown), (target.clinical_flags ?? drillDown?.clinical_flags ?? []).join('; '),
+            pathway(0), pathway(1), pathway(2), pathway(3), pathway(4),
+            ...enrichedTriplet(0), ...enrichedTriplet(1), ...enrichedTriplet(2), ...enrichedTriplet(3), ...enrichedTriplet(4),
+            num(target.tauTissue), num(target.tauSingleCell), num(bimodality?._max_score), cell(bimodality?._max_tissue),
+            ...BIMODALITY_TISSUES.map(tissue => num(bimodality?.[tissue])),
+            cell(chembl?.label), num(chembl?.druggabilityScore, 3), cell(chembl?.targetChemblId), cell(chembl?.error),
+            bool(chembl?.modalities.smallMolecule), bool(chembl?.modalities.antibody), bool(chembl?.modalities.protac), cell(chembl?.modalities.confidence),
+            cell(chembl?.bestCompound?.moleculeChemblId), num(chembl?.bestCompound?.ic50Nm, 2), num(chembl?.bestCompound?.pchemblValue, 2), cell(chembl?.bestCompound?.assayDescription), cell(chembl?.bestCompound?.documentYear),
+            cell(chembl?.totalCompounds), cell(chembl?.targetMaxPhase), cell(chembl?.targetDrugCount),
+            cell(indication?.diseaseName), cell(indication?.maxPhase), indication?.clinicalTrialIds?.join('; ') ?? '', chembl?.drugIndications?.map(ind => `${ind.diseaseName} (phase ${ind.maxPhase})`).join('; ') ?? '',
+          ]);
+          done++;
+        }
+
+        updateProgress(done, genes.length, 'Fetching drill-down and ChEMBL metrics');
+        if (i + BATCH < genes.length) {
+          await new Promise(resolve => setTimeout(resolve, 250));
+        }
+      }
+
+      updateProgress(done, genes.length, 'Preparing CSV file');
+      const csv = [headers.map(escape).join(','), ...rows.map(row => row.map(escape).join(','))].join('\n');
       const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-      await saveBlob(blob, `Druggability_Report_${disease.replace(/\s+/g, '_')}_top${genes.length}.csv`);
-    } catch (e) {
-      logDev('ChEMBL export failed:', e);
+      await saveBlob(blob, `All_Metrics_${disease.replace(/\s+/g, '_')}_top${genes.length}.csv`);
+    } catch (err) {
+      logDev('All metrics export failed:', err);
+      alert(`Export failed: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setIsExporting(false);
-      setChemblProgress(null);
+      setAllMetricsProgress(null);
     }
   };
-
   const exportToDocx = async () => {
     if (!displayTargets.length) {
       alert("No data to export. Please search for a disease first.");
@@ -4541,9 +4322,6 @@ Return ONLY valid JSON.
               isFetchingPubTator: false,
             }));
 
-            // Auto-save all genes to Obsidian wiki (silent, background)
-            autoSaveAllToWiki(finalGenes, opt, resolvedEnr);
-
             // Trigger RWR extension asynchronously but track it
             performRWR(finalGenes, resolvedLit.results.map((r: any) => r.gene));
 
@@ -4611,9 +4389,6 @@ Return ONLY valid JSON.
             pubtatorPage: 1,
             isFetchingPubTator: false,
           }));
-
-          // Auto-save all genes to Obsidian wiki (silent, background)
-          autoSaveAllToWiki(finalGenes, { id: args.id, name: args.name }, resolvedEnr2);
 
           // Trigger RWR extension
           performRWR(finalGenes, resolvedLit2.results.map((r: any) => r.gene));
@@ -5307,12 +5082,6 @@ Return ONLY valid JSON.
                     onToggleUsefulness={toggleUsefulness}
                     onNavigateSubPage={setFocusSubPage}
                     onSave={exportToDocx}
-                    onSaveToWiki={() => {
-                      const t = researchState.targets.find(t => t.symbol === researchState.focusSymbol);
-                      if (t) handleSaveToWiki(t);
-                    }}
-                    wikiSaved={wikiSavedGenes.has(researchState.focusSymbol ?? '')}
-                    wikiSaving={wikiSaving === researchState.focusSymbol}
                     onBack={() => {
                       setResearchState(p => ({ ...p, focusSymbol: null }));
                       setFocusSubPage('main');
@@ -5321,19 +5090,6 @@ Return ONLY valid JSON.
                     aiSummaryLoading={aiSummaryLoading === researchState.focusSymbol}
                     onShowScoreInfo={setActiveScoreInfo}
                   />
-                  {/* Wiki save toast */}
-                  {wikiToast && (
-                    <div className={`absolute bottom-6 right-6 z-50 flex items-center gap-2 px-4 py-2.5 rounded-xl shadow-xl border text-[11px] font-bold animate-in slide-in-from-bottom-4 duration-300 ${
-                      wikiToast.ok
-                        ? 'bg-purple-600 border-purple-500 text-white'
-                        : 'bg-red-600 border-red-500 text-white'
-                    }`}>
-                      <BookOpen className="w-3.5 h-3.5" />
-                      {wikiToast.ok
-                        ? `✓ ${wikiToast.symbol} saved to Obsidian Wiki`
-                        : `✗ Failed to save ${wikiToast.symbol}`}
-                    </div>
-                  )}
                 </div>
               ) : researchState.targets.length === 0 && !['raw', 'paper', 'pubtator'].includes(viewMode) ? (<div className="h-full flex flex-col items-center justify-center p-20 text-center animate-in zoom-in duration-500"><Search className="w-16 h-16 text-blue-500 mb-8 opacity-30" /><h2 className={`text-xl font-bold mb-2 tracking-tight ${theme === 'dark' ? 'text-neutral-200' : 'text-slate-950'}`}>System Ready for Research Focus</h2><p className={`text-sm max-w-sm leading-relaxed ${theme === 'dark' ? 'text-neutral-500' : 'text-slate-700'}`}>Search for a therapeutic area or disease in the terminal to begin multi-modal target discovery.</p></div>) : (viewMode === 'raw') && !activeCancerType ? (<div className="h-full flex flex-col items-center justify-center p-12 text-center"><div className="p-5 rounded-full bg-blue-50 dark:bg-blue-900/20 mb-6"><AlertCircle className="w-12 h-12 text-blue-600" /></div><h3 className="text-xl font-bold mb-2 text-neutral-800 dark:text-neutral-200">Optimized Context Required</h3><p className="text-sm max-w-md text-neutral-600 dark:text-neutral-500 leading-relaxed">Cohort analytics are currently specifically tuned for high-resolution TCGA (e.g. BRCA, KIRC, BLCA) studies.</p></div>) : (
                 <div className={`h-full rounded-2xl border overflow-hidden shadow-xl shadow-slate-950/5 ${theme === 'dark' ? 'bg-[#0b111c]/95 border-slate-800/80' : 'bg-white/95 border-slate-200'}`}>
@@ -5431,10 +5187,6 @@ Return ONLY valid JSON.
                             </button>
                             {isExportDropdownOpen && (
                               <div className="absolute right-0 mt-2 w-44 rounded-xl border bg-white dark:bg-[#171717] border-neutral-200 dark:border-neutral-800 shadow-2xl z-50 overflow-hidden animate-in fade-in zoom-in duration-200">
-                                <button onClick={() => { exportToNotion(); setIsExportDropdownOpen(false); }} className="w-full px-4 py-3 text-left text-[11px] font-semibold hover:bg-neutral-50 dark:hover:bg-neutral-800 flex items-center gap-3 border-b border-neutral-100 dark:border-neutral-800 transition-colors text-neutral-700 dark:text-neutral-300">
-                                  <div className="p-1.5 rounded-md bg-neutral-100 dark:bg-neutral-800"><Database className="w-3.5 h-3.5 text-neutral-500" /></div>
-                                  <span>Notion</span>
-                                </button>
                                 <button onClick={() => { exportToDocx(); setIsExportDropdownOpen(false); }} className="w-full px-4 py-3 text-left text-[11px] font-semibold hover:bg-neutral-50 dark:hover:bg-neutral-800 flex items-center gap-3 border-b border-neutral-100 dark:border-neutral-800 transition-colors text-neutral-700 dark:text-neutral-300">
                                   <div className="p-1.5 rounded-md bg-blue-50 dark:bg-blue-900/20"><FileDown className="w-3.5 h-3.5 text-blue-500" /></div>
                                   <span>Download DOCX</span>
@@ -5443,13 +5195,9 @@ Return ONLY valid JSON.
                                   <div className="p-1.5 rounded-md bg-emerald-50 dark:bg-emerald-900/20"><FileDown className="w-3.5 h-3.5 text-emerald-500" /></div>
                                   <span>Download CSV (OT)</span>
                                 </button>
-                                <button onClick={() => { exportCombinedCsv(); setIsExportDropdownOpen(false); }} className="w-full px-4 py-3 text-left text-[11px] font-semibold hover:bg-neutral-50 dark:hover:bg-neutral-800 flex items-center gap-3 border-b border-neutral-100 dark:border-neutral-800 transition-colors text-neutral-700 dark:text-neutral-300">
+                                <button onClick={() => { setAllMetricsExportOpen(true); setIsExportDropdownOpen(false); }} className="w-full px-4 py-3 text-left text-[11px] font-semibold hover:bg-neutral-50 dark:hover:bg-neutral-800 flex items-center gap-3 transition-colors text-neutral-700 dark:text-neutral-300">
                                   <div className="p-1.5 rounded-md bg-orange-50 dark:bg-orange-900/20"><FileDown className="w-3.5 h-3.5 text-orange-500" /></div>
-                                  <span>Download Combined CSV</span>
-                                </button>
-                                <button onClick={() => { setChemblExportOpen(true); setIsExportDropdownOpen(false); }} className="w-full px-4 py-3 text-left text-[11px] font-semibold hover:bg-neutral-50 dark:hover:bg-neutral-800 flex items-center gap-3 transition-colors text-neutral-700 dark:text-neutral-300">
-                                  <div className="p-1.5 rounded-md bg-purple-50 dark:bg-purple-900/20"><FlaskConical className="w-3.5 h-3.5 text-purple-500" /></div>
-                                  <span>Druggability CSV (ChEMBL)…</span>
+                                  <span>All Metrics CSV...</span>
                                 </button>
                               </div>
                             )}
@@ -5457,54 +5205,56 @@ Return ONLY valid JSON.
                         </div>
                       </div>
 
-                      {/* ChEMBL export — gene-count selector modal */}
-                      {chemblExportOpen && (
-                        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4" onClick={() => setChemblExportOpen(false)}>
+                      {/* All metrics export - gene-count selector modal */}
+                      {allMetricsExportOpen && (
+                        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4" onClick={() => setAllMetricsExportOpen(false)}>
                           <div onClick={e => e.stopPropagation()} className={`w-full max-w-md rounded-2xl border shadow-2xl p-6 ${theme === 'dark' ? 'bg-[#0d1424] border-slate-800' : 'bg-white border-slate-200'}`}>
                             <div className="flex items-center gap-2 mb-2">
-                              <FlaskConical className="w-5 h-5 text-purple-500" />
-                              <h3 className={`text-lg font-black ${theme === 'dark' ? 'text-slate-100' : 'text-slate-900'}`}>Druggability CSV Export</h3>
+                              <FlaskConical className="w-5 h-5 text-orange-500" />
+                              <h3 className={`text-lg font-black ${theme === 'dark' ? 'text-slate-100' : 'text-slate-900'}`}>All Metrics CSV Export</h3>
                             </div>
                             <p className={`text-[12px] leading-relaxed mb-4 ${theme === 'dark' ? 'text-slate-400' : 'text-slate-600'}`}>
-                              How many top genes to include? Each gene fetches fresh clinical, literature, and ChEMBL druggability data — more genes means more API calls and a longer wait.
+                              Download Open Targets scores, drill-down literature and clinical metrics, TAU, bimodality, pathway enrichment, and ChEMBL druggability in one CSV. Larger exports make many real API calls and can take several minutes.
                             </p>
                             <div className="grid grid-cols-3 gap-2 mb-4">
-                              {[50, 100, 250, 400, 500].map(n => (
-                                <button key={n} onClick={() => exportTopNWithChembl(n)}
-                                  className={`py-3 rounded-xl border text-[13px] font-black transition-all ${theme === 'dark' ? 'border-slate-700 bg-slate-900/40 text-slate-200 hover:border-purple-500 hover:bg-purple-600/15' : 'border-slate-200 bg-slate-50 text-slate-800 hover:border-purple-400 hover:bg-purple-50'}`}>
-                                  {n}
+                              <button onClick={() => exportAllMetricsCsv('loaded')}
+                                className={`py-3 rounded-xl border text-[11px] font-bold transition-all ${theme === 'dark' ? 'border-slate-700 bg-slate-900/40 text-slate-300 hover:border-orange-500' : 'border-slate-200 bg-slate-50 text-slate-700 hover:border-orange-400'}`}>
+                                Loaded ({displayTargets.length})
+                              </button>
+                              {[100, 500].map(n => (
+                                <button key={n} onClick={() => exportAllMetricsCsv(n as 100 | 500)}
+                                  className={`py-3 rounded-xl border text-[13px] font-black transition-all ${theme === 'dark' ? 'border-slate-700 bg-slate-900/40 text-slate-200 hover:border-orange-500 hover:bg-orange-600/15' : 'border-slate-200 bg-slate-50 text-slate-800 hover:border-orange-400 hover:bg-orange-50'}`}>
+                                  Top {n}
                                 </button>
                               ))}
-                              <button onClick={() => exportTopNWithChembl(researchState.targets.length || 50)}
-                                className={`py-3 rounded-xl border text-[11px] font-bold transition-all ${theme === 'dark' ? 'border-slate-700 bg-slate-900/40 text-slate-300 hover:border-purple-500' : 'border-slate-200 bg-slate-50 text-slate-600 hover:border-purple-400'}`}>
-                                Loaded ({researchState.targets.length})
-                              </button>
                             </div>
                             <p className={`text-[10px] mb-3 ${theme === 'dark' ? 'text-slate-600' : 'text-slate-400'}`}>
-                              Estimate: ~0.5–1s per gene. 500 genes ≈ 5–8 min. You can keep using other tabs while it runs.
+                              500 is the export limit. The progress window stays open while ClinicalTrials, PubMed, Europe PMC, and ChEMBL data are fetched.
                             </p>
-                            <button onClick={() => setChemblExportOpen(false)} className={`w-full py-2 rounded-xl text-[12px] font-bold ${theme === 'dark' ? 'bg-slate-800 text-slate-300 hover:bg-slate-700' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>Cancel</button>
+                            <button onClick={() => setAllMetricsExportOpen(false)} className={`w-full py-2 rounded-xl text-[12px] font-bold ${theme === 'dark' ? 'bg-slate-800 text-slate-300 hover:bg-slate-700' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>Cancel</button>
                           </div>
                         </div>
                       )}
 
-                      {/* ChEMBL export — progress overlay */}
-                      {chemblProgress && (
+                      {/* All metrics export - progress overlay */}
+                      {allMetricsProgress && (
                         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
                           <div className={`w-full max-w-sm rounded-2xl border shadow-2xl p-6 text-center ${theme === 'dark' ? 'bg-[#0d1424] border-slate-800' : 'bg-white border-slate-200'}`}>
-                            <Loader2 className="w-8 h-8 animate-spin text-purple-500 mx-auto mb-4" />
-                            <p className={`text-[13px] font-bold mb-1 ${theme === 'dark' ? 'text-slate-200' : 'text-slate-800'}`}>Building druggability report…</p>
+                            <Loader2 className="w-8 h-8 animate-spin text-orange-500 mx-auto mb-4" />
+                            <p className={`text-[13px] font-bold mb-1 ${theme === 'dark' ? 'text-slate-200' : 'text-slate-800'}`}>Building all-metrics CSV...</p>
+                            <p className={`text-[11px] mb-2 ${theme === 'dark' ? 'text-slate-400' : 'text-slate-600'}`}>{allMetricsProgress.stage}</p>
                             <p className={`text-[11px] mb-4 ${theme === 'dark' ? 'text-slate-500' : 'text-slate-500'}`}>
-                              {chemblProgress.done} / {chemblProgress.total} genes
+                              {allMetricsProgress.done} / {allMetricsProgress.total} genes
                             </p>
                             <div className={`w-full h-2 rounded-full overflow-hidden ${theme === 'dark' ? 'bg-slate-800' : 'bg-slate-200'}`}>
-                              <div className="h-full bg-purple-500 transition-all duration-300" style={{ width: `${chemblProgress.total ? (chemblProgress.done / chemblProgress.total) * 100 : 0}%` }} />
+                              <div className="h-full bg-orange-500 transition-all duration-300" style={{ width: `${allMetricsProgress.total ? (allMetricsProgress.done / allMetricsProgress.total) * 100 : 0}%` }} />
                             </div>
-                            <p className={`text-[9px] mt-3 ${theme === 'dark' ? 'text-slate-600' : 'text-slate-400'}`}>Fetching ClinicalTrials · PubMed · ChEMBL per gene</p>
+                            <p className={`text-[9px] mt-3 ${theme === 'dark' ? 'text-slate-600' : 'text-slate-400'}`}>
+                              Elapsed: {Math.max(1, Math.round((Date.now() - allMetricsProgress.startedAt) / 1000))}s. Large exports can take several minutes.
+                            </p>
                           </div>
                         </div>
                       )}
-
                       <div className="flex-1 overflow-auto relative">
                         {/* col(key) helper — true if that column is toggled on; sortTh — clickable sort header */}
                         {(() => {
