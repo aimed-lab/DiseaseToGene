@@ -278,8 +278,19 @@ export const api = {
 
   async getPubMedStats(symbol: string, diseaseName: string): Promise<PubMedStats> {
     const apiKeyParam = '';
-    const baseQuery = `("${diseaseName}"[Title/Abstract]) AND ("${symbol}"[Title/Abstract])`;
-    const recentQuery = `${baseQuery} AND ("2024"[Date - Publication] : "2025"[Date - Publication])`;
+    // Clean OT ontology suffixes / clinical prefixes that return 0 results with
+    // strict [Title/Abstract] matching — mirrors the cleaning in getDrillDownData.
+    // e.g. "Alzheimer's disease biomarker measurement" → "Alzheimer disease"
+    const cleanDisease = diseaseName
+      .replace(/['"]/g, '')
+      .replace(/\b(biomarker measurement|measurement|pathology|disorder|syndrome)\b.*$/i, '')
+      .replace(/^(late|early)[- ]onset\s+/i, '')
+      .replace(/^(juvenile|familial|sporadic|idiopathic)\s+/i, '')
+      .trim() || diseaseName;
+    const baseQuery = `("${cleanDisease}"[Title/Abstract]) AND ("${symbol}"[Title/Abstract])`;
+    // Dynamic last-3-years window instead of a hardcoded 2024–2025 range
+    const currentYear = new Date().getFullYear();
+    const recentQuery = `${baseQuery} AND ("${currentYear - 2}"[Date - Publication] : "${currentYear}"[Date - Publication])`;
 
     const searchLink = `https://pubmed.ncbi.nlm.nih.gov/?term=${encodeURIComponent(recentQuery)}&sort=pubdate`;
     const primarySearchLink = searchLink;

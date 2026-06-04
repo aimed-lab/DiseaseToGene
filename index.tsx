@@ -1444,40 +1444,30 @@ Be specific, cite the numbers. Do not fabricate. ~400 words.`;
   return (
     <div className={`h-full flex flex-col rounded-2xl border overflow-hidden shadow-xl ${isDark ? 'bg-[#0b111c]/95 border-slate-800/80' : 'bg-white/95 border-slate-200'}`}>
       {/* Header */}
-      <div className={`flex items-center justify-between px-5 py-3.5 border-b flex-shrink-0 ${isDark ? 'bg-[#0b111c] border-slate-800' : 'bg-white border-slate-200'}`}>
-        <div className="flex items-center gap-3">
-          <div className={`p-2 rounded-xl ${isDark ? 'bg-blue-600/10' : 'bg-blue-50'}`}>
+      <div className={`flex items-center justify-between gap-3 px-5 py-3.5 border-b flex-shrink-0 ${isDark ? 'bg-[#0b111c] border-slate-800' : 'bg-white border-slate-200'}`}>
+        <div className="flex items-center gap-3 min-w-0">
+          <div className={`p-2 rounded-xl flex-shrink-0 ${isDark ? 'bg-blue-600/10' : 'bg-blue-50'}`}>
             <Microscope className={`w-4 h-4 ${isDark ? 'text-blue-400' : 'text-blue-600'}`} />
           </div>
-          <div>
+          <div className="min-w-0">
             <p className={`text-[9px] font-black uppercase tracking-widest ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Target Assessment</p>
-            <p className={`text-[13px] font-bold ${isDark ? 'text-slate-100' : 'text-slate-800'}`}>{diseaseName || 'Evidence Report'}</p>
-          </div>
-          <div className="flex items-center gap-1.5 ml-2">
-            {genes.map(g => (
-              <span key={g} className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
-                loading[g] ? 'bg-amber-500/10 border-amber-500/20 text-amber-500' :
-                data.find(d=>d.symbol===g)?.error ? 'bg-rose-500/10 border-rose-500/20 text-rose-500' :
-                'bg-blue-500/10 border-blue-500/20 text-blue-600'}`}>
-                {loading[g] && <Loader2 className="w-2.5 h-2.5 animate-spin inline mr-1" />}{g}
-              </span>
-            ))}
+            <p className={`text-[13px] font-bold truncate ${isDark ? 'text-slate-100' : 'text-slate-800'}`}>{diseaseName || 'Evidence Report'}</p>
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-shrink-0">
           {allDone && (
             <>
               <button onClick={runNarrative} disabled={narrativeLoading}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-bold transition-all ${isDark ? 'bg-purple-600/15 text-purple-400 hover:bg-purple-600/25 border border-purple-500/20' : 'bg-purple-50 text-purple-600 hover:bg-purple-100 border border-purple-200'} disabled:opacity-40`}>
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-bold whitespace-nowrap transition-all ${isDark ? 'bg-purple-600/15 text-purple-400 hover:bg-purple-600/25 border border-purple-500/20' : 'bg-purple-50 text-purple-600 hover:bg-purple-100 border border-purple-200'} disabled:opacity-40`}>
                 {narrativeLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}AI Trade-off
               </button>
               <button onClick={downloadReport} disabled={dlLoading}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-bold transition-all ${isDark ? 'bg-emerald-600/15 text-emerald-400 hover:bg-emerald-600/25 border border-emerald-500/20' : 'bg-emerald-50 text-emerald-600 hover:bg-emerald-100 border border-emerald-200'} disabled:opacity-40`}>
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-bold whitespace-nowrap transition-all ${isDark ? 'bg-emerald-600/15 text-emerald-400 hover:bg-emerald-600/25 border border-emerald-500/20' : 'bg-emerald-50 text-emerald-600 hover:bg-emerald-100 border border-emerald-200'} disabled:opacity-40`}>
                 {dlLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FileDown className="w-3.5 h-3.5" />}Download Report
               </button>
             </>
           )}
-          <button onClick={onClose} className={`p-1.5 rounded-lg transition-colors ${isDark ? 'hover:bg-slate-800 text-slate-400' : 'hover:bg-slate-100 text-slate-500'}`}>
+          <button onClick={onClose} className={`p-1.5 rounded-lg flex-shrink-0 transition-colors ${isDark ? 'hover:bg-slate-800 text-slate-400' : 'hover:bg-slate-100 text-slate-500'}`}>
             <X className="w-4 h-4" />
           </button>
         </div>
@@ -5119,7 +5109,8 @@ Return ONLY valid JSON.
            <div className={`flex-1 overflow-hidden relative ${theme === 'dark' ? 'bg-transparent text-neutral-200' : 'bg-transparent text-neutral-900'}`}>
               {loading && (<div className="absolute inset-0 bg-neutral-900/40 backdrop-blur-[2px] z-50 flex flex-col items-center justify-center gap-4 rounded-xl"><Loader2 className="w-8 h-8 animate-spin text-blue-500" /><p className="text-[11px] font-bold uppercase text-white tracking-widest">{loadingMessage}</p></div>)}
               
-              {assessMode ? (
+              {sidebarNav === 'assess' ? (
+                assessMode ? (
                 <AssessmentView
                   genes={assessGenes}
                   data={assessData}
@@ -5128,7 +5119,7 @@ Return ONLY valid JSON.
                   theme={theme}
                   onClose={() => setAssessMode(false)}
                 />
-              ) : sidebarNav === 'assess' ? (
+                ) : (
                 <div className="h-full flex flex-col items-center justify-center p-20 text-center animate-in zoom-in duration-500">
                   <div className={`p-6 rounded-3xl mb-8 ${theme === 'dark' ? 'bg-blue-500/10' : 'bg-blue-50'}`}>
                     <Microscope className={`w-14 h-14 ${theme === 'dark' ? 'text-blue-400' : 'text-blue-500'}`} />
@@ -5155,6 +5146,7 @@ Return ONLY valid JSON.
                     ))}
                   </div>
                 </div>
+                )
               ) : researchState.focusSymbol ? (
                 <div className={`h-full rounded-2xl border overflow-hidden shadow-xl shadow-slate-950/5 ${theme === 'dark' ? 'bg-[#0b111c]/95 border-slate-800/80' : 'bg-white/95 border-slate-200'}`}>
                   <TargetDetailView
