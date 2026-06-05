@@ -3317,7 +3317,8 @@ const App = () => {
   useEffect(() => { if (chatScrollRef.current) chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight; }, [messages]);
   const [isExporting, setIsExporting] = useState(false);
   const [allMetricsExportOpen, setAllMetricsExportOpen] = useState(false);
-  const [allMetricsProgress, setAllMetricsProgress] = useState<{ done: number; total: number; stage: string; startedAt: number } | null>(null);
+  const [allMetricsProgress, setAllMetricsProgress] = useState<{ done: number; total: number; stage: string; startedAt: number; cancelRequested?: boolean } | null>(null);
+  const allMetricsCancelRequested = useRef(false);
   const [focusSubPage, setFocusSubPage] = useState<'main' | 'literature' | 'clinical'>('main');
 
   useEffect(() => {
@@ -3618,9 +3619,15 @@ Return ONLY valid JSON.
     const list = (values?: { name?: string; count?: number }[]) => values?.map(v => `${v.name}${v.count !== undefined ? ` (${v.count})` : ''}`).join('; ') ?? '';
     const json = (value: unknown) => value && typeof value === 'object' ? JSON.stringify(value) : '';
     const updateProgress = (done: number, total: number, stage: string) => {
-      setAllMetricsProgress({ done, total, stage, startedAt });
+      setAllMetricsProgress({ done, total, stage, startedAt, cancelRequested: allMetricsCancelRequested.current });
+    };
+    const throwIfCancelled = () => {
+      if (allMetricsCancelRequested.current) {
+        throw new Error('EXPORT_CANCELLED');
+      }
     };
 
+    allMetricsCancelRequested.current = false;
     setIsExporting(true);
     updateProgress(0, requestedTotal, 'Preparing gene list');
 
@@ -3632,6 +3639,7 @@ Return ONLY valid JSON.
       if (selection !== 'loaded') {
         let page = Math.ceil(genes.length / OT_PAGE_SIZE);
         while (genes.length < targetCount) {
+          throwIfCancelled();
           updateProgress(Math.min(genes.length, targetCount), targetCount, 'Fetching Open Targets genes');
           const next = await api.getGenes(efoId, OT_PAGE_SIZE, page);
           if (!next.length) break;
@@ -3653,12 +3661,15 @@ Return ONLY valid JSON.
       }
 
       updateProgress(0, genes.length, 'Scoring Open Targets metrics');
+      throwIfCancelled();
       genes = calculatePriorityScores(genes.map(t => ({ ...t })), researchState.weights);
 
       updateProgress(0, genes.length, 'Fetching TAU tissue specificity');
+      throwIfCancelled();
       await api.enrichTau(genes).catch(() => undefined);
 
       updateProgress(0, genes.length, 'Loading bimodality metrics');
+      throwIfCancelled();
       let bimodalityLookup = bimodalityCache.current;
       if (!bimodalityLookup) {
         bimodalityLookup = await fetch('/bimodality.json').then(r => r.json()).catch(() => null);
@@ -3669,6 +3680,7 @@ Return ONLY valid JSON.
       }
 
       updateProgress(0, genes.length, 'Fetching pathway enrichment');
+      throwIfCancelled();
       const exportEnrichment = await api.getEnrichment(genes.map(g => g.symbol)).catch(() => researchState.enrichment);
       const enrichedByGene = (symbol: string) => {
         const upper = symbol.toUpperCase();
@@ -3679,26 +3691,22 @@ Return ONLY valid JSON.
 
       const headers = [
         'Rank', 'Source', 'Target ID', 'Gene', 'Gene Name',
-        'Open Targets Overall Score', 'GET Score', 'Genetic Score', 'Expression Score', 'Target Score', 'Literature Score', 'Priority Score', 'Final Score',
+        'Open Targets Overall Score', 'GET Score', 'Genetic Score', 'Expression Score', 'Target Score', 'Literature Score', 'Final Score',
         'RP Score', 'WINNER Score', 'WINNER Raw Score',
-        'PubTator Total Papers', 'PubTator Recent Papers', 'PubTator Velocity',
         'PubMed Total Signals', 'PubMed Recent Signals', 'PubMed Signal Velocity', 'PubMed Top Paper', 'PubMed Top Paper ID',
         'Europe PMC Total Papers', 'Europe PMC Recent Papers', 'Europe PMC Velocity', 'Europe PMC Latest Date', 'Europe PMC Top Paper', 'Europe PMC Journal', 'Europe PMC Year',
         'Clinical Trials Total', 'Clinical Trials Interventional', 'Clinical Trials Max Phase', 'Clinical Trials Active Present', 'Clinical Trials Global Total',
         'Clinical Phase Breakdown', 'Clinical Top Conditions', 'Clinical Top Drugs', 'Clinical Sponsor Breakdown', 'Clinical Flags',
-        'OT Pathway 1', 'OT Pathway 2', 'OT Pathway 3', 'OT Pathway 4', 'OT Pathway 5',
+        'OT Pathway 1', 'OT Pathway 2', 'OT Pathway 3',
         'Enriched Pathway 1', 'Enriched Pathway 1 Source', 'Enriched Pathway 1 Adjusted P',
         'Enriched Pathway 2', 'Enriched Pathway 2 Source', 'Enriched Pathway 2 Adjusted P',
         'Enriched Pathway 3', 'Enriched Pathway 3 Source', 'Enriched Pathway 3 Adjusted P',
         'Enriched Pathway 4', 'Enriched Pathway 4 Source', 'Enriched Pathway 4 Adjusted P',
         'Enriched Pathway 5', 'Enriched Pathway 5 Source', 'Enriched Pathway 5 Adjusted P',
         'TAU Tissue', 'TAU Single Cell', 'Bimodality Max Score', 'Bimodality Max Tissue',
-        ...BIMODALITY_TISSUES.map(tissue => `Bimodality ${tissue}`),
         'ChEMBL Druggability Label', 'ChEMBL Druggability Score', 'ChEMBL Target ID', 'ChEMBL Error',
         'ChEMBL Small Molecule', 'ChEMBL Antibody', 'ChEMBL PROTAC', 'ChEMBL Modality Confidence',
-        'ChEMBL Best Compound ID', 'ChEMBL Best IC50 nM', 'ChEMBL Best pChEMBL', 'ChEMBL Best Assay', 'ChEMBL Best Document Year',
         'ChEMBL Total Compounds', 'ChEMBL Target Max Phase', 'ChEMBL Target Drug Count',
-        'ChEMBL Top Indication', 'ChEMBL Top Indication Max Phase', 'ChEMBL Top Indication Trials', 'ChEMBL All Indications',
       ];
 
       const rows: string[][] = [];
@@ -3706,6 +3714,7 @@ Return ONLY valid JSON.
       let done = 0;
 
       for (let i = 0; i < genes.length; i += BATCH) {
+        throwIfCancelled();
         const batch = genes.slice(i, i + BATCH);
         updateProgress(done, genes.length, 'Fetching drill-down and ChEMBL metrics');
         const batchResults = await Promise.all(batch.map(async (target) => {
@@ -3716,11 +3725,11 @@ Return ONLY valid JSON.
           return { target: { ...target, drillDown }, drillDown, chembl };
         }));
 
+        throwIfCancelled();
         for (const { target, drillDown, chembl } of batchResults) {
           const enriched = enrichedByGene(target.symbol);
           const bimodality = target.bimodalityScores as Record<string, any> | undefined;
           const topPaper = drillDown?.top_papers?.[0];
-          const indication = chembl?.drugIndications?.[0];
           const pathway = (idx: number) => cell(target.pathways?.[idx]?.label);
           const enrichedTriplet = (idx: number) => [
             cell(enriched[idx]?.term),
@@ -3730,22 +3739,18 @@ Return ONLY valid JSON.
 
           rows.push([
             String(rows.length + 1), cell(target.source ?? 'OT'), cell(target.id), cell(target.symbol), cell(target.name),
-            num(target.overallScore), num(target.getScore), num(target.geneticScore), num(target.combinedExpression ?? target.expressionScore), num(target.targetScore), num(target.literatureScore), num(target.priorityScore), num(target.finalScore),
+            num(target.overallScore), num(target.getScore), num(target.geneticScore), num(target.combinedExpression ?? target.expressionScore), num(target.targetScore), num(target.literatureScore), num(target.finalScore),
             num(target.rpScore ?? researchState.rpScores?.[target.symbol]), num(target.winnerScore ?? researchState.winnerScores?.[target.symbol]), num(target.winnerRawScore ?? researchState.winnerRawScores?.[target.symbol]),
-            cell(target.pubTatorTotalPapers), cell(target.pubTatorRecentPapers), num(target.pubTatorVelocity, 2),
             cell(drillDown?.total_signals), cell(drillDown?.recent_signals), cell(drillDown?.signal_velocity), cell(topPaper?.title), cell(topPaper?.id),
             cell(drillDown?.paper_count), cell(drillDown?.recent_paper_count), cell(drillDown?.epmc_velocity), cell(drillDown?.latest_publication_date), cell(drillDown?.epmc_top_paper), cell(drillDown?.epmc_journal), cell(drillDown?.epmc_year),
             cell(drillDown?.trial_count), cell(drillDown?.interventional_count), cell(drillDown?.max_phase), bool(drillDown?.active_trial_present), cell(drillDown?.total_trials_globally),
             json(drillDown?.phase_breakdown), list(drillDown?.top_conditions), list(drillDown?.top_drugs), json(drillDown?.sponsor_breakdown), (target.clinical_flags ?? drillDown?.clinical_flags ?? []).join('; '),
-            pathway(0), pathway(1), pathway(2), pathway(3), pathway(4),
+            pathway(0), pathway(1), pathway(2),
             ...enrichedTriplet(0), ...enrichedTriplet(1), ...enrichedTriplet(2), ...enrichedTriplet(3), ...enrichedTriplet(4),
             num(target.tauTissue), num(target.tauSingleCell), num(bimodality?._max_score), cell(bimodality?._max_tissue),
-            ...BIMODALITY_TISSUES.map(tissue => num(bimodality?.[tissue])),
             cell(chembl?.label), num(chembl?.druggabilityScore, 3), cell(chembl?.targetChemblId), cell(chembl?.error),
             bool(chembl?.modalities.smallMolecule), bool(chembl?.modalities.antibody), bool(chembl?.modalities.protac), cell(chembl?.modalities.confidence),
-            cell(chembl?.bestCompound?.moleculeChemblId), num(chembl?.bestCompound?.ic50Nm, 2), num(chembl?.bestCompound?.pchemblValue, 2), cell(chembl?.bestCompound?.assayDescription), cell(chembl?.bestCompound?.documentYear),
             cell(chembl?.totalCompounds), cell(chembl?.targetMaxPhase), cell(chembl?.targetDrugCount),
-            cell(indication?.diseaseName), cell(indication?.maxPhase), indication?.clinicalTrialIds?.join('; ') ?? '', chembl?.drugIndications?.map(ind => `${ind.diseaseName} (phase ${ind.maxPhase})`).join('; ') ?? '',
           ]);
           done++;
         }
@@ -3756,16 +3761,22 @@ Return ONLY valid JSON.
         }
       }
 
+      throwIfCancelled();
       updateProgress(done, genes.length, 'Preparing CSV file');
       const csv = [headers.map(escape).join(','), ...rows.map(row => row.map(escape).join(','))].join('\n');
       const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
       await saveBlob(blob, `All_Metrics_${disease.replace(/\s+/g, '_')}_top${genes.length}.csv`);
     } catch (err) {
-      logDev('All metrics export failed:', err);
-      alert(`Export failed: ${err instanceof Error ? err.message : String(err)}`);
+      if (err instanceof Error && err.message === 'EXPORT_CANCELLED') {
+        logDev('All metrics export cancelled');
+      } else {
+        logDev('All metrics export failed:', err);
+        alert(`Export failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
     } finally {
       setIsExporting(false);
       setAllMetricsProgress(null);
+      allMetricsCancelRequested.current = false;
     }
   };
   const exportToDocx = async () => {
@@ -5214,7 +5225,7 @@ Return ONLY valid JSON.
                               <h3 className={`text-lg font-black ${theme === 'dark' ? 'text-slate-100' : 'text-slate-900'}`}>All Metrics CSV Export</h3>
                             </div>
                             <p className={`text-[12px] leading-relaxed mb-4 ${theme === 'dark' ? 'text-slate-400' : 'text-slate-600'}`}>
-                              Download Open Targets scores, drill-down literature and clinical metrics, TAU, bimodality, pathway enrichment, and ChEMBL druggability in one CSV. Larger exports make many real API calls and can take several minutes.
+                              Download Open Targets scores, drill-down literature and clinical metrics, TAU, bimodality, pathway enrichment, and ChEMBL druggability in one compact CSV. Larger exports make many real API calls and can take several minutes.
                             </p>
                             <div className="grid grid-cols-3 gap-2 mb-4">
                               <button onClick={() => exportAllMetricsCsv('loaded')}
@@ -5229,30 +5240,44 @@ Return ONLY valid JSON.
                               ))}
                             </div>
                             <p className={`text-[10px] mb-3 ${theme === 'dark' ? 'text-slate-600' : 'text-slate-400'}`}>
-                              500 is the export limit. The progress window stays open while ClinicalTrials, PubMed, Europe PMC, and ChEMBL data are fetched.
+                              500 is the export limit. The export runs in a small background panel and can be stopped between batches.
                             </p>
                             <button onClick={() => setAllMetricsExportOpen(false)} className={`w-full py-2 rounded-xl text-[12px] font-bold ${theme === 'dark' ? 'bg-slate-800 text-slate-300 hover:bg-slate-700' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>Cancel</button>
                           </div>
                         </div>
                       )}
 
-                      {/* All metrics export - progress overlay */}
+                      {/* All metrics export - non-blocking progress panel */}
                       {allMetricsProgress && (
-                        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
-                          <div className={`w-full max-w-sm rounded-2xl border shadow-2xl p-6 text-center ${theme === 'dark' ? 'bg-[#0d1424] border-slate-800' : 'bg-white border-slate-200'}`}>
-                            <Loader2 className="w-8 h-8 animate-spin text-orange-500 mx-auto mb-4" />
-                            <p className={`text-[13px] font-bold mb-1 ${theme === 'dark' ? 'text-slate-200' : 'text-slate-800'}`}>Building all-metrics CSV...</p>
-                            <p className={`text-[11px] mb-2 ${theme === 'dark' ? 'text-slate-400' : 'text-slate-600'}`}>{allMetricsProgress.stage}</p>
-                            <p className={`text-[11px] mb-4 ${theme === 'dark' ? 'text-slate-500' : 'text-slate-500'}`}>
-                              {allMetricsProgress.done} / {allMetricsProgress.total} genes
-                            </p>
+                        <div className={`fixed bottom-5 right-5 z-[100] w-[min(360px,calc(100vw-2rem))] rounded-2xl border shadow-2xl p-5 ${theme === 'dark' ? 'bg-[#0d1424] border-slate-800' : 'bg-white border-slate-200'}`}>
+                          <div className="flex items-start gap-3">
+                            <Loader2 className="w-5 h-5 animate-spin text-orange-500 mt-0.5 shrink-0" />
+                            <div className="min-w-0 flex-1">
+                              <p className={`text-[13px] font-bold mb-1 ${theme === 'dark' ? 'text-slate-200' : 'text-slate-800'}`}>Building all-metrics CSV...</p>
+                              <p className={`text-[11px] mb-2 ${theme === 'dark' ? 'text-slate-400' : 'text-slate-600'}`}>{allMetricsProgress.stage}</p>
+                              <p className={`text-[11px] mb-3 ${theme === 'dark' ? 'text-slate-500' : 'text-slate-500'}`}>
+                                {allMetricsProgress.done} / {allMetricsProgress.total} genes
+                              </p>
+                            </div>
+                          </div>
                             <div className={`w-full h-2 rounded-full overflow-hidden ${theme === 'dark' ? 'bg-slate-800' : 'bg-slate-200'}`}>
                               <div className="h-full bg-orange-500 transition-all duration-300" style={{ width: `${allMetricsProgress.total ? (allMetricsProgress.done / allMetricsProgress.total) * 100 : 0}%` }} />
                             </div>
-                            <p className={`text-[9px] mt-3 ${theme === 'dark' ? 'text-slate-600' : 'text-slate-400'}`}>
+                            <div className="flex items-center justify-between gap-3 mt-3">
+                              <p className={`text-[9px] ${theme === 'dark' ? 'text-slate-600' : 'text-slate-400'}`}>
                               Elapsed: {Math.max(1, Math.round((Date.now() - allMetricsProgress.startedAt) / 1000))}s. Large exports can take several minutes.
-                            </p>
-                          </div>
+                              </p>
+                              <button
+                                onClick={() => {
+                                  allMetricsCancelRequested.current = true;
+                                  setAllMetricsProgress(prev => prev ? { ...prev, cancelRequested: true, stage: 'Stopping after current batch...' } : prev);
+                                }}
+                                disabled={allMetricsProgress.cancelRequested}
+                                className={`shrink-0 px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase transition-colors ${allMetricsProgress.cancelRequested ? 'bg-slate-200 text-slate-400 dark:bg-slate-800 dark:text-slate-600 cursor-wait' : 'bg-red-600 text-white hover:bg-red-700'}`}
+                              >
+                                {allMetricsProgress.cancelRequested ? 'Stopping' : 'Stop'}
+                              </button>
+                            </div>
                         </div>
                       )}
                       <div className="flex-1 overflow-auto relative">
