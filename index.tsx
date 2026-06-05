@@ -5247,37 +5247,34 @@ Return ONLY valid JSON.
                         </div>
                       )}
 
-                      {/* All metrics export - non-blocking progress panel */}
+                      {/* All metrics export - compact background job chip */}
                       {allMetricsProgress && (
-                        <div className={`fixed bottom-5 right-5 z-[100] w-[min(360px,calc(100vw-2rem))] rounded-2xl border shadow-2xl p-5 ${theme === 'dark' ? 'bg-[#0d1424] border-slate-800' : 'bg-white border-slate-200'}`}>
-                          <div className="flex items-start gap-3">
-                            <Loader2 className="w-5 h-5 animate-spin text-orange-500 mt-0.5 shrink-0" />
+                        <div className={`fixed top-3 right-3 z-[100] w-[min(320px,calc(100vw-1rem))] rounded-xl border shadow-xl px-3 py-2 ${theme === 'dark' ? 'bg-[#0d1424]/95 border-slate-800' : 'bg-white/95 border-slate-200'}`}>
+                          <div className="flex items-center gap-2">
+                            <Loader2 className="w-3.5 h-3.5 animate-spin text-orange-500 shrink-0" />
                             <div className="min-w-0 flex-1">
-                              <p className={`text-[13px] font-bold mb-1 ${theme === 'dark' ? 'text-slate-200' : 'text-slate-800'}`}>Building all-metrics CSV...</p>
-                              <p className={`text-[11px] mb-2 ${theme === 'dark' ? 'text-slate-400' : 'text-slate-600'}`}>{allMetricsProgress.stage}</p>
-                              <p className={`text-[11px] mb-3 ${theme === 'dark' ? 'text-slate-500' : 'text-slate-500'}`}>
-                                {allMetricsProgress.done} / {allMetricsProgress.total} genes
-                              </p>
+                              <div className="flex items-center justify-between gap-2">
+                                <p className={`truncate text-[11px] font-black uppercase tracking-wide ${theme === 'dark' ? 'text-slate-200' : 'text-slate-800'}`}>Exporting CSV</p>
+                                <span className={`shrink-0 text-[10px] font-bold ${theme === 'dark' ? 'text-slate-500' : 'text-slate-500'}`}>
+                                  {allMetricsProgress.done}/{allMetricsProgress.total}
+                                </span>
+                              </div>
+                              <p className={`truncate text-[9px] ${theme === 'dark' ? 'text-slate-500' : 'text-slate-500'}`}>{allMetricsProgress.stage}</p>
                             </div>
+                            <button
+                              onClick={() => {
+                                allMetricsCancelRequested.current = true;
+                                setAllMetricsProgress(prev => prev ? { ...prev, cancelRequested: true, stage: 'Stopping after current batch...' } : prev);
+                              }}
+                              disabled={allMetricsProgress.cancelRequested}
+                              className={`shrink-0 px-2 py-1 rounded-md text-[9px] font-black uppercase transition-colors ${allMetricsProgress.cancelRequested ? 'bg-slate-200 text-slate-400 dark:bg-slate-800 dark:text-slate-600 cursor-wait' : 'bg-red-600 text-white hover:bg-red-700'}`}
+                            >
+                              {allMetricsProgress.cancelRequested ? '...' : 'Stop'}
+                            </button>
                           </div>
-                            <div className={`w-full h-2 rounded-full overflow-hidden ${theme === 'dark' ? 'bg-slate-800' : 'bg-slate-200'}`}>
-                              <div className="h-full bg-orange-500 transition-all duration-300" style={{ width: `${allMetricsProgress.total ? (allMetricsProgress.done / allMetricsProgress.total) * 100 : 0}%` }} />
-                            </div>
-                            <div className="flex items-center justify-between gap-3 mt-3">
-                              <p className={`text-[9px] ${theme === 'dark' ? 'text-slate-600' : 'text-slate-400'}`}>
-                              Elapsed: {Math.max(1, Math.round((Date.now() - allMetricsProgress.startedAt) / 1000))}s. Large exports can take several minutes.
-                              </p>
-                              <button
-                                onClick={() => {
-                                  allMetricsCancelRequested.current = true;
-                                  setAllMetricsProgress(prev => prev ? { ...prev, cancelRequested: true, stage: 'Stopping after current batch...' } : prev);
-                                }}
-                                disabled={allMetricsProgress.cancelRequested}
-                                className={`shrink-0 px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase transition-colors ${allMetricsProgress.cancelRequested ? 'bg-slate-200 text-slate-400 dark:bg-slate-800 dark:text-slate-600 cursor-wait' : 'bg-red-600 text-white hover:bg-red-700'}`}
-                              >
-                                {allMetricsProgress.cancelRequested ? 'Stopping' : 'Stop'}
-                              </button>
-                            </div>
+                          <div className={`mt-2 h-1 rounded-full overflow-hidden ${theme === 'dark' ? 'bg-slate-800' : 'bg-slate-200'}`}>
+                            <div className="h-full bg-orange-500 transition-all duration-300" style={{ width: `${allMetricsProgress.total ? (allMetricsProgress.done / allMetricsProgress.total) * 100 : 0}%` }} />
+                          </div>
                         </div>
                       )}
                       <div className="flex-1 overflow-auto relative">
