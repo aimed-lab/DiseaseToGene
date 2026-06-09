@@ -300,13 +300,21 @@ export const api = {
     const searchLink = `https://pubmed.ncbi.nlm.nih.gov/?term=${encodeURIComponent(recentQuery)}&sort=pubdate`;
     const primarySearchLink = searchLink;
 
+    // Fetch with automatic 429 retry — NCBI allows 3 req/s without key
+    const fetchPubmed = async (url: string, retries = 3): Promise<any> => {
+      const res = await proxyFetch(url);
+      if (res.status === 429 && retries > 0) {
+        await new Promise(r => setTimeout(r, 1200));
+        return fetchPubmed(url, retries - 1);
+      }
+      return res.json();
+    };
+
     try {
-      const [totalData, recentData] = await Promise.all([
-        proxyFetch(`${PUBMED_API}/esearch.fcgi?db=pubmed&term=${encodeURIComponent(baseQuery)}&retmode=json${apiKeyParam}${toolEmail}`)
-          .then(r => r.json()),
-        proxyFetch(`${PUBMED_API}/esearch.fcgi?db=pubmed&term=${encodeURIComponent(recentQuery)}&retmode=json${apiKeyParam}${toolEmail}`)
-          .then(r => r.json())
-      ]);
+      // Sequential to be safe — total first, then recent 350ms later
+      const totalData = await fetchPubmed(`${PUBMED_API}/esearch.fcgi?db=pubmed&term=${encodeURIComponent(baseQuery)}&retmode=json${apiKeyParam}${toolEmail}`);
+      await new Promise(r => setTimeout(r, 350));
+      const recentData = await fetchPubmed(`${PUBMED_API}/esearch.fcgi?db=pubmed&term=${encodeURIComponent(recentQuery)}&retmode=json${apiKeyParam}${toolEmail}`);
 
       const total = parseInt(totalData.esearchresult.count || '0');
       const recent = parseInt(recentData.esearchresult.count || '0');
@@ -314,9 +322,10 @@ export const api = {
 
       let topPapers: { title: string; id: string }[] = [];
       if (recentIds) {
-        const summaryData = await proxyFetch(
+        await new Promise(r => setTimeout(r, 350));
+        const summaryData = await fetchPubmed(
           `${PUBMED_API}/esummary.fcgi?db=pubmed&id=${recentIds}&retmode=json${apiKeyParam}${toolEmail}`
-        ).then(r => r.json());
+        );
 
         topPapers = (summaryData.result.uids ?? [])
           .slice(0, 3)
@@ -840,9 +849,13 @@ export const api = {
         if (existingTarget.drillDown) blank.drillDown = existingTarget.drillDown as typeof blank.drillDown;
       }
 
-      // ── Always fetch fresh clinical + literature + druggability in parallel ──
-      const [drillDown, pubmed, chembl] = await Promise.all([
-        this.getDrillDownData(symbol, diseaseName).catch(() => blank.drillDown),
+      // ── Fetch clinical + literature + druggability, staggered to avoid NCBI 429s ──
+      // getDrillDownData and getPubMedStats each make 2-3 PubMed requests internally.
+      // Running them simultaneously exceeds NCBI's 3 req/s limit without an API key.
+      // Stagger: drillDown first, then PubMed 400ms later, ChEMBL in parallel with PubMed.
+      const drillDown = await this.getDrillDownData(symbol, diseaseName).catch(() => blank.drillDown);
+      await new Promise(r => setTimeout(r, 400)); // let NCBI rate-limit window reset
+      const [pubmed, chembl] = await Promise.all([
         this.getPubMedStats(symbol, diseaseName).catch(() => blank.pubmed),
         getChEMBLDruggability(symbol).catch(() => null),
       ]);
