@@ -1,5 +1,6 @@
 import { Target, DrugInfo, DiseaseInfo, EnrichmentResult, PubMedStats, ClinicalSample, ExpressionRow, DrillDownData, PubTatorResult, GeneAssessmentData } from './types';
 import { getChEMBLDruggability } from './chemblService';
+import { authenticatedFetch } from './supabase';
 // AI calls are routed through /api/ai/generate (server-side) — no API keys in browser
 
 const ENRICHR_API = 'https://maayanlab.cloud/Enrichr';
@@ -9,13 +10,36 @@ const logDev = (...args: unknown[]) => {
   if (!isProduction) console.error(...args);
 };
 
-// Routes external calls through the Express proxy to avoid browser CORS/rate-limit issues
-const proxyFetch = (url: string) => fetchWithRetry(`/api/proxy?url=${encodeURIComponent(url)}`);
+// ── Client-side NCBI throttle ────────────────────────────────────────────────
+// NCBI allows ~3 requests/sec without an API key. On Vercel the server CANNOT
+// coordinate rate-limits across serverless instances (each request is isolated),
+// so we serialize NCBI (eutils) calls in the browser — a single instance — to
+// avoid the 429/500 bursts seen on the Literature/Assessment views.
+let ncbiQueue: Promise<void> = Promise.resolve();
+let ncbiNextAt = 0;
+const NCBI_MIN_GAP_MS = 350;
+const ncbiThrottle = (): Promise<void> => {
+  const p = ncbiQueue.then(async () => {
+    const wait = Math.max(0, ncbiNextAt - Date.now());
+    if (wait > 0) await new Promise(resolve => setTimeout(resolve, wait));
+    ncbiNextAt = Date.now() + NCBI_MIN_GAP_MS;
+  });
+  ncbiQueue = p.catch(() => undefined);
+  return p;
+};
 
-const fetchWithRetry = async (url: string, options: RequestInit = {}, retries: number = 3, backoff: number = 1000): Promise<Response> => {
+// Routes external calls through the Express proxy to avoid browser CORS/rate-limit issues
+const proxyFetch = async (url: string): Promise<Response> => {
+  // Serialize NCBI calls so concurrent requests don't exceed the 3 req/s limit
+  if (url.includes('eutils.ncbi.nlm.nih.gov')) await ncbiThrottle();
+  return fetchWithRetry(`/api/proxy?url=${encodeURIComponent(url)}`);
+};
+
+const fetchWithRetry = async (url: string, options: RequestInit = {}, retries: number = 4, backoff: number = 800): Promise<Response> => {
   try {
     const res = await fetch(url, options);
-    if (res.status === 429 && retries > 0) {
+    // Retry on rate-limit (429) AND transient upstream errors (5xx)
+    if ((res.status === 429 || res.status >= 500) && retries > 0) {
       await new Promise(resolve => setTimeout(resolve, backoff));
       return fetchWithRetry(url, options, retries - 1, backoff * 2);
     }
@@ -59,7 +83,7 @@ export const api = {
     if (hits.length === 0 || query.length < 4 || /^[A-Z\s]+$/.test(query)) {
       try {
         let correctedQuery = "";
-        const aiRes = await fetch('/api/ai/generate', {
+        const aiRes = await authenticatedFetch('/api/ai/generate', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ prompt: `Identify the single most likely standard clinical disease name for the following potentially misspelled or imprecise term: "${query}". Return only the corrected name string, nothing else.` })
@@ -205,6 +229,13 @@ export const api = {
   },
 
   async getTargetDrugs(ensemblId: string): Promise<DrugInfo[]> {
+    // NOTE: Open Targets removed `knownDrugs` from the `Target` type in the current
+    // v4 schema, so this query always 400s. Short-circuit to avoid console-error
+    // spam — the function already degraded to [] via its catch. Drug-level data is
+    // now sourced from ChEMBL (see chemblService). Restore here if/when OT exposes
+    // a valid target→drugs field again.
+    return [];
+    // eslint-disable-next-line no-unreachable
     const GQL_QUERY = `query GetTargetDrugs($ensemblId: String!) { target(ensemblId: $ensemblId) { knownDrugs { rows { drug { id name mechanismsOfAction { rows { mechanismOfAction } } } status phase } } } }`;
     try {
       const res = await fetch('/api/ot-graphql', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: GQL_QUERY, variables: { ensemblId } }) });
@@ -745,7 +776,7 @@ export const api = {
       
       Generate a concise, professional clinical insight (2-3 sentences). Focus on validation level, commercial interest, and standard-of-care potential. Do not use placeholders.`;
       
-      const aiRes = await fetch('/api/ai/generate', {
+      const aiRes = await authenticatedFetch('/api/ai/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt })

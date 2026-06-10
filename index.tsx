@@ -89,7 +89,7 @@ import {
 import PaperExtractor from './PaperExtractor';
 import DruggabilityPanel from './DruggabilityPanel';
 import { getChEMBLDruggability } from './chemblService';
-import { supabase, fetchGlobalWeights, saveGlobalWeights, fetchUserProfile, updateUserProfile } from './supabase';
+import { supabase, authenticatedFetch, clearSupabaseSessionStorage, getInitialSession, fetchGlobalWeights, saveGlobalWeights, fetchUserProfile, updateUserProfile } from './supabase';
 import {
   Target,
   DrugInfo,
@@ -1090,6 +1090,21 @@ const ProfileDropdown = ({
 
   return (
     <>
+      <div className="flex items-center gap-2">
+      {/* ── Feedback → GitHub issues ── */}
+      <a
+        href="https://github.com/aimed-lab/DiseaseToGene/issues/new"
+        target="_blank"
+        rel="noopener noreferrer"
+        title="Send feedback or report an issue on GitHub"
+        className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border text-[11px] font-semibold transition-all ${
+          isDark ? 'bg-slate-900/60 border-slate-800 text-slate-300 hover:bg-slate-800' : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+        }`}
+      >
+        <MessageSquare className="w-3.5 h-3.5" />
+        <span className="hidden sm:block">Feedback</span>
+      </a>
+
       {/* ── Trigger button ── */}
       <div ref={menuRef} className="relative">
         <button
@@ -1112,6 +1127,7 @@ const ProfileDropdown = ({
           </span>
           <ChevronDown className={`w-3 h-3 transition-transform shrink-0 ${menuOpen ? 'rotate-180' : ''} ${isDark ? 'text-slate-500' : 'text-slate-400'}`} />
         </button>
+      </div>
       </div>
 
       {/* ── Portal menu (escapes header stacking context) ── */}
@@ -1440,8 +1456,9 @@ ${ready.length > 1 ? `5. **Comparative Trade-offs** — which target offers the 
 
 Be specific, cite the numbers. Do not fabricate. ~400 words.`;
 
-      const resp = await fetch('/api/ai/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt }) });
+      const resp = await authenticatedFetch('/api/ai/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt }) });
       const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || `AI request failed (${resp.status})`);
       setNarrative(data.text ?? '');
     } catch (e: any) {
       setNarrative(`Error: ${e.message}`);
@@ -3110,8 +3127,9 @@ const App = () => {
 
   useEffect(() => {
     let mounted = true;
+    let subscription: ReturnType<typeof supabase.auth.onAuthStateChange>['data']['subscription'] | undefined;
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const applySession = (session: Awaited<ReturnType<typeof getInitialSession>>['data']['session']) => {
       if (!mounted) return;
 
       if (session?.user) {
@@ -3128,14 +3146,27 @@ const App = () => {
         setCurrentUser(null);
         setAuthLoading(false);
       }
-    });
+    };
+
+    getInitialSession()
+      .then(({ data }) => {
+        if (!mounted) return;
+        applySession(data.session);
+        subscription = supabase.auth.onAuthStateChange((_event, session) => applySession(session)).data.subscription;
+      })
+      .catch(() => {
+        if (!mounted) return;
+        clearSupabaseSessionStorage();
+        setCurrentUser(null);
+        setAuthLoading(false);
+      });
 
     // Safety net: unblock UI after 5 s if Supabase never fires
     const timeout = setTimeout(() => { if (mounted) setAuthLoading(false); }, 5000);
 
     return () => {
       mounted = false;
-      subscription.unsubscribe();
+      subscription?.unsubscribe();
       clearTimeout(timeout);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -3145,6 +3176,7 @@ const App = () => {
     try {
       await supabase.auth.signOut();
     } catch { /* ignore sign-out errors */ }
+    clearSupabaseSessionStorage();
     // Force clear state regardless of whether signOut succeeded
     setCurrentUser(null);
     setAuthLoading(false);
@@ -4828,7 +4860,7 @@ Return ONLY valid JSON.
       - Always work in the context of the current Target List and its active filters.`;
 
       const callAI = async (messages: Message[]) => {
-        const res = await fetch('/api/ai/gemini-chat', {
+        const res = await authenticatedFetch('/api/ai/gemini-chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ messages, systemInstruction, tools }),
