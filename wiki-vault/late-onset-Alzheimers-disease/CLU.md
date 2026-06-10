@@ -22,7 +22,7 @@ bimodality_score: N/A
 bimodality_tissue: "—"
 status: draft
 tags: [disease2target, phase-phase2, late-onset-alzheimers-disease]
-saved: "2026-06-02"
+saved: "2026-06-04"
 ---
 
 # CLU — [[late-onset-Alzheimers-disease/_Index|late-onset Alzheimers disease]]
@@ -100,4 +100,4 @@ _Not yet generated — open the gene in Disease2Target and generate AI summary f
 _Write case study narrative here_
 
 ---
-*Saved from [Disease2Target](http://localhost:3000) on 2026-06-02*
+*Saved from [Disease2Target](http://localhost:3000) on 2026-06-04*

@@ -25,4 +25,4 @@ EXPOSE 3000
 
 ENV NODE_ENV=production
 
-CMD ["node", "dist-server/server.js"]
+CMD ["node", "dist-server/server.cjs"]

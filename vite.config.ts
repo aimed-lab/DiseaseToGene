@@ -22,8 +22,7 @@ export default defineConfig(({ mode }) => {
         // Supabase anon key is safe to expose in the browser (RLS protects data)
         'process.env.SUPABASE_URL':     JSON.stringify(env.SUPABASE_URL),
         'process.env.SUPABASE_ANON_KEY':JSON.stringify(env.SUPABASE_ANON_KEY),
-        // GEMINI_API_KEY and NVIDIA_API_KEY are intentionally NOT here —
-        // all AI calls go through /api/ai/generate (server-side only)
+        // GEMINI_API_KEY is intentionally NOT here. AI calls are server-side only.
       },
       resolve: {
         alias: {
@@ -38,6 +37,8 @@ export default defineConfig(({ mode }) => {
               'recharts': ['recharts'],
               'docx':     ['docx', 'file-saver'],
               'react':    ['react', 'react-dom', 'react-markdown'],
+              'icons':    ['lucide-react'],
+              'supabase': ['@supabase/supabase-js'],
             },
           },
         },

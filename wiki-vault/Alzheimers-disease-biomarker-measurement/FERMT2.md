@@ -3,7 +3,7 @@ disease: "Alzheimer's disease biomarker measurement"
 disease_id: "EFO_0006514"
 gene: "FERMT2"
 gene_name: "FERM domain containing kindlin 2"
-get_score: 0.7750
+get_score: 0.7072
 genetic: 0.6493
 expression: 1.0000
 target: 0.5500
@@ -22,20 +22,20 @@ bimodality_score: N/A
 bimodality_tissue: "—"
 status: draft
 tags: [disease2target, high-priority, emerging, no-trials, alzheimers-disease-biomarker-measurement]
-saved: "2026-06-01"
+saved: "2026-06-04"
 ---
 
 # FERMT2 — [[Alzheimers-disease-biomarker-measurement/_Index|Alzheimer's disease biomarker measurement]]
 
 > [!info] Evidence Snapshot
-> **GET Score:** 0.7750 &nbsp;|&nbsp; **Genetic:** 0.6493 &nbsp;|&nbsp; **Expression:** 1.0000 &nbsp;|&nbsp; **Target:** 0.5500
+> **GET Score:** 0.7072 &nbsp;|&nbsp; **Genetic:** 0.6493 &nbsp;|&nbsp; **Expression:** 1.0000 &nbsp;|&nbsp; **Target:** 0.5500
 > **Lit Velocity:** 50.0% &nbsp;|&nbsp; **CT Trials:** 0 &nbsp;|&nbsp; **Max Phase:** N/A
 
 ## Scores
 
 | Metric | Value | Signal |
 |--------|-------|--------|
-| **GET Score** | 0.7750 | 🟢 |
+| **GET Score** | 0.7072 | 🟢 |
 | Genetic (G) | 0.6493 | 🟡 |
 | Expression (E) | 1.0000 | 🟢 |
 | Target (T) | 0.5500 | 🟡 |
@@ -68,7 +68,7 @@ saved: "2026-06-01"
 
 ## Related Genes (shared pathways)
 
-[[PTK2B]] · [[PVR]] · [[NCK2]] · [[CD2AP]] · [[PICALM]]
+[[PTK2B]] · [[PVR]] · [[NCK2]] · [[PICALM]] · [[CD2AP]]
 
 ---
 
@@ -98,4 +98,4 @@ _Not yet generated — open the gene in Disease2Target and generate AI summary f
 _Write case study narrative here_
 
 ---
-*Saved from [Disease2Target](http://localhost:3000) on 2026-06-01*
+*Saved from [Disease2Target](http://localhost:3000) on 2026-06-04*

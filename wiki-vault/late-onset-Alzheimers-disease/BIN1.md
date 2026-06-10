@@ -7,9 +7,9 @@ get_score: 0.6698
 genetic: 0.5661
 expression: 1.0000
 target: 0.5500
-lit_velocity: "31.0%"
-lit_total_papers: 361
-lit_recent_papers: 112
+lit_velocity: "31.2%"
+lit_total_papers: 362
+lit_recent_papers: 113
 ct_trials: 0
 ct_max_phase: "N/A"
 ct_active: false
@@ -22,14 +22,14 @@ bimodality_score: N/A
 bimodality_tissue: "—"
 status: draft
 tags: [disease2target, emerging, no-trials, late-onset-alzheimers-disease]
-saved: "2026-06-02"
+saved: "2026-06-04"
 ---
 
 # BIN1 — [[late-onset-Alzheimers-disease/_Index|late-onset Alzheimers disease]]
 
 > [!info] Evidence Snapshot
 > **GET Score:** 0.6698 &nbsp;|&nbsp; **Genetic:** 0.5661 &nbsp;|&nbsp; **Expression:** 1.0000 &nbsp;|&nbsp; **Target:** 0.5500
-> **Lit Velocity:** 31.0% &nbsp;|&nbsp; **CT Trials:** 0 &nbsp;|&nbsp; **Max Phase:** N/A
+> **Lit Velocity:** 31.2% &nbsp;|&nbsp; **CT Trials:** 0 &nbsp;|&nbsp; **Max Phase:** N/A
 
 ## Scores
 
@@ -39,9 +39,9 @@ saved: "2026-06-02"
 | Genetic (G) | 0.5661 | 🟡 |
 | Expression (E) | 1.0000 | 🟢 |
 | Target (T) | 0.5500 | 🟡 |
-| Lit Velocity | 31.0% | 🟢 |
-| Lit Total Papers | 361 | |
-| Lit Recent (3y) | 112 | |
+| Lit Velocity | 31.2% | 🟢 |
+| Lit Total Papers | 362 | |
+| Lit Recent (3y) | 113 | |
 | EPMC Total | 30 | |
 | EPMC Recent (3y) | 15 | |
 | EPMC Velocity | 50.0% | |
@@ -96,4 +96,4 @@ _Not yet generated — open the gene in Disease2Target and generate AI summary f
 _Write case study narrative here_
 
 ---
-*Saved from [Disease2Target](http://localhost:3000) on 2026-06-02*
+*Saved from [Disease2Target](http://localhost:3000) on 2026-06-04*

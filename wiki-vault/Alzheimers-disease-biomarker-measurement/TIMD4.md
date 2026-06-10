@@ -3,7 +3,7 @@ disease: "Alzheimer's disease biomarker measurement"
 disease_id: "EFO_0006514"
 gene: "TIMD4"
 gene_name: "T cell immunoglobulin and mucin domain containing 4"
-get_score: 0.7103
+get_score: 0.6979
 genetic: 0.7004
 expression: 0.8707
 target: 0.5500
@@ -21,21 +21,21 @@ tau_single_cell: N/A
 bimodality_score: N/A
 bimodality_tissue: "—"
 status: draft
-tags: [disease2target, high-priority, no-trials, alzheimers-disease-biomarker-measurement]
-saved: "2026-06-01"
+tags: [disease2target, no-trials, alzheimers-disease-biomarker-measurement]
+saved: "2026-06-04"
 ---
 
 # TIMD4 — [[Alzheimers-disease-biomarker-measurement/_Index|Alzheimer's disease biomarker measurement]]
 
 > [!info] Evidence Snapshot
-> **GET Score:** 0.7103 &nbsp;|&nbsp; **Genetic:** 0.7004 &nbsp;|&nbsp; **Expression:** 0.8707 &nbsp;|&nbsp; **Target:** 0.5500
+> **GET Score:** 0.6979 &nbsp;|&nbsp; **Genetic:** 0.7004 &nbsp;|&nbsp; **Expression:** 0.8707 &nbsp;|&nbsp; **Target:** 0.5500
 > **Lit Velocity:** 0% &nbsp;|&nbsp; **CT Trials:** 0 &nbsp;|&nbsp; **Max Phase:** N/A
 
 ## Scores
 
 | Metric | Value | Signal |
 |--------|-------|--------|
-| **GET Score** | 0.7103 | 🟢 |
+| **GET Score** | 0.6979 | 🟡 |
 | Genetic (G) | 0.7004 | 🟢 |
 | Expression (E) | 0.8707 | 🟢 |
 | Target (T) | 0.5500 | 🟡 |
@@ -92,4 +92,4 @@ _Not yet generated — open the gene in Disease2Target and generate AI summary f
 _Write case study narrative here_
 
 ---
-*Saved from [Disease2Target](http://localhost:3000) on 2026-06-01*
+*Saved from [Disease2Target](http://localhost:3000) on 2026-06-04*

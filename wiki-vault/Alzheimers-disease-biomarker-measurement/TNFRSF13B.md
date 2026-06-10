@@ -3,7 +3,7 @@ disease: "Alzheimer's disease biomarker measurement"
 disease_id: "EFO_0006514"
 gene: "TNFRSF13B"
 gene_name: "TNF receptor superfamily member 13B"
-get_score: 0.5097
+get_score: 0.5848
 genetic: 0.7222
 expression: 0.9193
 target: 0.1000
@@ -22,20 +22,20 @@ bimodality_score: N/A
 bimodality_tissue: "—"
 status: draft
 tags: [disease2target, no-trials, alzheimers-disease-biomarker-measurement]
-saved: "2026-06-01"
+saved: "2026-06-04"
 ---
 
 # TNFRSF13B — [[Alzheimers-disease-biomarker-measurement/_Index|Alzheimer's disease biomarker measurement]]
 
 > [!info] Evidence Snapshot
-> **GET Score:** 0.5097 &nbsp;|&nbsp; **Genetic:** 0.7222 &nbsp;|&nbsp; **Expression:** 0.9193 &nbsp;|&nbsp; **Target:** 0.1000
+> **GET Score:** 0.5848 &nbsp;|&nbsp; **Genetic:** 0.7222 &nbsp;|&nbsp; **Expression:** 0.9193 &nbsp;|&nbsp; **Target:** 0.1000
 > **Lit Velocity:** 0% &nbsp;|&nbsp; **CT Trials:** 0 &nbsp;|&nbsp; **Max Phase:** N/A
 
 ## Scores
 
 | Metric | Value | Signal |
 |--------|-------|--------|
-| **GET Score** | 0.5097 | 🟡 |
+| **GET Score** | 0.5848 | 🟡 |
 | Genetic (G) | 0.7222 | 🟢 |
 | Expression (E) | 0.9193 | 🟢 |
 | Target (T) | 0.1000 | 🔴 |
@@ -66,7 +66,7 @@ saved: "2026-06-01"
 
 ## Related Genes (shared pathways)
 
-[[INPP5D]] · [[PTK2B]] · [[MMP3]] · [[CD33]] · [[ADAM10]] · [[PSME4]]
+[[PTK2B]] · [[TREM2]] · [[INPP5D]] · [[CD33]] · [[MMP3]] · [[PVR]]
 
 ---
 
@@ -96,4 +96,4 @@ _Not yet generated — open the gene in Disease2Target and generate AI summary f
 _Write case study narrative here_
 
 ---
-*Saved from [Disease2Target](http://localhost:3000) on 2026-06-01*
+*Saved from [Disease2Target](http://localhost:3000) on 2026-06-04*

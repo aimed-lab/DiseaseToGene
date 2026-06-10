@@ -1,12 +1,8 @@
 import express from "express";
 // Vite is a dev-only dependency — imported dynamically so it's never loaded in production
 import path from "path";
-import { fileURLToPath } from "url";
 import { createClient } from "@supabase/supabase-js";
 import { createHash } from "crypto";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 // ── Supabase admin client (service role — server-side only, never sent to browser) ──
 const supabaseAdmin = (() => {
@@ -18,6 +14,16 @@ const supabaseAdmin = (() => {
     }
     return null;
   }
+  return createClient(url, key, {
+    auth: { autoRefreshToken: false, persistSession: false },
+  });
+})();
+
+const supabaseAuthVerifier = (() => {
+  if (supabaseAdmin) return supabaseAdmin;
+  const url = process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_ANON_KEY;
+  if (!url || !key) return null;
   return createClient(url, key, {
     auth: { autoRefreshToken: false, persistSession: false },
   });
@@ -51,8 +57,10 @@ async function readApiCache(key: string): Promise<CachedApiResponse | null> {
       .maybeSingle();
     if (error || !data) return null;
     if (data.expires_at && new Date(data.expires_at).getTime() <= Date.now()) return null;
+    const status = Number(data.status || 200);
+    if (status < 200 || status >= 300) return null;
     return {
-      status: Number(data.status || 200),
+      status,
       body: data.response,
       contentType: data.content_type || undefined,
     };
@@ -106,11 +114,50 @@ async function requireAdmin(
   next();
 }
 
+async function requireAuthenticated(
+  req: express.Request,
+  res: express.Response,
+  next: express.NextFunction
+) {
+  if (!supabaseAuthVerifier) {
+    res.status(503).json({ error: 'Authentication is not configured' });
+    return;
+  }
+  const token = req.headers.authorization?.replace(/^Bearer\s+/i, '');
+  if (!token) {
+    res.status(401).json({ error: 'Authentication required' });
+    return;
+  }
+  const { data: { user }, error } = await supabaseAuthVerifier.auth.getUser(token);
+  if (error || !user) {
+    res.status(401).json({ error: 'Invalid or expired session' });
+    return;
+  }
+  next();
+}
+
 // ── Module-level Express app — exported for Vercel serverless entry point ──────
 export const app = express();
 
 // ── Gemini model — single source of truth, overridable via env ────────────────
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+const AI_RATE_LIMIT_WINDOW_MS = 60_000;
+const AI_RATE_LIMIT_MAX_REQUESTS = Number(process.env.AI_RATE_LIMIT_MAX_REQUESTS || 20);
+const aiRequestLog = new Map<string, number[]>();
+
+const NCBI_MIN_INTERVAL_MS = process.env.NCBI_API_KEY ? 110 : 500;
+let ncbiRequestQueue = Promise.resolve();
+let ncbiNextRequestAt = 0;
+
+const waitForNcbiSlot = (): Promise<void> => {
+  const scheduled = ncbiRequestQueue.then(async () => {
+    const waitMs = Math.max(0, ncbiNextRequestAt - Date.now());
+    if (waitMs > 0) await new Promise(resolve => setTimeout(resolve, waitMs));
+    ncbiNextRequestAt = Date.now() + NCBI_MIN_INTERVAL_MS;
+  });
+  ncbiRequestQueue = scheduled.catch(() => undefined);
+  return scheduled;
+};
 
 // ── Shared Gemini REST helper (module-level so it's available at setup time) ───
 const geminiGenerate = async (contents: object[], model = GEMINI_MODEL, responseMimeType?: string) => {
@@ -122,15 +169,24 @@ const geminiGenerate = async (contents: object[], model = GEMINI_MODEL, response
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
     { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
   );
-  const d = await r.json();
-  // Fix #11: surface API errors instead of silently returning empty string
-  if (d.error) throw new Error(`Gemini API error ${d.error.code}: ${d.error.message}`);
+  const raw = await r.text();
+  let d: any;
+  try {
+    d = JSON.parse(raw);
+  } catch {
+    throw new Error(`Gemini API returned an invalid response (${r.status})`);
+  }
+  if (!r.ok || d.error) {
+    throw new Error(`Gemini API error ${d.error?.code || r.status}: ${d.error?.message || r.statusText}`);
+  }
   return d.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
 };
 
 // ── setupRoutes — synchronous, called at module level so Vercel gets a
 //    fully-configured app immediately on import (fixes critical async race) ────
 function setupRoutes() {
+  app.set('trust proxy', 1);
+
   // Fix #6 CORS — allow same-origin and configured origin
   app.use((_req, res, next) => {
     const origin = process.env.ALLOWED_ORIGIN || '*';
@@ -150,51 +206,42 @@ function setupRoutes() {
 
   // ── AI Endpoints ─────────────────────────────────────────────────────────────
 
-  // NVIDIA AI chat proxy
-  app.post("/api/ai/chat", async (req, res) => {
-    const apiKey = process.env.NVIDIA_API_KEY;
-    if (!apiKey) return res.status(500).json({ error: "NVIDIA_API_KEY not configured" });
-    try {
-      const payload = { ...req.body, stream: false };
-      const response = await fetch("https://integrate.api.nvidia.com/v1/chat/completions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
-        body: JSON.stringify(payload),
-      });
-      const text = await response.text();
-      if (!text || !text.trim()) return res.status(502).json({ error: "Empty response from NVIDIA API" });
-      try {
-        res.json(JSON.parse(text));
-      } catch {
-        if (process.env.NODE_ENV !== 'production') console.error("NVIDIA non-JSON response:", text.slice(0, 500));
-        res.status(502).json({ error: "Invalid JSON from NVIDIA API", raw: text.slice(0, 300) });
-      }
-    } catch (err: any) {
-      res.status(500).json({ error: err.message });
+  app.use('/api/ai', requireAuthenticated, (req, res, next) => {
+    const now = Date.now();
+    const key = req.ip || req.socket.remoteAddress || 'unknown';
+    const recent = (aiRequestLog.get(key) || []).filter(ts => now - ts < AI_RATE_LIMIT_WINDOW_MS);
+    if (recent.length >= AI_RATE_LIMIT_MAX_REQUESTS) {
+      res.setHeader('Retry-After', '60');
+      res.status(429).json({ error: 'AI request limit reached. Try again in one minute.' });
+      return;
     }
+    recent.push(now);
+    aiRequestLog.set(key, recent);
+    if (aiRequestLog.size > 1000) {
+      for (const [client, timestamps] of aiRequestLog) {
+        if (timestamps.every(ts => now - ts >= AI_RATE_LIMIT_WINDOW_MS)) aiRequestLog.delete(client);
+      }
+    }
+    next();
   });
 
   // Generic AI generate — text prompt → text response
   app.post("/api/ai/generate", async (req, res) => {
     const { prompt } = req.body || {};
-    if (!prompt) return res.status(400).json({ error: "prompt is required" });
+    if (typeof prompt !== 'string' || !prompt.trim()) {
+      return res.status(400).json({ error: "prompt is required" });
+    }
+    if (prompt.length > 50_000) {
+      return res.status(413).json({ error: "prompt exceeds the 50,000 character limit" });
+    }
+    if (!process.env.GEMINI_API_KEY) {
+      return res.status(503).json({ error: "GEMINI_API_KEY not configured" });
+    }
     try {
-      if (process.env.NVIDIA_API_KEY) {
-        const nvRes = await fetch("https://integrate.api.nvidia.com/v1/chat/completions", {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${process.env.NVIDIA_API_KEY}` },
-          body: JSON.stringify({ model: "NVIDIABuild-Autogen-66", messages: [{ role: 'user', content: prompt }], temperature: 0.3 })
-        });
-        const nvData = await nvRes.json();
-        return res.json({ text: nvData.choices?.[0]?.message?.content?.trim() || "" });
-      } else if (process.env.GEMINI_API_KEY) {
-        const text = await geminiGenerate([{ parts: [{ text: prompt }] }]);
-        return res.json({ text });
-      } else {
-        return res.status(503).json({ error: "No AI API key configured (GEMINI_API_KEY or NVIDIA_API_KEY)" });
-      }
+      const text = await geminiGenerate([{ parts: [{ text: prompt.trim() }] }]);
+      return res.json({ text });
     } catch (err: any) {
-      res.status(500).json({ error: err.message });
+      res.status(502).json({ error: err.message });
     }
   });
 
@@ -221,15 +268,24 @@ function setupRoutes() {
         `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${key}`,
         { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
       );
-      const d = await r.json();
-      // Fix #11: surface Gemini errors
-      if (d.error) return res.status(502).json({ error: `Gemini API error ${d.error.code}: ${d.error.message}` });
+      const raw = await r.text();
+      let d: any;
+      try {
+        d = JSON.parse(raw);
+      } catch {
+        return res.status(502).json({ error: `Gemini API returned an invalid response (${r.status})` });
+      }
+      if (!r.ok || d.error) {
+        return res.status(502).json({
+          error: `Gemini API error ${d.error?.code || r.status}: ${d.error?.message || r.statusText}`,
+        });
+      }
       const candidate = d.candidates?.[0]?.content;
       const text = candidate?.parts?.find((p: any) => p.text)?.text?.trim() || "";
       const functionCalls = candidate?.parts?.filter((p: any) => p.functionCall).map((p: any) => p.functionCall) || [];
       res.json({ text, functionCalls });
     } catch (err: any) {
-      res.status(500).json({ error: err.message });
+      res.status(502).json({ error: err.message });
     }
   });
 
@@ -242,7 +298,7 @@ function setupRoutes() {
       const text = await geminiGenerate(contents, GEMINI_MODEL, 'application/json');
       res.json({ text });
     } catch (err: any) {
-      res.status(500).json({ error: err.message });
+      res.status(502).json({ error: err.message });
     }
   });
 
@@ -271,9 +327,31 @@ function setupRoutes() {
       return res.send(JSON.stringify(cached.body));
     }
     try {
-      const upstream = await fetch(target, {
-        headers: { 'Accept': 'application/json', 'User-Agent': 'DiseaseToTarget/2.0' }
-      });
+      const upstreamUrl = new URL(parsed.toString());
+      const isNcbi = upstreamUrl.hostname === 'eutils.ncbi.nlm.nih.gov';
+      if (isNcbi && process.env.NCBI_API_KEY && !upstreamUrl.searchParams.has('api_key')) {
+        upstreamUrl.searchParams.set('api_key', process.env.NCBI_API_KEY);
+      }
+
+      let upstream: Response | null = null;
+      for (let attempt = 0; attempt < 5; attempt++) {
+        if (isNcbi) await waitForNcbiSlot();
+        upstream = await fetch(upstreamUrl, {
+          headers: {
+            'Accept': 'application/json',
+            'User-Agent': 'DiseaseToTarget/2.0 (nkurmach@uab.edu)',
+          }
+        });
+        const retryable = upstream.status === 429 || upstream.status >= 500;
+        if (!retryable || attempt === 4) break;
+        await upstream.arrayBuffer();
+        const retryAfter = Number(upstream.headers.get('Retry-After'));
+        const backoff = Number.isFinite(retryAfter) && retryAfter > 0
+          ? retryAfter * 1000
+          : (upstream.status === 429 ? 1000 : 500) * 2 ** attempt;
+        await new Promise(resolve => setTimeout(resolve, backoff));
+      }
+      if (!upstream) throw new Error('External API request did not start');
       const text = await upstream.text();
       const contentType = upstream.headers.get('Content-Type') || 'application/json';
       await writeApiCache(key, { status: upstream.status, body: text, contentType });
@@ -411,7 +489,7 @@ function setupRoutes() {
   if (process.env.NODE_ENV === 'production' && !process.env.VERCEL) {
     const distDir = path.resolve(process.cwd(), 'dist');
     app.use(express.static(distDir));
-    app.get('*', (_req, res) => res.sendFile(path.join(distDir, 'index.html')));
+    app.get('/{*splat}', (_req, res) => res.sendFile(path.join(distDir, 'index.html')));
   }
 }
 

@@ -3,7 +3,7 @@ disease: "Alzheimer's disease biomarker measurement"
 disease_id: "EFO_0006514"
 gene: "ABCA7"
 gene_name: "ATP binding cassette subfamily A member 7"
-get_score: 0.7750
+get_score: 0.7480
 genetic: 0.7400
 expression: 1.0000
 target: 0.5500
@@ -22,20 +22,20 @@ bimodality_score: N/A
 bimodality_tissue: "—"
 status: draft
 tags: [disease2target, high-priority, emerging, phase-phase2, alzheimers-disease-biomarker-measurement]
-saved: "2026-06-01"
+saved: "2026-06-04"
 ---
 
 # ABCA7 — [[Alzheimers-disease-biomarker-measurement/_Index|Alzheimer's disease biomarker measurement]]
 
 > [!info] Evidence Snapshot
-> **GET Score:** 0.7750 &nbsp;|&nbsp; **Genetic:** 0.7400 &nbsp;|&nbsp; **Expression:** 1.0000 &nbsp;|&nbsp; **Target:** 0.5500
+> **GET Score:** 0.7480 &nbsp;|&nbsp; **Genetic:** 0.7400 &nbsp;|&nbsp; **Expression:** 1.0000 &nbsp;|&nbsp; **Target:** 0.5500
 > **Lit Velocity:** 57.1% &nbsp;|&nbsp; **CT Trials:** 4 &nbsp;|&nbsp; **Max Phase:** PHASE2
 
 ## Scores
 
 | Metric | Value | Signal |
 |--------|-------|--------|
-| **GET Score** | 0.7750 | 🟢 |
+| **GET Score** | 0.7480 | 🟢 |
 | Genetic (G) | 0.7400 | 🟢 |
 | Expression (E) | 1.0000 | 🟢 |
 | Target (T) | 0.5500 | 🟡 |
@@ -95,4 +95,4 @@ _Not yet generated — open the gene in Disease2Target and generate AI summary f
 _Write case study narrative here_
 
 ---
-*Saved from [Disease2Target](http://localhost:3000) on 2026-06-01*
+*Saved from [Disease2Target](http://localhost:3000) on 2026-06-04*

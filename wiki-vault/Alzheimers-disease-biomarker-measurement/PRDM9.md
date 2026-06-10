@@ -3,7 +3,7 @@ disease: "Alzheimer's disease biomarker measurement"
 disease_id: "EFO_0006514"
 gene: "PRDM9"
 gene_name: "PR/SET domain 9"
-get_score: 0.5486
+get_score: 0.5634
 genetic: 0.5814
 expression: 0.5473
 target: 0.5500
@@ -22,20 +22,20 @@ bimodality_score: N/A
 bimodality_tissue: "—"
 status: draft
 tags: [disease2target, no-trials, alzheimers-disease-biomarker-measurement]
-saved: "2026-06-01"
+saved: "2026-06-04"
 ---
 
 # PRDM9 — [[Alzheimers-disease-biomarker-measurement/_Index|Alzheimer's disease biomarker measurement]]
 
 > [!info] Evidence Snapshot
-> **GET Score:** 0.5486 &nbsp;|&nbsp; **Genetic:** 0.5814 &nbsp;|&nbsp; **Expression:** 0.5473 &nbsp;|&nbsp; **Target:** 0.5500
+> **GET Score:** 0.5634 &nbsp;|&nbsp; **Genetic:** 0.5814 &nbsp;|&nbsp; **Expression:** 0.5473 &nbsp;|&nbsp; **Target:** 0.5500
 > **Lit Velocity:** 0% &nbsp;|&nbsp; **CT Trials:** 0 &nbsp;|&nbsp; **Max Phase:** N/A
 
 ## Scores
 
 | Metric | Value | Signal |
 |--------|-------|--------|
-| **GET Score** | 0.5486 | 🟡 |
+| **GET Score** | 0.5634 | 🟡 |
 | Genetic (G) | 0.5814 | 🟡 |
 | Expression (E) | 0.5473 | 🟡 |
 | Target (T) | 0.5500 | 🟡 |
@@ -67,7 +67,7 @@ saved: "2026-06-01"
 
 ## Related Genes (shared pathways)
 
-[[CLU]] · [[CNTNAP2]] · [[PRDM16]]
+[[CLU]] · [[PRDM16]] · [[CNTNAP2]]
 
 ---
 
@@ -97,4 +97,4 @@ _Not yet generated — open the gene in Disease2Target and generate AI summary f
 _Write case study narrative here_
 
 ---
-*Saved from [Disease2Target](http://localhost:3000) on 2026-06-01*
+*Saved from [Disease2Target](http://localhost:3000) on 2026-06-04*

@@ -3,7 +3,7 @@ disease: "Alzheimer's disease biomarker measurement"
 disease_id: "EFO_0006514"
 gene: "GRIA4"
 gene_name: "glutamate ionotropic receptor AMPA type subunit 4"
-get_score: 0.9773
+get_score: 0.7913
 genetic: 0.5614
 expression: 0.9546
 target: 1.0000
@@ -22,20 +22,20 @@ bimodality_score: N/A
 bimodality_tissue: "—"
 status: draft
 tags: [disease2target, high-priority, no-trials, alzheimers-disease-biomarker-measurement]
-saved: "2026-06-01"
+saved: "2026-06-04"
 ---
 
 # GRIA4 — [[Alzheimers-disease-biomarker-measurement/_Index|Alzheimer's disease biomarker measurement]]
 
 > [!info] Evidence Snapshot
-> **GET Score:** 0.9773 &nbsp;|&nbsp; **Genetic:** 0.5614 &nbsp;|&nbsp; **Expression:** 0.9546 &nbsp;|&nbsp; **Target:** 1.0000
+> **GET Score:** 0.7913 &nbsp;|&nbsp; **Genetic:** 0.5614 &nbsp;|&nbsp; **Expression:** 0.9546 &nbsp;|&nbsp; **Target:** 1.0000
 > **Lit Velocity:** 0% &nbsp;|&nbsp; **CT Trials:** 0 &nbsp;|&nbsp; **Max Phase:** N/A
 
 ## Scores
 
 | Metric | Value | Signal |
 |--------|-------|--------|
-| **GET Score** | 0.9773 | 🟢 |
+| **GET Score** | 0.7913 | 🟢 |
 | Genetic (G) | 0.5614 | 🟡 |
 | Expression (E) | 0.9546 | 🟢 |
 | Target (T) | 1.0000 | 🟢 |
@@ -100,4 +100,4 @@ _Not yet generated — open the gene in Disease2Target and generate AI summary f
 _Write case study narrative here_
 
 ---
-*Saved from [Disease2Target](http://localhost:3000) on 2026-06-01*
+*Saved from [Disease2Target](http://localhost:3000) on 2026-06-04*

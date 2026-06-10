@@ -3,7 +3,7 @@ disease: "Alzheimer's disease biomarker measurement"
 disease_id: "EFO_0006514"
 gene: "PTK2B"
 gene_name: "protein tyrosine kinase 2 beta"
-get_score: 0.9171
+get_score: 0.8422
 genetic: 0.7581
 expression: 0.9843
 target: 0.8500
@@ -22,20 +22,20 @@ bimodality_score: N/A
 bimodality_tissue: "—"
 status: draft
 tags: [disease2target, high-priority, emerging, no-trials, alzheimers-disease-biomarker-measurement]
-saved: "2026-06-01"
+saved: "2026-06-04"
 ---
 
 # PTK2B — [[Alzheimers-disease-biomarker-measurement/_Index|Alzheimer's disease biomarker measurement]]
 
 > [!info] Evidence Snapshot
-> **GET Score:** 0.9171 &nbsp;|&nbsp; **Genetic:** 0.7581 &nbsp;|&nbsp; **Expression:** 0.9843 &nbsp;|&nbsp; **Target:** 0.8500
+> **GET Score:** 0.8422 &nbsp;|&nbsp; **Genetic:** 0.7581 &nbsp;|&nbsp; **Expression:** 0.9843 &nbsp;|&nbsp; **Target:** 0.8500
 > **Lit Velocity:** 100.0% &nbsp;|&nbsp; **CT Trials:** 0 &nbsp;|&nbsp; **Max Phase:** N/A
 
 ## Scores
 
 | Metric | Value | Signal |
 |--------|-------|--------|
-| **GET Score** | 0.9171 | 🟢 |
+| **GET Score** | 0.8422 | 🟢 |
 | Genetic (G) | 0.7581 | 🟢 |
 | Expression (E) | 0.9843 | 🟢 |
 | Target (T) | 0.8500 | 🟢 |
@@ -69,7 +69,7 @@ saved: "2026-06-01"
 
 ## Related Genes (shared pathways)
 
-[[MAPT]] · [[INPP5D]] · [[APOE]] · [[FERMT2]] · [[PVR]] · [[NCK2]]
+[[APOE]] · [[MAPT]] · [[INPP5D]] · [[PVR]] · [[FERMT2]] · [[NCK2]]
 
 ---
 
@@ -99,4 +99,4 @@ _Not yet generated — open the gene in Disease2Target and generate AI summary f
 _Write case study narrative here_
 
 ---
-*Saved from [Disease2Target](http://localhost:3000) on 2026-06-01*
+*Saved from [Disease2Target](http://localhost:3000) on 2026-06-04*

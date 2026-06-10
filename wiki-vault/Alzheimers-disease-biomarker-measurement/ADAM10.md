@@ -3,7 +3,7 @@ disease: "Alzheimer's disease biomarker measurement"
 disease_id: "EFO_0006514"
 gene: "ADAM10"
 gene_name: "ADAM metallopeptidase domain 10"
-get_score: 0.7750
+get_score: 0.7074
 genetic: 0.6498
 expression: 1.0000
 target: 0.5500
@@ -22,20 +22,20 @@ bimodality_score: N/A
 bimodality_tissue: "—"
 status: draft
 tags: [disease2target, high-priority, phase-n/a, alzheimers-disease-biomarker-measurement]
-saved: "2026-06-01"
+saved: "2026-06-04"
 ---
 
 # ADAM10 — [[Alzheimers-disease-biomarker-measurement/_Index|Alzheimer's disease biomarker measurement]]
 
 > [!info] Evidence Snapshot
-> **GET Score:** 0.7750 &nbsp;|&nbsp; **Genetic:** 0.6498 &nbsp;|&nbsp; **Expression:** 1.0000 &nbsp;|&nbsp; **Target:** 0.5500
+> **GET Score:** 0.7074 &nbsp;|&nbsp; **Genetic:** 0.6498 &nbsp;|&nbsp; **Expression:** 1.0000 &nbsp;|&nbsp; **Target:** 0.5500
 > **Lit Velocity:** 21.1% &nbsp;|&nbsp; **CT Trials:** 2 &nbsp;|&nbsp; **Max Phase:** N/A
 
 ## Scores
 
 | Metric | Value | Signal |
 |--------|-------|--------|
-| **GET Score** | 0.7750 | 🟢 |
+| **GET Score** | 0.7074 | 🟢 |
 | Genetic (G) | 0.6498 | 🟡 |
 | Expression (E) | 1.0000 | 🟢 |
 | Target (T) | 0.5500 | 🟡 |
@@ -70,7 +70,7 @@ saved: "2026-06-01"
 
 ## Related Genes (shared pathways)
 
-[[MAPT]] · [[APOE]] · [[PVR]] · [[SORL1]]
+[[APOE]] · [[MAPT]] · [[PVR]] · [[SORL1]]
 
 ---
 
@@ -100,4 +100,4 @@ _Not yet generated — open the gene in Disease2Target and generate AI summary f
 _Write case study narrative here_
 
 ---
-*Saved from [Disease2Target](http://localhost:3000) on 2026-06-01*
+*Saved from [Disease2Target](http://localhost:3000) on 2026-06-04*

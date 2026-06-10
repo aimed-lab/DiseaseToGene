@@ -3,13 +3,13 @@ disease: "Alzheimer's disease biomarker measurement"
 disease_id: "EFO_0006514"
 gene: "MAPT"
 gene_name: "microtubule associated protein tau"
-get_score: 0.9250
+get_score: 0.8169
 genetic: 0.6932
 expression: 1.0000
 target: 0.8500
-lit_velocity: "40.2%"
-lit_total_papers: 488
-lit_recent_papers: 196
+lit_velocity: "39.9%"
+lit_total_papers: 486
+lit_recent_papers: 194
 ct_trials: 132
 ct_max_phase: "PHASE4"
 ct_active: true
@@ -22,26 +22,26 @@ bimodality_score: N/A
 bimodality_tissue: "—"
 status: draft
 tags: [disease2target, high-priority, emerging, phase-phase4, alzheimers-disease-biomarker-measurement]
-saved: "2026-06-01"
+saved: "2026-06-04"
 ---
 
 # MAPT — [[Alzheimers-disease-biomarker-measurement/_Index|Alzheimer's disease biomarker measurement]]
 
 > [!info] Evidence Snapshot
-> **GET Score:** 0.9250 &nbsp;|&nbsp; **Genetic:** 0.6932 &nbsp;|&nbsp; **Expression:** 1.0000 &nbsp;|&nbsp; **Target:** 0.8500
-> **Lit Velocity:** 40.2% &nbsp;|&nbsp; **CT Trials:** 132 &nbsp;|&nbsp; **Max Phase:** PHASE4
+> **GET Score:** 0.8169 &nbsp;|&nbsp; **Genetic:** 0.6932 &nbsp;|&nbsp; **Expression:** 1.0000 &nbsp;|&nbsp; **Target:** 0.8500
+> **Lit Velocity:** 39.9% &nbsp;|&nbsp; **CT Trials:** 132 &nbsp;|&nbsp; **Max Phase:** PHASE4
 
 ## Scores
 
 | Metric | Value | Signal |
 |--------|-------|--------|
-| **GET Score** | 0.9250 | 🟢 |
+| **GET Score** | 0.8169 | 🟢 |
 | Genetic (G) | 0.6932 | 🟡 |
 | Expression (E) | 1.0000 | 🟢 |
 | Target (T) | 0.8500 | 🟢 |
-| Lit Velocity | 40.2% | 🟢 |
-| Lit Total Papers | 488 | |
-| Lit Recent (3y) | 196 | |
+| Lit Velocity | 39.9% | 🟢 |
+| Lit Total Papers | 486 | |
+| Lit Recent (3y) | 194 | |
 | EPMC Total | 135 | |
 | EPMC Recent (3y) | 54 | |
 | EPMC Velocity | 40.0% | |
@@ -68,7 +68,7 @@ saved: "2026-06-01"
 
 ## Related Genes (shared pathways)
 
-[[INPP5D]] · [[PTK2B]] · [[ADAM10]] · [[NCK2]]
+[[PTK2B]] · [[INPP5D]] · [[ADAM10]] · [[NCK2]]
 
 ---
 
@@ -98,4 +98,4 @@ _Not yet generated — open the gene in Disease2Target and generate AI summary f
 _Write case study narrative here_
 
 ---
-*Saved from [Disease2Target](http://localhost:3000) on 2026-06-01*
+*Saved from [Disease2Target](http://localhost:3000) on 2026-06-04*

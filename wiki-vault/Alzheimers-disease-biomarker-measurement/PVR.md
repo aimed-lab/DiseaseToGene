@@ -3,7 +3,7 @@ disease: "Alzheimer's disease biomarker measurement"
 disease_id: "EFO_0006514"
 gene: "PVR"
 gene_name: "PVR cell adhesion molecule"
-get_score: 0.7223
+get_score: 0.7437
 genetic: 0.7890
 expression: 0.8946
 target: 0.5500
@@ -22,20 +22,20 @@ bimodality_score: N/A
 bimodality_tissue: "—"
 status: draft
 tags: [disease2target, high-priority, emerging, no-trials, alzheimers-disease-biomarker-measurement]
-saved: "2026-06-01"
+saved: "2026-06-04"
 ---
 
 # PVR — [[Alzheimers-disease-biomarker-measurement/_Index|Alzheimer's disease biomarker measurement]]
 
 > [!info] Evidence Snapshot
-> **GET Score:** 0.7223 &nbsp;|&nbsp; **Genetic:** 0.7890 &nbsp;|&nbsp; **Expression:** 0.8946 &nbsp;|&nbsp; **Target:** 0.5500
+> **GET Score:** 0.7437 &nbsp;|&nbsp; **Genetic:** 0.7890 &nbsp;|&nbsp; **Expression:** 0.8946 &nbsp;|&nbsp; **Target:** 0.5500
 > **Lit Velocity:** 100.0% &nbsp;|&nbsp; **CT Trials:** 0 &nbsp;|&nbsp; **Max Phase:** N/A
 
 ## Scores
 
 | Metric | Value | Signal |
 |--------|-------|--------|
-| **GET Score** | 0.7223 | 🟢 |
+| **GET Score** | 0.7437 | 🟢 |
 | Genetic (G) | 0.7890 | 🟢 |
 | Expression (E) | 0.8946 | 🟢 |
 | Target (T) | 0.5500 | 🟡 |
@@ -67,7 +67,7 @@ saved: "2026-06-01"
 
 ## Related Genes (shared pathways)
 
-[[INPP5D]] · [[PTK2B]] · [[MMP3]] · [[CD33]] · [[ADAM10]] · [[FERMT2]]
+[[PTK2B]] · [[TREM2]] · [[INPP5D]] · [[CD33]] · [[MMP3]] · [[PILRA]]
 
 ---
 
@@ -97,4 +97,4 @@ _Not yet generated — open the gene in Disease2Target and generate AI summary f
 _Write case study narrative here_
 
 ---
-*Saved from [Disease2Target](http://localhost:3000) on 2026-06-01*
+*Saved from [Disease2Target](http://localhost:3000) on 2026-06-04*

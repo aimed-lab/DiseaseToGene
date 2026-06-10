@@ -3,7 +3,7 @@ disease: "Alzheimer's disease biomarker measurement"
 disease_id: "EFO_0006514"
 gene: "MMP3"
 gene_name: "matrix metallopeptidase 3"
-get_score: 0.9012
+get_score: 0.7477
 genetic: 0.5657
 expression: 0.9525
 target: 0.8500
@@ -22,20 +22,20 @@ bimodality_score: N/A
 bimodality_tissue: "—"
 status: draft
 tags: [disease2target, high-priority, phase-n/a, alzheimers-disease-biomarker-measurement]
-saved: "2026-06-01"
+saved: "2026-06-04"
 ---
 
 # MMP3 — [[Alzheimers-disease-biomarker-measurement/_Index|Alzheimer's disease biomarker measurement]]
 
 > [!info] Evidence Snapshot
-> **GET Score:** 0.9012 &nbsp;|&nbsp; **Genetic:** 0.5657 &nbsp;|&nbsp; **Expression:** 0.9525 &nbsp;|&nbsp; **Target:** 0.8500
+> **GET Score:** 0.7477 &nbsp;|&nbsp; **Genetic:** 0.5657 &nbsp;|&nbsp; **Expression:** 0.9525 &nbsp;|&nbsp; **Target:** 0.8500
 > **Lit Velocity:** 28.6% &nbsp;|&nbsp; **CT Trials:** 1 &nbsp;|&nbsp; **Max Phase:** N/A
 
 ## Scores
 
 | Metric | Value | Signal |
 |--------|-------|--------|
-| **GET Score** | 0.9012 | 🟢 |
+| **GET Score** | 0.7477 | 🟢 |
 | Genetic (G) | 0.5657 | 🟡 |
 | Expression (E) | 0.9525 | 🟢 |
 | Target (T) | 0.8500 | 🟢 |
@@ -70,7 +70,7 @@ saved: "2026-06-01"
 
 ## Related Genes (shared pathways)
 
-[[INPP5D]] · [[PTK2B]] · [[CD33]] · [[ADAM10]] · [[PSME4]] · [[TREM2]]
+[[PTK2B]] · [[TREM2]] · [[INPP5D]] · [[CD33]] · [[PVR]] · [[PILRA]]
 
 ---
 
@@ -100,4 +100,4 @@ _Not yet generated — open the gene in Disease2Target and generate AI summary f
 _Write case study narrative here_
 
 ---
-*Saved from [Disease2Target](http://localhost:3000) on 2026-06-01*
+*Saved from [Disease2Target](http://localhost:3000) on 2026-06-04*

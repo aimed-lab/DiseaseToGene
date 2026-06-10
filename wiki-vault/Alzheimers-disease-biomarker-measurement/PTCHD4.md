@@ -3,7 +3,7 @@ disease: "Alzheimer's disease biomarker measurement"
 disease_id: "EFO_0006514"
 gene: "PTCHD4"
 gene_name: "patched domain containing 4"
-get_score: 0.4001
+get_score: 0.4547
 genetic: 0.5546
 expression: 0.7003
 target: 0.1000
@@ -22,20 +22,20 @@ bimodality_score: N/A
 bimodality_tissue: "—"
 status: draft
 tags: [disease2target, no-trials, alzheimers-disease-biomarker-measurement]
-saved: "2026-06-01"
+saved: "2026-06-04"
 ---
 
 # PTCHD4 — [[Alzheimers-disease-biomarker-measurement/_Index|Alzheimer's disease biomarker measurement]]
 
 > [!info] Evidence Snapshot
-> **GET Score:** 0.4001 &nbsp;|&nbsp; **Genetic:** 0.5546 &nbsp;|&nbsp; **Expression:** 0.7003 &nbsp;|&nbsp; **Target:** 0.1000
+> **GET Score:** 0.4547 &nbsp;|&nbsp; **Genetic:** 0.5546 &nbsp;|&nbsp; **Expression:** 0.7003 &nbsp;|&nbsp; **Target:** 0.1000
 > **Lit Velocity:** 0% &nbsp;|&nbsp; **CT Trials:** 0 &nbsp;|&nbsp; **Max Phase:** N/A
 
 ## Scores
 
 | Metric | Value | Signal |
 |--------|-------|--------|
-| **GET Score** | 0.4001 | 🟡 |
+| **GET Score** | 0.4547 | 🟡 |
 | Genetic (G) | 0.5546 | 🟡 |
 | Expression (E) | 0.7003 | 🟢 |
 | Target (T) | 0.1000 | 🔴 |
@@ -92,4 +92,4 @@ _Not yet generated — open the gene in Disease2Target and generate AI summary f
 _Write case study narrative here_
 
 ---
-*Saved from [Disease2Target](http://localhost:3000) on 2026-06-01*
+*Saved from [Disease2Target](http://localhost:3000) on 2026-06-04*

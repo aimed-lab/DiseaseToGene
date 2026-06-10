@@ -8,21 +8,21 @@ genetic: 0.8546
 expression: 1.0000
 target: 0.5500
 lit_velocity: "22.6%"
-lit_total_papers: 14844
-lit_recent_papers: 3354
+lit_total_papers: 14851
+lit_recent_papers: 3362
 ct_trials: 208
 ct_max_phase: "PHASE4"
 ct_active: true
-epmc_total: 611
-epmc_recent: 222
-epmc_velocity: "36.3%"
+epmc_total: 618
+epmc_recent: 229
+epmc_velocity: "37.1%"
 tau_tissue: N/A
 tau_single_cell: N/A
 bimodality_score: N/A
 bimodality_tissue: "—"
 status: draft
 tags: [disease2target, high-priority, phase-phase4, late-onset-alzheimers-disease]
-saved: "2026-06-02"
+saved: "2026-06-04"
 ---
 
 # APOE — [[late-onset-Alzheimers-disease/_Index|late-onset Alzheimers disease]]
@@ -40,11 +40,11 @@ saved: "2026-06-02"
 | Expression (E) | 1.0000 | 🟢 |
 | Target (T) | 0.5500 | 🟡 |
 | Lit Velocity | 22.6% | 🟡 |
-| Lit Total Papers | 14844 | |
-| Lit Recent (3y) | 3354 | |
-| EPMC Total | 611 | |
-| EPMC Recent (3y) | 222 | |
-| EPMC Velocity | 36.3% | |
+| Lit Total Papers | 14851 | |
+| Lit Recent (3y) | 3362 | |
+| EPMC Total | 618 | |
+| EPMC Recent (3y) | 229 | |
+| EPMC Velocity | 37.1% | |
 | CT Trials | 208 | 🟢 |
 | CT Max Phase | PHASE4 | |
 | CT Active Trial | ✅ Yes | |
@@ -100,4 +100,4 @@ _Not yet generated — open the gene in Disease2Target and generate AI summary f
 _Write case study narrative here_
 
 ---
-*Saved from [Disease2Target](http://localhost:3000) on 2026-06-02*
+*Saved from [Disease2Target](http://localhost:3000) on 2026-06-04*

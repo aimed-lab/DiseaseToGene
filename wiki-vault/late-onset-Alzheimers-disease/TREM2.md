@@ -13,16 +13,16 @@ lit_recent_papers: 636
 ct_trials: 10
 ct_max_phase: "PHASE3"
 ct_active: true
-epmc_total: 111
-epmc_recent: 45
-epmc_velocity: "40.5%"
+epmc_total: 114
+epmc_recent: 48
+epmc_velocity: "42.1%"
 tau_tissue: N/A
 tau_single_cell: N/A
 bimodality_score: N/A
 bimodality_tissue: "—"
 status: draft
 tags: [disease2target, emerging, phase-phase3, late-onset-alzheimers-disease]
-saved: "2026-06-02"
+saved: "2026-06-04"
 ---
 
 # TREM2 — [[late-onset-Alzheimers-disease/_Index|late-onset Alzheimers disease]]
@@ -42,9 +42,9 @@ saved: "2026-06-02"
 | Lit Velocity | 43.6% | 🟢 |
 | Lit Total Papers | 1458 | |
 | Lit Recent (3y) | 636 | |
-| EPMC Total | 111 | |
-| EPMC Recent (3y) | 45 | |
-| EPMC Velocity | 40.5% | |
+| EPMC Total | 114 | |
+| EPMC Recent (3y) | 48 | |
+| EPMC Velocity | 42.1% | |
 | CT Trials | 10 | 🟢 |
 | CT Max Phase | PHASE3 | |
 | CT Active Trial | ✅ Yes | |
@@ -99,4 +99,4 @@ _Not yet generated — open the gene in Disease2Target and generate AI summary f
 _Write case study narrative here_
 
 ---
-*Saved from [Disease2Target](http://localhost:3000) on 2026-06-02*
+*Saved from [Disease2Target](http://localhost:3000) on 2026-06-04*

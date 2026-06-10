@@ -3,7 +3,7 @@ disease: "Alzheimer's disease biomarker measurement"
 disease_id: "EFO_0006514"
 gene: "NCK2"
 gene_name: "NCK adaptor protein 2"
-get_score: 0.6962
+get_score: 0.6822
 genetic: 0.6812
 expression: 0.8425
 target: 0.5500
@@ -22,20 +22,20 @@ bimodality_score: N/A
 bimodality_tissue: "—"
 status: draft
 tags: [disease2target, no-trials, alzheimers-disease-biomarker-measurement]
-saved: "2026-06-01"
+saved: "2026-06-04"
 ---
 
 # NCK2 — [[Alzheimers-disease-biomarker-measurement/_Index|Alzheimer's disease biomarker measurement]]
 
 > [!info] Evidence Snapshot
-> **GET Score:** 0.6962 &nbsp;|&nbsp; **Genetic:** 0.6812 &nbsp;|&nbsp; **Expression:** 0.8425 &nbsp;|&nbsp; **Target:** 0.5500
+> **GET Score:** 0.6822 &nbsp;|&nbsp; **Genetic:** 0.6812 &nbsp;|&nbsp; **Expression:** 0.8425 &nbsp;|&nbsp; **Target:** 0.5500
 > **Lit Velocity:** 0% &nbsp;|&nbsp; **CT Trials:** 0 &nbsp;|&nbsp; **Max Phase:** N/A
 
 ## Scores
 
 | Metric | Value | Signal |
 |--------|-------|--------|
-| **GET Score** | 0.6962 | 🟡 |
+| **GET Score** | 0.6822 | 🟡 |
 | Genetic (G) | 0.6812 | 🟡 |
 | Expression (E) | 0.8425 | 🟢 |
 | Target (T) | 0.5500 | 🟡 |
@@ -70,7 +70,7 @@ saved: "2026-06-01"
 
 ## Related Genes (shared pathways)
 
-[[MAPT]] · [[INPP5D]] · [[PTK2B]] · [[FERMT2]] · [[PVR]] · [[CD2AP]]
+[[PTK2B]] · [[MAPT]] · [[INPP5D]] · [[PVR]] · [[FERMT2]] · [[CD2AP]]
 
 ---
 
@@ -100,4 +100,4 @@ _Not yet generated — open the gene in Disease2Target and generate AI summary f
 _Write case study narrative here_
 
 ---
-*Saved from [Disease2Target](http://localhost:3000) on 2026-06-01*
+*Saved from [Disease2Target](http://localhost:3000) on 2026-06-04*

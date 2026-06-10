@@ -3,7 +3,7 @@ disease: "Alzheimer's disease biomarker measurement"
 disease_id: "EFO_0006514"
 gene: "CEACAM19"
 gene_name: "CEA cell adhesion molecule 19"
-get_score: 0.4625
+get_score: 0.5718
 genetic: 0.7456
 expression: 0.8250
 target: 0.1000
@@ -22,20 +22,20 @@ bimodality_score: N/A
 bimodality_tissue: "—"
 status: draft
 tags: [disease2target, no-trials, alzheimers-disease-biomarker-measurement]
-saved: "2026-06-01"
+saved: "2026-06-04"
 ---
 
 # CEACAM19 — [[Alzheimers-disease-biomarker-measurement/_Index|Alzheimer's disease biomarker measurement]]
 
 > [!info] Evidence Snapshot
-> **GET Score:** 0.4625 &nbsp;|&nbsp; **Genetic:** 0.7456 &nbsp;|&nbsp; **Expression:** 0.8250 &nbsp;|&nbsp; **Target:** 0.1000
+> **GET Score:** 0.5718 &nbsp;|&nbsp; **Genetic:** 0.7456 &nbsp;|&nbsp; **Expression:** 0.8250 &nbsp;|&nbsp; **Target:** 0.1000
 > **Lit Velocity:** 0% &nbsp;|&nbsp; **CT Trials:** 0 &nbsp;|&nbsp; **Max Phase:** N/A
 
 ## Scores
 
 | Metric | Value | Signal |
 |--------|-------|--------|
-| **GET Score** | 0.4625 | 🟡 |
+| **GET Score** | 0.5718 | 🟡 |
 | Genetic (G) | 0.7456 | 🟢 |
 | Expression (E) | 0.8250 | 🟢 |
 | Target (T) | 0.1000 | 🔴 |
@@ -92,4 +92,4 @@ _Not yet generated — open the gene in Disease2Target and generate AI summary f
 _Write case study narrative here_
 
 ---
-*Saved from [Disease2Target](http://localhost:3000) on 2026-06-01*
+*Saved from [Disease2Target](http://localhost:3000) on 2026-06-04*

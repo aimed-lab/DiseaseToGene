@@ -3,7 +3,7 @@ disease: "Alzheimer's disease biomarker measurement"
 disease_id: "EFO_0006514"
 gene: "EPB41L1"
 gene_name: "erythrocyte membrane protein band 4.1 like 1"
-get_score: 0.5500
+get_score: 0.5371
 genetic: 0.5714
 expression: 1.0000
 target: 0.1000
@@ -22,20 +22,20 @@ bimodality_score: N/A
 bimodality_tissue: "—"
 status: draft
 tags: [disease2target, no-trials, alzheimers-disease-biomarker-measurement]
-saved: "2026-06-01"
+saved: "2026-06-04"
 ---
 
 # EPB41L1 — [[Alzheimers-disease-biomarker-measurement/_Index|Alzheimer's disease biomarker measurement]]
 
 > [!info] Evidence Snapshot
-> **GET Score:** 0.5500 &nbsp;|&nbsp; **Genetic:** 0.5714 &nbsp;|&nbsp; **Expression:** 1.0000 &nbsp;|&nbsp; **Target:** 0.1000
+> **GET Score:** 0.5371 &nbsp;|&nbsp; **Genetic:** 0.5714 &nbsp;|&nbsp; **Expression:** 1.0000 &nbsp;|&nbsp; **Target:** 0.1000
 > **Lit Velocity:** 0% &nbsp;|&nbsp; **CT Trials:** 0 &nbsp;|&nbsp; **Max Phase:** N/A
 
 ## Scores
 
 | Metric | Value | Signal |
 |--------|-------|--------|
-| **GET Score** | 0.5500 | 🟡 |
+| **GET Score** | 0.5371 | 🟡 |
 | Genetic (G) | 0.5714 | 🟡 |
 | Expression (E) | 1.0000 | 🟢 |
 | Target (T) | 0.1000 | 🔴 |
@@ -69,7 +69,7 @@ saved: "2026-06-01"
 
 ## Related Genes (shared pathways)
 
-[[GRIA4]] · [[MAPT]]
+[[MAPT]] · [[GRIA4]]
 
 ---
 
@@ -99,4 +99,4 @@ _Not yet generated — open the gene in Disease2Target and generate AI summary f
 _Write case study narrative here_
 
 ---
-*Saved from [Disease2Target](http://localhost:3000) on 2026-06-01*
+*Saved from [Disease2Target](http://localhost:3000) on 2026-06-04*

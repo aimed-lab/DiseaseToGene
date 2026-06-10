@@ -3,7 +3,7 @@ disease: "Alzheimer's disease biomarker measurement"
 disease_id: "EFO_0006514"
 gene: "SORL1"
 gene_name: "sortilin related receptor 1"
-get_score: 0.5500
+get_score: 0.6167
 genetic: 0.7483
 expression: 1.0000
 target: 0.1000
@@ -22,20 +22,20 @@ bimodality_score: N/A
 bimodality_tissue: "—"
 status: draft
 tags: [disease2target, emerging, phase-n/a, alzheimers-disease-biomarker-measurement]
-saved: "2026-06-01"
+saved: "2026-06-04"
 ---
 
 # SORL1 — [[Alzheimers-disease-biomarker-measurement/_Index|Alzheimer's disease biomarker measurement]]
 
 > [!info] Evidence Snapshot
-> **GET Score:** 0.5500 &nbsp;|&nbsp; **Genetic:** 0.7483 &nbsp;|&nbsp; **Expression:** 1.0000 &nbsp;|&nbsp; **Target:** 0.1000
+> **GET Score:** 0.6167 &nbsp;|&nbsp; **Genetic:** 0.7483 &nbsp;|&nbsp; **Expression:** 1.0000 &nbsp;|&nbsp; **Target:** 0.1000
 > **Lit Velocity:** 40.0% &nbsp;|&nbsp; **CT Trials:** 2 &nbsp;|&nbsp; **Max Phase:** N/A
 
 ## Scores
 
 | Metric | Value | Signal |
 |--------|-------|--------|
-| **GET Score** | 0.5500 | 🟡 |
+| **GET Score** | 0.6167 | 🟡 |
 | Genetic (G) | 0.7483 | 🟢 |
 | Expression (E) | 1.0000 | 🟢 |
 | Target (T) | 0.1000 | 🔴 |
@@ -93,4 +93,4 @@ _Not yet generated — open the gene in Disease2Target and generate AI summary f
 _Write case study narrative here_
 
 ---
-*Saved from [Disease2Target](http://localhost:3000) on 2026-06-01*
+*Saved from [Disease2Target](http://localhost:3000) on 2026-06-04*

@@ -3,7 +3,7 @@ disease: "Alzheimer's disease biomarker measurement"
 disease_id: "EFO_0006514"
 gene: "ACE"
 gene_name: "angiotensin I converting enzyme"
-get_score: 1.0000
+get_score: 0.8541
 genetic: 0.6757
 expression: 1.0000
 target: 1.0000
@@ -13,38 +13,38 @@ lit_recent_papers: 43
 ct_trials: 96
 ct_max_phase: "PHASE4"
 ct_active: true
-epmc_total: 151
-epmc_recent: 32
-epmc_velocity: "21.2%"
+epmc_total: 152
+epmc_recent: 33
+epmc_velocity: "21.7%"
 tau_tissue: N/A
 tau_single_cell: N/A
 bimodality_score: N/A
 bimodality_tissue: "—"
 status: draft
 tags: [disease2target, high-priority, emerging, phase-phase4, alzheimers-disease-biomarker-measurement]
-saved: "2026-06-01"
+saved: "2026-06-04"
 ---
 
 # ACE — [[Alzheimers-disease-biomarker-measurement/_Index|Alzheimer's disease biomarker measurement]]
 
 > [!info] Evidence Snapshot
-> **GET Score:** 1.0000 &nbsp;|&nbsp; **Genetic:** 0.6757 &nbsp;|&nbsp; **Expression:** 1.0000 &nbsp;|&nbsp; **Target:** 1.0000
+> **GET Score:** 0.8541 &nbsp;|&nbsp; **Genetic:** 0.6757 &nbsp;|&nbsp; **Expression:** 1.0000 &nbsp;|&nbsp; **Target:** 1.0000
 > **Lit Velocity:** 43.4% &nbsp;|&nbsp; **CT Trials:** 96 &nbsp;|&nbsp; **Max Phase:** PHASE4
 
 ## Scores
 
 | Metric | Value | Signal |
 |--------|-------|--------|
-| **GET Score** | 1.0000 | 🟢 |
+| **GET Score** | 0.8541 | 🟢 |
 | Genetic (G) | 0.6757 | 🟡 |
 | Expression (E) | 1.0000 | 🟢 |
 | Target (T) | 1.0000 | 🟢 |
 | Lit Velocity | 43.4% | 🟢 |
 | Lit Total Papers | 99 | |
 | Lit Recent (3y) | 43 | |
-| EPMC Total | 151 | |
-| EPMC Recent (3y) | 32 | |
-| EPMC Velocity | 21.2% | |
+| EPMC Total | 152 | |
+| EPMC Recent (3y) | 33 | |
+| EPMC Velocity | 21.7% | |
 | CT Trials | 96 | 🟢 |
 | CT Max Phase | PHASE4 | |
 | CT Active Trial | ✅ Yes | |
@@ -96,4 +96,4 @@ _Not yet generated — open the gene in Disease2Target and generate AI summary f
 _Write case study narrative here_
 
 ---
-*Saved from [Disease2Target](http://localhost:3000) on 2026-06-01*
+*Saved from [Disease2Target](http://localhost:3000) on 2026-06-04*

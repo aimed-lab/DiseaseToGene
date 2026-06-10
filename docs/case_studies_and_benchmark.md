@@ -8,7 +8,7 @@ Disease2Target is a disease-to-target prioritization workspace. It starts from a
 
 Current implemented capabilities:
 
-- Disease normalization and disease lookup through Open Targets, with Gemini/NVIDIA fallback for imprecise names.
+- Disease normalization and disease lookup through Open Targets, with Gemini fallback for imprecise names.
 - Target ranking from Open Targets target-disease associations.
 - GET score: genetics, expression, and tractability-derived targetability.
 - Clinical drill-down from ClinicalTrials.gov, including trial count, max phase, interventional studies, phase breakdown, active trial status, top interventions, and sponsor breakdown.

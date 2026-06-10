@@ -3,7 +3,7 @@ disease: "Alzheimer's disease biomarker measurement"
 disease_id: "EFO_0006514"
 gene: "CLU"
 gene_name: "clusterin"
-get_score: 0.5500
+get_score: 0.6445
 genetic: 0.8101
 expression: 1.0000
 target: 0.1000
@@ -22,20 +22,20 @@ bimodality_score: N/A
 bimodality_tissue: "—"
 status: draft
 tags: [disease2target, phase-phase2, alzheimers-disease-biomarker-measurement]
-saved: "2026-06-01"
+saved: "2026-06-04"
 ---
 
 # CLU — [[Alzheimers-disease-biomarker-measurement/_Index|Alzheimer's disease biomarker measurement]]
 
 > [!info] Evidence Snapshot
-> **GET Score:** 0.5500 &nbsp;|&nbsp; **Genetic:** 0.8101 &nbsp;|&nbsp; **Expression:** 1.0000 &nbsp;|&nbsp; **Target:** 0.1000
+> **GET Score:** 0.6445 &nbsp;|&nbsp; **Genetic:** 0.8101 &nbsp;|&nbsp; **Expression:** 1.0000 &nbsp;|&nbsp; **Target:** 0.1000
 > **Lit Velocity:** 17.5% &nbsp;|&nbsp; **CT Trials:** 5 &nbsp;|&nbsp; **Max Phase:** PHASE2
 
 ## Scores
 
 | Metric | Value | Signal |
 |--------|-------|--------|
-| **GET Score** | 0.5500 | 🟡 |
+| **GET Score** | 0.6445 | 🟡 |
 | Genetic (G) | 0.8101 | 🟢 |
 | Expression (E) | 1.0000 | 🟢 |
 | Target (T) | 0.1000 | 🔴 |
@@ -70,7 +70,7 @@ saved: "2026-06-01"
 
 ## Related Genes (shared pathways)
 
-[[INPP5D]] · [[PTK2B]] · [[MMP3]] · [[CD33]] · [[ADAM10]] · [[PSME4]]
+[[PTK2B]] · [[TREM2]] · [[INPP5D]] · [[CD33]] · [[MMP3]] · [[PVR]]
 
 ---
 
@@ -100,4 +100,4 @@ _Not yet generated — open the gene in Disease2Target and generate AI summary f
 _Write case study narrative here_
 
 ---
-*Saved from [Disease2Target](http://localhost:3000) on 2026-06-01*
+*Saved from [Disease2Target](http://localhost:3000) on 2026-06-04*

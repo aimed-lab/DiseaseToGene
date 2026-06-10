@@ -3,7 +3,7 @@ disease: "Alzheimer's disease biomarker measurement"
 disease_id: "EFO_0006514"
 gene: "ECHDC3"
 gene_name: "enoyl-CoA hydratase domain containing 3"
-get_score: 0.6834
+get_score: 0.6229
 genetic: 0.5804
 expression: 0.9668
 target: 0.4000
@@ -22,20 +22,20 @@ bimodality_score: N/A
 bimodality_tissue: "—"
 status: draft
 tags: [disease2target, no-trials, alzheimers-disease-biomarker-measurement]
-saved: "2026-06-01"
+saved: "2026-06-04"
 ---
 
 # ECHDC3 — [[Alzheimers-disease-biomarker-measurement/_Index|Alzheimer's disease biomarker measurement]]
 
 > [!info] Evidence Snapshot
-> **GET Score:** 0.6834 &nbsp;|&nbsp; **Genetic:** 0.5804 &nbsp;|&nbsp; **Expression:** 0.9668 &nbsp;|&nbsp; **Target:** 0.4000
+> **GET Score:** 0.6229 &nbsp;|&nbsp; **Genetic:** 0.5804 &nbsp;|&nbsp; **Expression:** 0.9668 &nbsp;|&nbsp; **Target:** 0.4000
 > **Lit Velocity:** 0% &nbsp;|&nbsp; **CT Trials:** 0 &nbsp;|&nbsp; **Max Phase:** N/A
 
 ## Scores
 
 | Metric | Value | Signal |
 |--------|-------|--------|
-| **GET Score** | 0.6834 | 🟡 |
+| **GET Score** | 0.6229 | 🟡 |
 | Genetic (G) | 0.5804 | 🟡 |
 | Expression (E) | 0.9668 | 🟢 |
 | Target (T) | 0.4000 | 🟡 |
@@ -92,4 +92,4 @@ _Not yet generated — open the gene in Disease2Target and generate AI summary f
 _Write case study narrative here_
 
 ---
-*Saved from [Disease2Target](http://localhost:3000) on 2026-06-01*
+*Saved from [Disease2Target](http://localhost:3000) on 2026-06-04*

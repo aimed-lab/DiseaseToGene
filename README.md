@@ -18,12 +18,12 @@ An AI-powered platform that takes a disease name and produces a ranked, evidence
 
 3. Run the app:
    ```
-   npx tsx server.ts
+   npm run dev
    ```
 
    Open [http://localhost:3000](http://localhost:3000)
 
-> **Important:** Use `npx tsx server.ts`, not `npm run dev`. The app needs the Express server running alongside Vite — without it, all external API calls (ClinicalTrials, PubMed, Protein Atlas, PubTator) will return empty results.
+`npm run dev` starts the Express API and Vite middleware together.
 
 ## Optional Environment Variables
 
@@ -31,7 +31,9 @@ An AI-powered platform that takes a disease name and produces a ranked, evidence
 |---|---|
 | `NOTION_TOKEN` | Notion integration token — enables Export → Notion |
 | `NOTION_DATABASE_ID` | Target Notion database ID |
-| `NVIDIA_API_KEY` | NVIDIA NIM — fallback AI for disease name correction and target summaries |
+| `GEMINI_MODEL` | Gemini model override; defaults to `gemini-2.5-flash` |
+| `NCBI_API_KEY` | Raises the PubMed E-Utilities request allowance |
+| `AI_RATE_LIMIT_MAX_REQUESTS` | Maximum AI requests per client per minute; defaults to 20 |
 
 ## What It Does
 

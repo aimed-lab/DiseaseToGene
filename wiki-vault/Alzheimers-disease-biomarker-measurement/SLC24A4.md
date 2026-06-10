@@ -3,7 +3,7 @@ disease: "Alzheimer's disease biomarker measurement"
 disease_id: "EFO_0006514"
 gene: "SLC24A4"
 gene_name: "solute carrier family 24 member 4"
-get_score: 0.5231
+get_score: 0.5417
 genetic: 0.6115
 expression: 0.9462
 target: 0.1000
@@ -22,20 +22,20 @@ bimodality_score: N/A
 bimodality_tissue: "—"
 status: draft
 tags: [disease2target, no-trials, alzheimers-disease-biomarker-measurement]
-saved: "2026-06-01"
+saved: "2026-06-04"
 ---
 
 # SLC24A4 — [[Alzheimers-disease-biomarker-measurement/_Index|Alzheimer's disease biomarker measurement]]
 
 > [!info] Evidence Snapshot
-> **GET Score:** 0.5231 &nbsp;|&nbsp; **Genetic:** 0.6115 &nbsp;|&nbsp; **Expression:** 0.9462 &nbsp;|&nbsp; **Target:** 0.1000
+> **GET Score:** 0.5417 &nbsp;|&nbsp; **Genetic:** 0.6115 &nbsp;|&nbsp; **Expression:** 0.9462 &nbsp;|&nbsp; **Target:** 0.1000
 > **Lit Velocity:** 0% &nbsp;|&nbsp; **CT Trials:** 0 &nbsp;|&nbsp; **Max Phase:** N/A
 
 ## Scores
 
 | Metric | Value | Signal |
 |--------|-------|--------|
-| **GET Score** | 0.5231 | 🟡 |
+| **GET Score** | 0.5417 | 🟡 |
 | Genetic (G) | 0.6115 | 🟡 |
 | Expression (E) | 0.9462 | 🟢 |
 | Target (T) | 0.1000 | 🔴 |
@@ -97,4 +97,4 @@ _Not yet generated — open the gene in Disease2Target and generate AI summary f
 _Write case study narrative here_
 
 ---
-*Saved from [Disease2Target](http://localhost:3000) on 2026-06-01*
+*Saved from [Disease2Target](http://localhost:3000) on 2026-06-04*

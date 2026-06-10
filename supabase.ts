@@ -9,6 +9,44 @@ if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
 
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
+const isInvalidRefreshTokenError = (message?: string) =>
+  /invalid refresh token|refresh token not found/i.test(message || '');
+
+export function clearSupabaseSessionStorage(): void {
+  if (typeof window === 'undefined') return;
+  for (let i = localStorage.length - 1; i >= 0; i--) {
+    const key = localStorage.key(i);
+    if (key?.startsWith('sb-') && key.endsWith('-auth-token')) {
+      localStorage.removeItem(key);
+    }
+  }
+}
+
+export async function getInitialSession() {
+  const result = await supabase.auth.getSession();
+  if (!result.error || !isInvalidRefreshTokenError(result.error.message)) {
+    return result;
+  }
+
+  clearSupabaseSessionStorage();
+  try {
+    await supabase.auth.signOut({ scope: 'local' });
+  } catch {
+    // Storage is already cleared; the user can sign in again.
+  }
+  return { data: { session: null }, error: null };
+}
+
+export async function authenticatedFetch(input: RequestInfo | URL, init: RequestInit = {}) {
+  const { data, error } = await getInitialSession();
+  if (error || !data.session?.access_token) {
+    throw new Error('Your session has expired. Sign in again.');
+  }
+  const headers = new Headers(init.headers);
+  headers.set('Authorization', `Bearer ${data.session.access_token}`);
+  return fetch(input, { ...init, headers });
+}
+
 // ── Typed DB helpers ──────────────────────────────────────────────────────────
 
 export type UserRole = 'admin' | 'user';

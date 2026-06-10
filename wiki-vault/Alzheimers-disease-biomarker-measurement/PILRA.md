@@ -3,7 +3,7 @@ disease: "Alzheimer's disease biomarker measurement"
 disease_id: "EFO_0006514"
 gene: "PILRA"
 gene_name: "paired immunoglobin like type 2 receptor alpha"
-get_score: 0.7615
+get_score: 0.7099
 genetic: 0.6704
 expression: 0.9730
 target: 0.5500
@@ -22,20 +22,20 @@ bimodality_score: N/A
 bimodality_tissue: "—"
 status: draft
 tags: [disease2target, high-priority, no-trials, alzheimers-disease-biomarker-measurement]
-saved: "2026-06-01"
+saved: "2026-06-04"
 ---
 
 # PILRA — [[Alzheimers-disease-biomarker-measurement/_Index|Alzheimer's disease biomarker measurement]]
 
 > [!info] Evidence Snapshot
-> **GET Score:** 0.7615 &nbsp;|&nbsp; **Genetic:** 0.6704 &nbsp;|&nbsp; **Expression:** 0.9730 &nbsp;|&nbsp; **Target:** 0.5500
+> **GET Score:** 0.7099 &nbsp;|&nbsp; **Genetic:** 0.6704 &nbsp;|&nbsp; **Expression:** 0.9730 &nbsp;|&nbsp; **Target:** 0.5500
 > **Lit Velocity:** 0% &nbsp;|&nbsp; **CT Trials:** 0 &nbsp;|&nbsp; **Max Phase:** N/A
 
 ## Scores
 
 | Metric | Value | Signal |
 |--------|-------|--------|
-| **GET Score** | 0.7615 | 🟢 |
+| **GET Score** | 0.7099 | 🟢 |
 | Genetic (G) | 0.6704 | 🟡 |
 | Expression (E) | 0.9730 | 🟢 |
 | Target (T) | 0.5500 | 🟡 |
@@ -65,7 +65,7 @@ saved: "2026-06-01"
 
 ## Related Genes (shared pathways)
 
-[[INPP5D]] · [[PTK2B]] · [[MMP3]] · [[CD33]] · [[ADAM10]] · [[PSME4]]
+[[PTK2B]] · [[TREM2]] · [[INPP5D]] · [[CD33]] · [[MMP3]] · [[PVR]]
 
 ---
 
@@ -95,4 +95,4 @@ _Not yet generated — open the gene in Disease2Target and generate AI summary f
 _Write case study narrative here_
 
 ---
-*Saved from [Disease2Target](http://localhost:3000) on 2026-06-01*
+*Saved from [Disease2Target](http://localhost:3000) on 2026-06-04*

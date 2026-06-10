@@ -7,29 +7,29 @@ get_score: 0.6205
 genetic: 0.2567
 expression: 1.0000
 target: 0.8500
-lit_velocity: "48.7%"
-lit_total_papers: 76
-lit_recent_papers: 37
+lit_velocity: "49.4%"
+lit_total_papers: 77
+lit_recent_papers: 38
 ct_trials: 0
 ct_max_phase: "N/A"
 ct_active: false
-epmc_total: 15
-epmc_recent: 8
-epmc_velocity: "53.3%"
+epmc_total: 14
+epmc_recent: 7
+epmc_velocity: "50.0%"
 tau_tissue: N/A
 tau_single_cell: N/A
 bimodality_score: N/A
 bimodality_tissue: "—"
 status: draft
 tags: [disease2target, emerging, no-trials, late-onset-alzheimers-disease]
-saved: "2026-06-02"
+saved: "2026-06-04"
 ---
 
 # INPP5D — [[late-onset-Alzheimers-disease/_Index|late-onset Alzheimers disease]]
 
 > [!info] Evidence Snapshot
 > **GET Score:** 0.6205 &nbsp;|&nbsp; **Genetic:** 0.2567 &nbsp;|&nbsp; **Expression:** 1.0000 &nbsp;|&nbsp; **Target:** 0.8500
-> **Lit Velocity:** 48.7% &nbsp;|&nbsp; **CT Trials:** 0 &nbsp;|&nbsp; **Max Phase:** N/A
+> **Lit Velocity:** 49.4% &nbsp;|&nbsp; **CT Trials:** 0 &nbsp;|&nbsp; **Max Phase:** N/A
 
 ## Scores
 
@@ -39,12 +39,12 @@ saved: "2026-06-02"
 | Genetic (G) | 0.2567 | 🔴 |
 | Expression (E) | 1.0000 | 🟢 |
 | Target (T) | 0.8500 | 🟢 |
-| Lit Velocity | 48.7% | 🟢 |
-| Lit Total Papers | 76 | |
-| Lit Recent (3y) | 37 | |
-| EPMC Total | 15 | |
-| EPMC Recent (3y) | 8 | |
-| EPMC Velocity | 53.3% | |
+| Lit Velocity | 49.4% | 🟢 |
+| Lit Total Papers | 77 | |
+| Lit Recent (3y) | 38 | |
+| EPMC Total | 14 | |
+| EPMC Recent (3y) | 7 | |
+| EPMC Velocity | 50.0% | |
 | CT Trials | 0 | 🔴 |
 | CT Max Phase | N/A | |
 | CT Active Trial | — | |
@@ -100,4 +100,4 @@ _Not yet generated — open the gene in Disease2Target and generate AI summary f
 _Write case study narrative here_
 
 ---
-*Saved from [Disease2Target](http://localhost:3000) on 2026-06-02*
+*Saved from [Disease2Target](http://localhost:3000) on 2026-06-04*
