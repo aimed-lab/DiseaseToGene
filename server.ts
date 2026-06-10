@@ -434,6 +434,46 @@ function setupRoutes() {
     }
   });
 
+  // ── Invite-gated self-registration ───────────────────────────────────────────
+  // Validates a shared invite code server-side, then creates an auto-confirmed
+  // account via the admin client so the user can sign in immediately.
+  app.post('/api/auth/register', async (req, res) => {
+    const expected = process.env.SIGNUP_INVITE_CODE;
+    if (!expected) {
+      res.status(503).json({ error: 'Registration is not enabled (SIGNUP_INVITE_CODE not configured).' });
+      return;
+    }
+    if (!supabaseAdmin) {
+      res.status(503).json({ error: 'Registration not available (missing SUPABASE_SERVICE_ROLE_KEY).' });
+      return;
+    }
+    const { email, password, inviteCode } = req.body || {};
+    if (!email || !password) { res.status(400).json({ error: 'Email and password are required.' }); return; }
+    if (typeof password !== 'string' || password.length < 8) {
+      res.status(400).json({ error: 'Password must be at least 8 characters.' }); return;
+    }
+    if (!inviteCode || inviteCode !== expected) {
+      res.status(403).json({ error: 'Invalid invite code.' }); return;
+    }
+    try {
+      const { error } = await supabaseAdmin.auth.admin.createUser({
+        email: String(email).trim(),
+        password,
+        email_confirm: true,          // auto-confirm so they can sign in right away
+      });
+      if (error) {
+        const msg = /already.*registered|already been registered|duplicate/i.test(error.message)
+          ? 'An account with this email already exists.'
+          : error.message;
+        res.status(400).json({ error: msg });
+        return;
+      }
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // ── Admin User Management ────────────────────────────────────────────────────
 
   app.get('/api/admin/users', requireAdmin, async (_req, res) => {

@@ -5936,6 +5936,7 @@ const SignInPage = ({ theme, toggleTheme }: { theme: Theme; toggleTheme: () => v
   const [email, setEmail]         = useState('');
   const [password, setPassword]   = useState('');
   const [confirm, setConfirm]     = useState('');
+  const [inviteCode, setInviteCode] = useState('');
   const [error, setError]         = useState('');
   const [info, setInfo]           = useState('');
   const [busy, setBusy]           = useState(false);
@@ -5977,15 +5978,27 @@ const SignInPage = ({ theme, toggleTheme }: { theme: Theme; toggleTheme: () => v
   const handleSignUp = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!email.trim() || !password) { setError('Enter your email and password.'); return; }
+    if (!inviteCode.trim()) { setError('An invite code is required to register.'); return; }
     if (password !== confirm) { setError('Passwords do not match.'); return; }
-    if (password.length < 6) { setError('Password must be at least 6 characters.'); return; }
+    if (password.length < 8) { setError('Password must be at least 8 characters.'); return; }
     setBusy(true); setError(''); setInfo('');
-    const { error: err } = await supabase.auth.signUp({ email: email.trim(), password });
-    setBusy(false);
-    if (err) { setError(err.message); return; }
-    setInfo('Account created! Check your email to confirm, then sign in.');
-    setMode('signin');
-    setPassword(''); setConfirm('');
+    try {
+      // Server validates the invite code and creates an auto-confirmed account
+      const res = await fetch('/api/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email.trim(), password, inviteCode: inviteCode.trim() }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { setError(data.error || 'Registration failed.'); return; }
+      setInfo('Account created — you can sign in now.');
+      setMode('signin');
+      setPassword(''); setConfirm(''); setInviteCode('');
+    } catch (err: any) {
+      setError(err?.message || 'Registration failed. Check your network and try again.');
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -6033,6 +6046,13 @@ const SignInPage = ({ theme, toggleTheme }: { theme: Theme; toggleTheme: () => v
             <div className="space-y-1.5">
               <label className="text-[10px] font-bold uppercase text-neutral-500 ml-1 tracking-widest">Confirm Password</label>
               <input type="password" value={confirm} onChange={e => setConfirm(e.target.value)} autoComplete="new-password" className={inputCls} placeholder="••••••••" />
+            </div>
+          )}
+          {mode === 'signup' && (
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-bold uppercase text-neutral-500 ml-1 tracking-widest">Invite Code</label>
+              <input type="text" value={inviteCode} onChange={e => setInviteCode(e.target.value)} autoComplete="off" className={inputCls} placeholder="Enter your invite code" />
+              <p className="text-[10px] text-neutral-400 ml-1">Registration is invite-only. Ask an admin for a code.</p>
             </div>
           )}
 
