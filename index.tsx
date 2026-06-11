@@ -983,6 +983,41 @@ const ProfileDropdown = ({
   const [deleteConfirm,     setDeleteConfirm]     = React.useState<string | null>(null);
   const [deleting,          setDeleting]          = React.useState<string | null>(null);
 
+  // ── Invite code (admin) ────────────────────────────────────────────────────
+  const [inviteCode,        setInviteCodeVal]     = React.useState('');
+  const [inviteLoading,     setInviteLoading]     = React.useState(false);
+  const [inviteSaving,      setInviteSaving]      = React.useState(false);
+  const [inviteMsg,         setInviteMsg]         = React.useState<string | null>(null);
+
+  const loadInviteCode = React.useCallback(async () => {
+    setInviteLoading(true); setInviteMsg(null);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch('/api/admin/invite-code', { headers: { Authorization: `Bearer ${session?.access_token}` } });
+      if (!res.ok) throw new Error((await res.json()).error ?? res.statusText);
+      setInviteCodeVal((await res.json()).code || '');
+    } catch (e: any) { setInviteMsg(e.message); } finally { setInviteLoading(false); }
+  }, []);
+
+  const saveInviteCode = async () => {
+    setInviteSaving(true); setInviteMsg(null);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch('/api/admin/invite-code', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session?.access_token}` },
+        body: JSON.stringify({ code: inviteCode.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? res.statusText);
+      setInviteMsg(data.enabled ? 'Saved — registration is enabled.' : 'Saved — registration is now disabled (code is empty).');
+      setTimeout(() => setInviteMsg(null), 4000);
+    } catch (e: any) { setInviteMsg(e.message); } finally { setInviteSaving(false); }
+  };
+
+  // Load the current invite code when the Settings page opens for an admin
+  React.useEffect(() => { if (page === 'settings' && isAdmin) loadInviteCode(); }, [page, isAdmin, loadInviteCode]);
+
   const fetchAdminUsers = React.useCallback(async () => {
     setAdminUsersLoading(true); setAdminUsersError(null);
     try {
@@ -1171,6 +1206,36 @@ const ProfileDropdown = ({
                   </div>
                 </div>
               </section>
+
+              {/* Invite Code — admin only */}
+              {isAdmin && (
+                <section>
+                  <div className="flex items-center justify-between mb-4">
+                    <h2 className={`text-[11px] font-black uppercase tracking-widest ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Registration Invite Code</h2>
+                    {inviteLoading && <Loader2 className="w-3.5 h-3.5 animate-spin text-slate-400" />}
+                  </div>
+                  <div className={`rounded-2xl border p-5 ${isDark ? 'border-slate-800 bg-[#0d1424]' : 'border-slate-200 bg-white'}`}>
+                    <p className={`text-[11px] leading-relaxed mb-3 ${isDark ? 'text-slate-400' : 'text-slate-600'}`}>
+                      New users must enter this code to register. Change it anytime to rotate access; clear it to disable self-registration entirely. Share it only with people you want to invite.
+                    </p>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="text"
+                        value={inviteCode}
+                        onChange={e => setInviteCodeVal(e.target.value)}
+                        placeholder="No code set — registration disabled"
+                        className={`flex-1 px-3 py-2 rounded-lg border text-[12px] font-mono font-bold outline-none ${isDark ? 'bg-slate-900 border-slate-700 text-white focus:border-blue-500' : 'bg-slate-50 border-slate-300 text-slate-900 focus:border-blue-500'}`}
+                      />
+                      <button onClick={saveInviteCode} disabled={inviteSaving}
+                        className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-[11px] font-bold transition-all ${isDark ? 'bg-blue-600/15 text-blue-400 hover:bg-blue-600/25 border border-blue-500/20' : 'bg-blue-50 text-blue-600 hover:bg-blue-100 border border-blue-200'} disabled:opacity-40`}>
+                        {inviteSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
+                        Save
+                      </button>
+                    </div>
+                    {inviteMsg && <p className={`text-[11px] font-semibold mt-2 ${inviteMsg.startsWith('Saved') ? 'text-emerald-500' : 'text-rose-500'}`}>{inviteMsg}</p>}
+                  </div>
+                </section>
+              )}
 
               {/* User Management — admin only */}
               {isAdmin && (

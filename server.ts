@@ -434,13 +434,27 @@ function setupRoutes() {
     }
   });
 
+  // Resolve the active invite code: DB (admin-rotatable) first, then env fallback.
+  const getActiveInviteCode = async (): Promise<string | null> => {
+    if (supabaseAdmin) {
+      try {
+        const { data } = await supabaseAdmin
+          .from('app_config').select('value').eq('key', 'signup_invite_code').maybeSingle();
+        const v: any = data?.value;
+        const dbCode = v && typeof v === 'object' ? v.code : (typeof v === 'string' ? v : null);
+        if (dbCode && String(dbCode).trim()) return String(dbCode).trim();
+      } catch { /* fall through to env */ }
+    }
+    return process.env.SIGNUP_INVITE_CODE?.trim() || null;
+  };
+
   // ── Invite-gated self-registration ───────────────────────────────────────────
   // Validates a shared invite code server-side, then creates an auto-confirmed
   // account via the admin client so the user can sign in immediately.
   app.post('/api/auth/register', async (req, res) => {
-    const expected = process.env.SIGNUP_INVITE_CODE;
+    const expected = await getActiveInviteCode();
     if (!expected) {
-      res.status(503).json({ error: 'Registration is not enabled (SIGNUP_INVITE_CODE not configured).' });
+      res.status(503).json({ error: 'Registration is not enabled (no invite code configured).' });
       return;
     }
     if (!supabaseAdmin) {
@@ -471,6 +485,29 @@ function setupRoutes() {
       res.json({ ok: true });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Admin: view the current invite code + where it comes from
+  app.get('/api/admin/invite-code', requireAdmin, async (_req, res) => {
+    const code = await getActiveInviteCode();
+    res.json({ code: code || '', enabled: !!code });
+  });
+
+  // Admin: set/rotate the invite code (stored in app_config, overrides env).
+  // An empty string clears the DB value (falls back to env, or disables if none).
+  app.put('/api/admin/invite-code', requireAdmin, async (req, res) => {
+    const { code } = req.body || {};
+    if (typeof code !== 'string') { res.status(400).json({ error: 'code must be a string' }); return; }
+    try {
+      const { error } = await supabaseAdmin!
+        .from('app_config')
+        .upsert({ key: 'signup_invite_code', value: { code: code.trim() }, updated_at: new Date().toISOString() }, { onConflict: 'key' });
+      if (error) throw error;
+      const active = await getActiveInviteCode();
+      res.json({ ok: true, code: active || '', enabled: !!active });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
     }
   });
 
