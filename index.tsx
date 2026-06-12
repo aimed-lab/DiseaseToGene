@@ -1401,6 +1401,30 @@ const ASSESS_CHEMBL_COLORS: Record<string, string> = {
   'No Drug Data Found':       '#6b7280',
 };
 
+// Small inline info dot with a click-toggle popover — explains a metric in place.
+// Full definitions live in profile menu → Documentation.
+const InfoDot = ({ text, isDark }: { text: string; isDark: boolean }) => {
+  const [open, setOpen] = React.useState(false);
+  return (
+    <span className="relative inline-flex align-middle">
+      <button
+        type="button"
+        onClick={(e) => { e.stopPropagation(); setOpen(o => !o); }}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        className={`p-0.5 rounded-full transition-colors ${isDark ? 'text-slate-600 hover:text-slate-300' : 'text-slate-400 hover:text-slate-600'}`}
+        aria-label="What is this?"
+      >
+        <Info className="w-3 h-3" />
+      </button>
+      {open && (
+        <span className={`absolute z-[60] top-full left-1/2 -translate-x-1/2 mt-1 w-56 p-2.5 rounded-lg border shadow-xl text-[10px] font-medium leading-relaxed normal-case tracking-normal ${isDark ? 'bg-[#1c2433] border-slate-700 text-slate-300' : 'bg-white border-slate-200 text-slate-600'}`}>
+          {text}
+        </span>
+      )}
+    </span>
+  );
+};
+
 const ScoreChip = ({ val, label, color, isDark }: { val: number; label: string; color: string; isDark: boolean }) => (
   <div className={`flex flex-col items-center px-2.5 py-2 rounded-xl border ${isDark ? 'border-slate-800 bg-slate-900/40' : 'border-slate-200 bg-white'}`}>
     <span className={`text-[15px] font-black ${color}`}>{val.toFixed(2)}</span>
@@ -1653,7 +1677,10 @@ Be specific, cite the numbers. Do not fabricate. ~400 words.`;
                   {/* GET Scores — only for ranked genes */}
                   {g.foundInRankedList && (
                     <div>
-                      <p className={`text-[9px] font-black uppercase tracking-widest mb-2 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>GET Evidence Scores</p>
+                      <div className="flex items-center gap-1 mb-2">
+                        <p className={`text-[9px] font-black uppercase tracking-widest ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>GET Evidence Scores</p>
+                        <InfoDot isDark={isDark} text="Genetic (G), Expression (E) and Target (T) sub-scores from Open Targets. GET = G×0.50 + E×0.25 + T×0.25. PubTator velocity = % of papers in the last 3 years. Full formulas in Documentation." />
+                      </div>
                       <div className="grid grid-cols-2 gap-1.5">
                         <ScoreChip val={g.getScore} label="GET" color="text-purple-600" isDark={isDark} />
                         <ScoreChip val={g.geneticScore} label="Genetic" color="text-blue-600" isDark={isDark} />
@@ -1682,7 +1709,10 @@ Be specific, cite the numbers. Do not fabricate. ~400 words.`;
                   {/* Tissue Specificity — only for ranked genes */}
                   {g.foundInRankedList && (g.tauTissue > 0 || bioTissues.length > 0) && (
                     <div>
-                      <p className={`text-[9px] font-black uppercase tracking-widest mb-2 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Tissue Specificity</p>
+                      <div className="flex items-center gap-1 mb-2">
+                        <p className={`text-[9px] font-black uppercase tracking-widest ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Tissue Specificity</p>
+                        <InfoDot isDark={isDark} text="TAU (bulk & single-cell, Human Protein Atlas): 0–1, near 1 = highly tissue/cell-specific. Bimodality bars = how ON/OFF the gene's expression is per tissue (precomputed dataset)." />
+                      </div>
                       <div className="grid grid-cols-3 gap-1.5 mb-2">
                         {[
                           { label: 'Tau (bulk)', val: g.tauTissue },
@@ -1713,7 +1743,10 @@ Be specific, cite the numbers. Do not fabricate. ~400 words.`;
 
                   {/* Clinical Trials */}
                   <div>
-                    <p className={`text-[9px] font-black uppercase tracking-widest mb-2 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Clinical Trials</p>
+                    <div className="flex items-center gap-1 mb-2">
+                      <p className={`text-[9px] font-black uppercase tracking-widest ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Clinical Trials</p>
+                      <InfoDot isDark={isDark} text="ClinicalTrials.gov API v2 — trials matching this gene + disease. Shows total/interventional counts, highest trial phase reached, whether any trial is active, and drugs named in trials." />
+                    </div>
                     <div className={`rounded-xl border p-3 space-y-2 ${isDark ? 'border-slate-800 bg-slate-900/30' : 'border-slate-200 bg-slate-50'}`}>
                       <div className="flex items-center justify-between">
                         <span className={`text-[11px] font-bold ${isDark ? 'text-slate-200' : 'text-slate-800'}`}>
@@ -1735,7 +1768,10 @@ Be specific, cite the numbers. Do not fabricate. ~400 words.`;
 
                   {/* Literature */}
                   <div>
-                    <p className={`text-[9px] font-black uppercase tracking-widest mb-2 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Literature</p>
+                    <div className="flex items-center gap-1 mb-2">
+                      <p className={`text-[9px] font-black uppercase tracking-widest ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Literature</p>
+                      <InfoDot isDark={isDark} text="PubMed (NCBI E-utilities): query GENE[Gene Name] AND disease — total + last-3-years counts. Europe PMC: GENE AND &quot;disease&quot; full-text hit counts. Both fetched live; numbers differ because EPMC indexes full text." />
+                    </div>
                     <div className="grid grid-cols-2 gap-1.5">
                       {[
                         { label: 'PubMed', value: g.pubmed.total, sub: `${g.pubmed.recent} last 3y` },
@@ -1764,7 +1800,10 @@ Be specific, cite the numbers. Do not fabricate. ~400 words.`;
                   {/* Druggability — ChEMBL (always fetched) */}
                   {g.chembl && (
                     <div>
-                      <p className={`text-[9px] font-black uppercase tracking-widest mb-2 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Druggability (ChEMBL)</p>
+                      <div className="flex items-center gap-1 mb-2">
+                        <p className={`text-[9px] font-black uppercase tracking-widest ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Druggability (ChEMBL)</p>
+                        <InfoDot isDark={isDark} text="ChEMBL API. Label from the highest trial phase of any drug on the target (Clinically Validated = approved/Ph4 → No Drug Data Found). Best IC50 = most potent measured inhibitor (lower = stronger). Compounds = bioactivity records. Modalities are predicted from cellular location, not confirmed." />
+                      </div>
                       {g.chembl.error ? (
                         <p className={`text-[10px] italic ${isDark ? 'text-slate-600' : 'text-slate-400'}`}>{g.chembl.error}</p>
                       ) : (
@@ -3058,6 +3097,7 @@ const TargetDetailView = ({
                   <div className="flex items-center gap-2">
                     <div className="p-1.5 rounded-lg bg-indigo-50 dark:bg-indigo-900/20"><FileText className="w-4 h-4 text-indigo-500" /></div>
                     <h4 className="text-[11px] font-bold uppercase text-neutral-500 tracking-wider">Literature</h4>
+                    <InfoDot isDark={theme === 'dark'} text="Literature signals = PubMed records co-mentioning this gene + disease (NCBI). Count = total; Recent = last 3 years; Velocity = recent/total %. Click the card for top papers and Europe PMC details." />
                   </div>
                   <div className="text-[9px] font-bold text-indigo-600 uppercase tracking-tighter">Click for Details</div>
                 </div>
@@ -3083,6 +3123,7 @@ const TargetDetailView = ({
                   <div className="flex items-center gap-2">
                     <div className="p-1.5 rounded-lg bg-emerald-50 dark:bg-emerald-900/20"><Activity className="w-4 h-4 text-emerald-500" /></div>
                     <h4 className="text-[11px] font-bold uppercase text-neutral-500 tracking-wider">Clinical Trials</h4>
+                    <InfoDot isDark={theme === 'dark'} text="ClinicalTrials.gov API v2 — interventional trials for this gene + disease. Shows trial count, highest phase reached, and whether any trial is active. Click for the full trial breakdown." />
                   </div>
                   <div className="text-[9px] font-bold text-emerald-600 uppercase tracking-tighter">Click for Details</div>
                 </div>

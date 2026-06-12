@@ -59,7 +59,10 @@ export const DruggabilityPanel: React.FC<Props> = ({ geneSymbol, currentDisease 
     <div className={rootClass}>
       {/* Header row */}
       <div className="panel-header">
-        <span className="panel-title">Druggability</span>
+        <span
+          className="panel-title"
+          title="ChEMBL druggability. Label = highest trial phase of any drug acting on this target (Clinically Validated = approved/Phase 4 → In Clinical Development = Phase 1–3 → Preclinical Only = compounds but no trials → No Drug Data Found = nothing in ChEMBL). Best IC50 = most potent measured inhibitor (lower nM = stronger binding). Total compounds = ChEMBL bioactivity records (>100 = heavily studied). Modalities are predicted from the target's cellular location, not experimentally confirmed."
+        >Druggability</span>
         <span className="label-badge" style={{ backgroundColor: labelColor }}>
           {data.label}
         </span>
