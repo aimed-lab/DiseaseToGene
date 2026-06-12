@@ -157,3 +157,73 @@ export async function saveSearch(userId: string, diseaseId: string, diseaseName:
 export async function deleteSavedSearch(id: string): Promise<void> {
   await supabase.from('saved_searches').delete().eq('id', id);
 }
+
+// ── Content-centric ranking snapshots ─────────────────────────────────────────
+// Versioned, traceable disease→target ranking content stored in Supabase.
+
+export interface RankingSnapshotMeta {
+  id:           string;
+  disease_id:   string;
+  disease_name: string;
+  version:      number;
+  created_at:   string;
+  created_by:   string | null;
+  label:        string | null;
+  gene_count:   number | null;
+}
+
+export interface RankingSnapshot extends RankingSnapshotMeta {
+  weights:    GlobalWeights | null;
+  provenance: Record<string, unknown> | null;
+  targets:    unknown[];
+}
+
+export interface NewRankingSnapshot {
+  disease_id:   string;
+  disease_name: string;
+  label?:       string | null;
+  weights?:     unknown;
+  gene_count?:  number;
+  provenance?:  unknown;
+  targets:      unknown[];
+}
+
+// Save a snapshot; auto-increments version per disease. created_by is set
+// server-side by the column default (auth.uid()), enforced by RLS.
+export async function saveRankingSnapshot(s: NewRankingSnapshot): Promise<{ ok: boolean; version?: number; error?: string }> {
+  const { data: latest } = await supabase
+    .from('target_ranking_snapshots')
+    .select('version')
+    .eq('disease_id', s.disease_id)
+    .order('version', { ascending: false })
+    .limit(1);
+  const version = ((latest?.[0]?.version as number) ?? 0) + 1;
+  const { error } = await supabase.from('target_ranking_snapshots').insert({ ...s, version });
+  return error ? { ok: false, error: error.message } : { ok: true, version };
+}
+
+// List snapshots (metadata only — excludes the heavy targets/provenance jsonb).
+export async function fetchSnapshots(diseaseId?: string): Promise<RankingSnapshotMeta[]> {
+  let q = supabase
+    .from('target_ranking_snapshots')
+    .select('id, disease_id, disease_name, version, created_at, created_by, label, gene_count')
+    .order('created_at', { ascending: false });
+  if (diseaseId) q = q.eq('disease_id', diseaseId);
+  const { data } = await q;
+  return (data as RankingSnapshotMeta[]) ?? [];
+}
+
+// Load one full snapshot (with targets + provenance).
+export async function fetchSnapshot(id: string): Promise<RankingSnapshot | null> {
+  const { data, error } = await supabase
+    .from('target_ranking_snapshots')
+    .select('*')
+    .eq('id', id)
+    .single();
+  if (error || !data) return null;
+  return data as RankingSnapshot;
+}
+
+export async function deleteSnapshot(id: string): Promise<void> {
+  await supabase.from('target_ranking_snapshots').delete().eq('id', id);
+}

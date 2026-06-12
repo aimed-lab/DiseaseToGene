@@ -89,7 +89,7 @@ import {
 import PaperExtractor from './PaperExtractor';
 import DruggabilityPanel from './DruggabilityPanel';
 import { getChEMBLDruggability } from './chemblService';
-import { supabase, authenticatedFetch, clearSupabaseSessionStorage, getInitialSession, fetchGlobalWeights, saveGlobalWeights, fetchUserProfile, updateUserProfile } from './supabase';
+import { supabase, authenticatedFetch, clearSupabaseSessionStorage, getInitialSession, fetchGlobalWeights, saveGlobalWeights, fetchUserProfile, updateUserProfile, saveRankingSnapshot, fetchSnapshots, fetchSnapshot, deleteSnapshot, type RankingSnapshotMeta } from './supabase';
 import {
   Target,
   DrugInfo,
@@ -3497,6 +3497,110 @@ const App = () => {
   const [allMetricsExportOpen, setAllMetricsExportOpen] = useState(false);
   const [allMetricsProgress, setAllMetricsProgress] = useState<{ done: number; total: number; stage: string; startedAt: number; cancelRequested?: boolean } | null>(null);
   const allMetricsCancelRequested = useRef(false);
+
+  // ── Content-centric ranking snapshots (Supabase) ───────────────────────────
+  const [snapshotSaving, setSnapshotSaving]   = useState(false);
+  const [snapshotToast,  setSnapshotToast]    = useState<{ ok: boolean; msg: string } | null>(null);
+  const [historyOpen,    setHistoryOpen]      = useState(false);
+  const [snapshots,      setSnapshots]        = useState<RankingSnapshotMeta[]>([]);
+  const [snapshotsLoading, setSnapshotsLoading] = useState(false);
+
+  // Save the current disease ranking as a versioned, traceable snapshot
+  const handleSaveSnapshot = async () => {
+    const disease = researchState.activeDisease;
+    if (!disease || !researchState.targets.length) {
+      setSnapshotToast({ ok: false, msg: 'Load a disease and its targets first.' });
+      setTimeout(() => setSnapshotToast(null), 3500);
+      return;
+    }
+    setSnapshotSaving(true);
+    try {
+      const targets = researchState.targets.map(t => ({
+        symbol: t.symbol, name: t.name,
+        overallScore: t.overallScore, geneticScore: t.geneticScore,
+        expressionScore: t.expressionScore, combinedExpression: t.combinedExpression,
+        targetScore: t.targetScore, getScore: t.getScore, literatureScore: t.literatureScore,
+        tauTissue: t.tauTissue, tauSingleCell: t.tauSingleCell,
+        bimodalityMax: t.bimodalityScores?._max_score, bimodalityTissue: t.bimodalityScores?._max_tissue,
+        pubTatorScore: t.pubTatorScore,
+        drillDown: t.drillDown ? {
+          trial_count: t.drillDown.trial_count, max_phase: t.drillDown.max_phase,
+          active_trial_present: t.drillDown.active_trial_present,
+          paper_count: t.drillDown.paper_count, recent_paper_count: t.drillDown.recent_paper_count,
+          total_signals: t.drillDown.total_signals, recent_signals: t.drillDown.recent_signals,
+        } : null,
+        pathways: t.pathways?.slice(0, 5).map(p => p.label),
+      }));
+      const provenance = {
+        app: 'DiseaseToTarget',
+        generated_by: currentUser?.username || 'unknown',
+        retrieved_at: new Date().toISOString(),
+        sources: ['Open Targets', 'ChEMBL', 'PubMed', 'Europe PMC', 'PubTator', 'ClinicalTrials.gov', 'Human Protein Atlas'],
+        get_formula: 'GET = G×0.50 + E×0.25 + T×0.25',
+      };
+      const res = await saveRankingSnapshot({
+        disease_id: disease.id, disease_name: disease.name,
+        weights: researchState.weights, gene_count: targets.length,
+        provenance, targets,
+      });
+      if (res.ok) {
+        setSnapshotToast({ ok: true, msg: `Saved snapshot v${res.version} — ${targets.length} targets for ${disease.name}.` });
+      } else {
+        setSnapshotToast({ ok: false, msg: res.error || 'Save failed.' });
+      }
+    } catch (e: any) {
+      setSnapshotToast({ ok: false, msg: e?.message || 'Save failed.' });
+    } finally {
+      setSnapshotSaving(false);
+      setTimeout(() => setSnapshotToast(null), 4500);
+    }
+  };
+
+  const openHistory = async () => {
+    setHistoryOpen(true);
+    setSnapshotsLoading(true);
+    try {
+      setSnapshots(await fetchSnapshots(researchState.activeDisease?.id));
+    } catch { setSnapshots([]); }
+    finally { setSnapshotsLoading(false); }
+  };
+
+  // Reload a stored snapshot back into the live ranking
+  const handleLoadSnapshot = async (id: string) => {
+    setSnapshotsLoading(true);
+    try {
+      const snap = await fetchSnapshot(id);
+      if (!snap) return;
+      const restored: Target[] = (snap.targets as any[]).map(t => ({
+        id: t.symbol, symbol: t.symbol, name: t.name ?? t.symbol,
+        overallScore: t.overallScore ?? 0, geneticScore: t.geneticScore ?? 0,
+        expressionScore: t.expressionScore ?? 0, combinedExpression: t.combinedExpression,
+        targetScore: t.targetScore ?? 0, getScore: t.getScore, literatureScore: t.literatureScore,
+        tauTissue: t.tauTissue, tauSingleCell: t.tauSingleCell, pubTatorScore: t.pubTatorScore,
+        bimodalityScores: t.bimodalityMax != null ? { _max_score: t.bimodalityMax, _max_tissue: t.bimodalityTissue } : undefined,
+        drillDown: t.drillDown ?? undefined,
+        pathways: (t.pathways ?? []).map((label: string, i: number) => ({ id: `${t.symbol}-p${i}`, label })),
+      }));
+      setResearchState(prev => ({
+        ...prev,
+        activeDisease: { id: snap.disease_id, name: snap.disease_name },
+        targets: restored,
+        currentPage: 0,
+      }));
+      setHistoryOpen(false);
+      setSnapshotToast({ ok: true, msg: `Loaded snapshot v${snap.version} (${snap.disease_name}).` });
+      setTimeout(() => setSnapshotToast(null), 4000);
+    } catch (e: any) {
+      setSnapshotToast({ ok: false, msg: e?.message || 'Load failed.' });
+      setTimeout(() => setSnapshotToast(null), 4000);
+    } finally {
+      setSnapshotsLoading(false);
+    }
+  };
+
+  const handleDeleteSnapshot = async (id: string) => {
+    try { await deleteSnapshot(id); setSnapshots(prev => prev.filter(s => s.id !== id)); } catch { /* ignore */ }
+  };
   const [focusSubPage, setFocusSubPage] = useState<'main' | 'literature' | 'clinical'>('main');
 
   useEffect(() => {
@@ -5384,15 +5488,74 @@ Return ONLY valid JSON.
                                   <div className="p-1.5 rounded-md bg-emerald-50 dark:bg-emerald-900/20"><FileDown className="w-3.5 h-3.5 text-emerald-500" /></div>
                                   <span>Download CSV (OT)</span>
                                 </button>
-                                <button onClick={() => { setAllMetricsExportOpen(true); setIsExportDropdownOpen(false); }} className="w-full px-4 py-3 text-left text-[11px] font-semibold hover:bg-neutral-50 dark:hover:bg-neutral-800 flex items-center gap-3 transition-colors text-neutral-700 dark:text-neutral-300">
+                                <button onClick={() => { setAllMetricsExportOpen(true); setIsExportDropdownOpen(false); }} className="w-full px-4 py-3 text-left text-[11px] font-semibold hover:bg-neutral-50 dark:hover:bg-neutral-800 flex items-center gap-3 border-b border-neutral-100 dark:border-neutral-800 transition-colors text-neutral-700 dark:text-neutral-300">
                                   <div className="p-1.5 rounded-md bg-orange-50 dark:bg-orange-900/20"><FileDown className="w-3.5 h-3.5 text-orange-500" /></div>
                                   <span>All Metrics CSV...</span>
+                                </button>
+                                <button onClick={() => { handleSaveSnapshot(); setIsExportDropdownOpen(false); }} disabled={snapshotSaving} className="w-full px-4 py-3 text-left text-[11px] font-semibold hover:bg-neutral-50 dark:hover:bg-neutral-800 flex items-center gap-3 border-b border-neutral-100 dark:border-neutral-800 transition-colors text-neutral-700 dark:text-neutral-300 disabled:opacity-50">
+                                  <div className="p-1.5 rounded-md bg-purple-50 dark:bg-purple-900/20">{snapshotSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin text-purple-500" /> : <Database className="w-3.5 h-3.5 text-purple-500" />}</div>
+                                  <span>Save Snapshot</span>
+                                </button>
+                                <button onClick={() => { openHistory(); setIsExportDropdownOpen(false); }} className="w-full px-4 py-3 text-left text-[11px] font-semibold hover:bg-neutral-50 dark:hover:bg-neutral-800 flex items-center gap-3 transition-colors text-neutral-700 dark:text-neutral-300">
+                                  <div className="p-1.5 rounded-md bg-slate-100 dark:bg-slate-800"><BookOpen className="w-3.5 h-3.5 text-slate-500" /></div>
+                                  <span>Ranking History</span>
                                 </button>
                               </div>
                             )}
                           </div>
                         </div>
                       </div>
+
+                      {/* Snapshot save toast */}
+                      {snapshotToast && (
+                        <div className={`fixed bottom-6 right-6 z-[110] flex items-center gap-2 px-4 py-2.5 rounded-xl shadow-xl border text-[11px] font-bold animate-in slide-in-from-bottom-4 duration-300 ${snapshotToast.ok ? 'bg-emerald-600 border-emerald-500 text-white' : 'bg-rose-600 border-rose-500 text-white'}`}>
+                          {snapshotToast.ok ? <CheckCircle2 className="w-3.5 h-3.5" /> : <AlertCircle className="w-3.5 h-3.5" />}
+                          {snapshotToast.msg}
+                        </div>
+                      )}
+
+                      {/* Ranking History — stored snapshots */}
+                      {historyOpen && (
+                        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4" onClick={() => setHistoryOpen(false)}>
+                          <div onClick={e => e.stopPropagation()} className={`w-full max-w-2xl max-h-[80vh] flex flex-col rounded-2xl border shadow-2xl ${theme === 'dark' ? 'bg-[#0d1424] border-slate-800' : 'bg-white border-slate-200'}`}>
+                            <div className={`flex items-center justify-between px-5 py-4 border-b ${theme === 'dark' ? 'border-slate-800' : 'border-slate-200'}`}>
+                              <div className="flex items-center gap-2">
+                                <BookOpen className="w-5 h-5 text-blue-500" />
+                                <div>
+                                  <h3 className={`text-[15px] font-black ${theme === 'dark' ? 'text-slate-100' : 'text-slate-900'}`}>Ranking History</h3>
+                                  <p className={`text-[10px] ${theme === 'dark' ? 'text-slate-500' : 'text-slate-400'}`}>{researchState.activeDisease ? `Stored snapshots for ${researchState.activeDisease.name}` : 'All stored snapshots'}</p>
+                                </div>
+                              </div>
+                              <button onClick={() => setHistoryOpen(false)} className={`p-1.5 rounded-lg ${theme === 'dark' ? 'hover:bg-slate-800 text-slate-400' : 'hover:bg-slate-100 text-slate-500'}`}><X className="w-4 h-4" /></button>
+                            </div>
+                            <div className="flex-1 overflow-y-auto p-4">
+                              {snapshotsLoading ? (
+                                <div className="flex items-center justify-center py-16"><Loader2 className="w-6 h-6 animate-spin text-blue-500" /></div>
+                              ) : snapshots.length === 0 ? (
+                                <div className={`text-center py-16 text-[12px] ${theme === 'dark' ? 'text-slate-500' : 'text-slate-400'}`}>No saved snapshots yet. Use <strong>Export → Save Snapshot</strong> to store the current ranking.</div>
+                              ) : (
+                                <div className="space-y-2">
+                                  {snapshots.map(s => (
+                                    <div key={s.id} className={`flex items-center justify-between gap-3 px-4 py-3 rounded-xl border ${theme === 'dark' ? 'border-slate-800 bg-slate-900/40' : 'border-slate-200 bg-slate-50'}`}>
+                                      <div className="min-w-0">
+                                        <div className="flex items-center gap-2">
+                                          <span className={`text-[12px] font-bold truncate ${theme === 'dark' ? 'text-slate-100' : 'text-slate-800'}`}>{s.disease_name}</span>
+                                          <span className="px-1.5 py-0.5 rounded-full bg-blue-500/15 text-blue-500 text-[9px] font-black">v{s.version}</span>
+                                        </div>
+                                        <p className={`text-[10px] ${theme === 'dark' ? 'text-slate-500' : 'text-slate-400'}`}>{s.gene_count ?? '—'} targets · {new Date(s.created_at).toLocaleString()}</p>
+                                      </div>
+                                      <div className="flex items-center gap-1.5 flex-shrink-0">
+                                        <button onClick={() => handleLoadSnapshot(s.id)} className="px-3 py-1.5 rounded-lg text-[10px] font-bold bg-blue-600 text-white hover:bg-blue-700 transition-colors">Load</button>
+                                        <button onClick={() => handleDeleteSnapshot(s.id)} title="Delete" className={`p-1.5 rounded-lg ${theme === 'dark' ? 'hover:bg-slate-800 text-slate-500' : 'hover:bg-slate-200 text-slate-400'}`}><Trash2 className="w-3.5 h-3.5" /></button>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      )}
 
                       {/* All metrics export - gene-count selector modal */}
                       {allMetricsExportOpen && (
