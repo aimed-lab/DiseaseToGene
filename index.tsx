@@ -1061,15 +1061,55 @@ const ProfileDropdown = ({
   const [openDocs, setOpenDocs] = React.useState<string[]>([]);
   const DOC_ITEMS = [
     { key: 'about',   title: 'About DiseaseToTarget',      icon: '🔬',
-      content: `DiseaseToTarget (DTT) is an AI-powered therapeutic target discovery platform. It retrieves disease-associated genes from Open Targets, scores them using a multi-factor GET formula, and ranks them by druggability evidence.` },
-    { key: 'get',     title: 'How GET Score Works',         icon: '⚖️',
-      content: `GET = G × ${globalWeights.genetic} + E × ${globalWeights.expression} + T × ${globalWeights.target}\n\n• **G** — Genetic score (Open Targets association evidence)\n• **E** — Expression score (tissue expression selectivity)\n• **T** — Target score (tractability + clinical trial signal)\n\nA velocity bonus (×0.15) rewards fast-rising literature genes.` },
-    { key: 'csv',     title: 'Cohort CSV Format',           icon: '📋',
-      content: `Upload a CSV with columns: gene_symbol, then one column per cohort (TPM/FPKM values).\n\nExample:\ngene_symbol,early_stage,late_stage\nAPOE,12.4,8.2\nTREM2,3.2,9.8\n\nUpload via terminal chat: type "upload cohort CSV"` },
-    { key: 'scores',  title: 'Score Reference',             icon: '📊',
-      content: `G Score (0–1): genetic association strength\nE Score (0–1): expression selectivity\nT Score (0–1): target tractability\nGET (0–1): combined priority\nRWR (0–1): network propagation rank\nWINNER (0–1): network-based prioritization\nLiterature (0–1): publication evidence` },
-    { key: 'sources', title: 'Data Sources',                icon: '🗄️',
-      content: `• Open Targets — Gene-disease associations, expression, tractability\n• PubTator / PubMed — Literature mining\n• STRING DB — Protein interaction networks\n• ClinicalTrials.gov — Trial signal scoring\n• Enrichr — Pathway enrichment` },
+      content: `**DiseaseToTarget (DTT)** is a therapeutic-target discovery and evidence-ranking platform. For a chosen disease it retrieves associated genes from **Open Targets**, scores them with a multi-factor **GET** formula, and enriches each with literature, clinical-trial, tissue-specificity, and **ChEMBL** druggability evidence.\n\nEvery metric below is computed from a **named public source** — this page documents exactly what each number means, where it comes from, and how it is calculated, so any value can be traced and audited.` },
+
+    { key: 'get',     title: 'GET Score — the master rank', icon: '⚖️',
+      content: `The **GET score** (0–1) is the headline priority score combining the three core evidence axes:\n\n**GET = G × 0.50 + E × 0.25 + T × 0.25**\n\n• **G — Genetic (50%)** — strength of the disease→gene association\n• **E — Expression (25%)** — tissue expression strength + selectivity\n• **T — Target (25%)** — druggability / tractability\n\nGenetic evidence is weighted highest because it is the most reliable indicator of a causal, drug-able target. Weights shown in Settings (currently G ${globalWeights.genetic} / E ${globalWeights.expression} / T ${globalWeights.target}) let you re-weight for your own hypothesis. Higher GET = stronger combined evidence.` },
+
+    { key: 'genetic', title: 'G — Genetic Score',           icon: '🧬',
+      content: `**Range 0–1 · Source: Open Targets**\n\nThe maximum of three Open Targets *datatype* association scores for the gene–disease pair:\n\n• \`genetic_association\` (GWAS, ClinVar, etc.)\n• \`somatic_mutation\` (cancer somatic variants)\n• \`genetic_literature\`\n\n\`G = max(genetic_association, somatic_mutation, genetic_literature)\`\n\nHigh G means strong human-genetics evidence that the gene is causally involved in the disease.` },
+
+    { key: 'expression', title: 'E — Expression Score',     icon: '📈',
+      content: `**Range 0–1 · Source: Open Targets RNA expression**\n\nCombines how *strongly* and how *selectively* the gene is expressed across tissues:\n\n• **strength** = min(1, log₁₀(top-3-tissue-avg + 1) / 4)\n• **selectivity** = min(1, log₁₀(top-tissue / mean-all + 1) / log₁₀ 6)\n• **E = strength × 0.7 + selectivity × 0.3**\n\nA gene strongly and selectively expressed in disease-relevant tissue scores higher. (Absolute expression alone is not used — selectivity matters.)` },
+
+    { key: 'target',  title: 'T — Target / Tractability',   icon: '🎯',
+      content: `**Range 0–1 · Source: Open Targets tractability**\n\nThe highest druggability tier reached across small-molecule (SM), antibody (AB) and PROTAC (PR) modalities:\n\n| Tier reached | T |\n|---|---|\n| Approved Drug | 1.00 |\n| Advanced Clinical | 0.85 |\n| Phase 1 Clinical | 0.70 |\n| Structure / High-Quality Ligand | 0.55 |\n| High/Med-Quality Pocket | 0.40 |\n| Druggable Family | 0.25 |\n| none of the above | 0.10 |` },
+
+    { key: 'overall', title: 'Overall (Association) Score', icon: '🔢',
+      content: `**Range 0–1 · Source: Open Targets**\n\nThe raw **Open Targets overall association score** for the gene–disease pair (their aggregate across all evidence types). Shown alongside GET as an independent reference — GET re-weights the components for druggable-target prioritization, while Overall is OT's own aggregate.` },
+
+    { key: 'literature_score', title: 'Literature Score',   icon: '📚',
+      content: `**Range 0–1 · Source: Open Targets**\n\nThe Open Targets \`literature\` datatype score — text-mined co-occurrence evidence linking the gene and disease across the literature. Distinct from the live PubMed / Europe PMC counts below, which are fetched fresh per gene.` },
+
+    { key: 'specificity', title: 'Tissue Specificity (TAU)', icon: '🧪',
+      content: `**Range 0–1 · Source: Human Protein Atlas**\n\n• **TAU Tissue** — bulk-RNA tissue-specificity index\n• **TAU Single Cell** — single-cell specificity index\n\nTAU near **1 = highly tissue/cell-specific** (often more attractive — fewer off-target sites); near **0 = ubiquitous**. Fetched from Protein Atlas as a background enrichment after the gene list loads.` },
+
+    { key: 'bimodality', title: 'Bimodality Score',          icon: '📊',
+      content: `**Range 0–1 · Source: precomputed bimodality dataset (per tissue)**\n\nMeasures whether a gene's expression is **bimodal** (cleanly ON in some samples, OFF in others) in a given tissue — a pattern associated with switch-like, disease-relevant regulation. The card shows the **max bimodality score** and the tissue where it peaks. Higher = more discrete ON/OFF behavior.` },
+
+    { key: 'pubtator', title: 'PubTator Velocity',           icon: '⚡',
+      content: `**Source: PubTator3 (NCBI)**\n\n• **Total papers** — publications co-mentioning the gene and disease\n• **Recent (3y)** — papers in the last three years\n• **Velocity** — % of total papers that are recent\n\nHigh velocity = a fast-rising research topic. Used as a momentum signal in ranking.` },
+
+    { key: 'chembl',  title: 'Druggability (ChEMBL)',        icon: '💊',
+      content: `**Source: ChEMBL REST API** (\`www.ebi.ac.uk/chembl\`)\n\nFour calls per gene: resolve target → \`/mechanism\` (drugs on target) → \`/activity\` (bioactivity) → \`/drug_indication\` (diseases tested).\n\n**Druggability label** (from the highest trial phase of *any* drug acting on the target, via \`/mechanism\`):\n\n| Label | Meaning |\n|---|---|\n| **Clinically Validated** | approved drug / Phase 4 exists |\n| **In Clinical Development** | Phase 1–3 drug exists |\n| **Preclinical Only** | compounds exist, never reached trials |\n| **No Drug Data Found** | nothing in ChEMBL (absence of evidence) |\n\n**Best IC50** — most potent measured inhibitor (lowest IC50, nM) from \`/activity\`.\n**Total compounds** — count of IC50 bioactivity records (>100 = heavily studied).\n**Modalities (Antibody / Small Molecule / PROTAC)** — *predicted* from the target's cellular location (Gene Ontology): extracellular → antibody; intracellular / has 3-D structure → small molecule; intracellular without structure → PROTAC. These are predictions, not experimentally confirmed (see the confidence tag).` },
+
+    { key: 'pubmed',  title: 'Literature — PubMed',          icon: '🔍',
+      content: `**Source: NCBI E-utilities** (\`eutils.ncbi.nlm.nih.gov\`)\n\nQuery: \`<GENE>[Gene Name] AND <disease>\`\n\n• **Total** — all matching PubMed records\n• **Recent (3y)** — same query filtered to the last three years (\`[pdat]\`)\n• **Top papers** — three most recent, linked to PubMed\n\nThe disease name is cleaned (ontology suffixes/prefixes stripped) so the query returns real counts. Calls are throttled to respect NCBI's ~3 req/s limit.` },
+
+    { key: 'epmc',    title: 'Literature — Europe PMC',       icon: '🌍',
+      content: `**Source: Europe PMC** (\`ebi.ac.uk/europepmc\`)\n\nQuery: \`<GENE> AND "<disease>"\`, with the recent count filtered by \`FIRST_PDATE\` to the last three years.\n\n• **EPMC Total** — total hit count\n• **EPMC Recent (3y)** — recent hit count\n• **EPMC Velocity** — recent / total %\n\nEurope PMC indexes full text (not just abstracts), so counts are usually broader than PubMed — the two are complementary.` },
+
+    { key: 'clinical', title: 'Clinical Trials',             icon: '🏥',
+      content: `**Source: ClinicalTrials.gov API v2**\n\nTrials matching the gene + disease:\n\n• **Total trials** / **Interventional** count\n• **Max phase** — highest trial phase reached (Early Ph1 → Phase 4)\n• **Active trial** — any currently-recruiting/active study\n• **Top drugs** — interventions named across trials\n\nIndicates how far the target has progressed in human testing for this disease.` },
+
+    { key: 'csv',     title: 'Cohort CSV Upload',            icon: '📋',
+      content: `Optionally replace the generic E score with your own cohort expression.\n\nFormat — column 1 \`gene_symbol\`, then one column per cohort (TPM/FPKM):\n\n\`\`\`\ngene_symbol,early_stage,late_stage\nAPOE,12.4,8.2\nTREM2,3.2,9.8\n\`\`\`\n\nUpload via the terminal chat: type *"upload cohort CSV"*.` },
+
+    { key: 'sources', title: 'Data Sources & Links',         icon: '🗄️',
+      content: `| Source | Used for |\n|---|---|\n| [Open Targets](https://platform.opentargets.org) | associations, expression, tractability, pathways |\n| [ChEMBL](https://www.ebi.ac.uk/chembl) | druggability, compounds, IC50, drug phases |\n| [PubMed / E-utilities](https://www.ncbi.nlm.nih.gov/pubmed) | literature counts + top papers |\n| [Europe PMC](https://europepmc.org) | full-text literature counts |\n| [PubTator3](https://www.ncbi.nlm.nih.gov/research/pubtator3/) | gene–disease co-mention velocity |\n| [ClinicalTrials.gov](https://clinicaltrials.gov) | trial phase + activity |\n| [Human Protein Atlas](https://www.proteinatlas.org) | TAU tissue specificity |\n| [Enrichr](https://maayanlab.cloud/Enrichr) | pathway enrichment |` },
+
+    { key: 'provenance', title: 'Traceability & Audit',      icon: '🔎',
+      content: `Every value in the app is computed from one of the named public sources above — none are AI-fabricated. Scores (G/E/T/GET) are deterministic functions of Open Targets data; literature, clinical, and ChEMBL figures are fetched live from their APIs. AI is used **only** for narrative summaries (clearly labelled), never to invent numbers.\n\nWhen citing a value, record the **source, the date retrieved, and the metric definition above** so the result is fully auditable.` },
   ];
 
   // ── Full-page overlay shared header ──────────────────────────────────────
