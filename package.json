@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "tsx --env-file=.env server.ts",
     "build": "vite build && npm run build:server",
-    "build:server": "esbuild server.ts --bundle --platform=node --target=node20 --outfile=dist-server/server.cjs --external:vite --external:fsevents --format=cjs",
+    "build:server": "esbuild server.ts --bundle --platform=node --target=node20 --outfile=dist-server/server.cjs --external:vite --external:fsevents --external:oracledb --format=cjs",
     "preview": "vite preview",
     "lint": "tsc --noEmit",
     "start": "node dist-server/server.cjs"
@@ -21,6 +21,7 @@
     "express": "^5.2.1",
     "file-saver": "^2.0.5",
     "lucide-react": "0.460.0",
+    "oracledb": "^7.0.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "react-markdown": "^10.1.0",

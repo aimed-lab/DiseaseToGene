@@ -1,6 +1,7 @@
 import express from "express";
 // Vite is a dev-only dependency — imported dynamically so it's never loaded in production
 import path from "path";
+import fs from "fs";
 import { createClient } from "@supabase/supabase-js";
 import { createHash } from "crypto";
 
@@ -136,6 +137,38 @@ async function requireAuthenticated(
   next();
 }
 
+// Like requireAuthenticated, but also attaches the user to the request so
+// endpoints can record who created/changed content (created_by, audit actor).
+async function requireUser(
+  req: express.Request,
+  res: express.Response,
+  next: express.NextFunction
+) {
+  const verifier = supabaseAuthVerifier || supabaseAdmin;
+  if (!verifier) { res.status(503).json({ error: 'Authentication is not configured' }); return; }
+  const token = req.headers.authorization?.replace(/^Bearer\s+/i, '');
+  if (!token) { res.status(401).json({ error: 'Authentication required' }); return; }
+  const { data: { user }, error } = await verifier.auth.getUser(token);
+  if (error || !user) { res.status(401).json({ error: 'Invalid or expired session' }); return; }
+  (req as any).appUser = { id: user.id, email: user.email };
+  next();
+}
+
+// ── Oracle content store — loaded lazily so the oracledb driver is NEVER
+// statically bundled into the serverless/edge build (same pattern used for
+// the vite devDependency). Only loaded when USE_ORACLE_STORE=1 and reachable. ──
+const oracleStoreEnabled = (): boolean =>
+  process.env.USE_ORACLE_STORE === '1' &&
+  !!process.env.ORACLE_USER && !!process.env.ORACLE_PASSWORD && !!process.env.ORACLE_CONNECT_STRING;
+
+let _oracleSvc: any = null;
+async function oracleSvc(): Promise<any> {
+  if (_oracleSvc) return _oracleSvc;
+  const spec = './oracleService.ts';   // non-literal specifier → bundlers leave it external
+  _oracleSvc = await import(spec);
+  return _oracleSvc;
+}
+
 // ── Module-level Express app — exported for Vercel serverless entry point ──────
 export const app = express();
 
@@ -164,7 +197,10 @@ const geminiGenerate = async (contents: object[], model = GEMINI_MODEL, response
   const key = process.env.GEMINI_API_KEY;
   if (!key) throw new Error('GEMINI_API_KEY not configured');
   const body: Record<string, unknown> = { contents };
-  if (responseMimeType) body.generationConfig = { responseMimeType };
+  // Generous output budget so large structured extractions aren't truncated.
+  body.generationConfig = responseMimeType
+    ? { responseMimeType, maxOutputTokens: 8192 }
+    : { maxOutputTokens: 8192 };
   const r = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
     { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
@@ -179,7 +215,13 @@ const geminiGenerate = async (contents: object[], model = GEMINI_MODEL, response
   if (!r.ok || d.error) {
     throw new Error(`Gemini API error ${d.error?.code || r.status}: ${d.error?.message || r.statusText}`);
   }
-  return d.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
+  const out = d.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
+  if (!out) {
+    // Explain WHY it's empty instead of returning a blank string that callers misread.
+    const reason = d.candidates?.[0]?.finishReason || d.promptFeedback?.blockReason || 'no text returned';
+    throw new Error(`Gemini returned no text (${reason})`);
+  }
+  return out;
 };
 
 // ── setupRoutes — synchronous, called at module level so Vercel gets a
@@ -198,7 +240,12 @@ function setupRoutes() {
   });
 
   // Fix #2: body-parse BEFORE all routes (including healthz)
-  app.use(express.json({ limit: '2mb' }));
+  // /api/ai/analyze-paper carries base64 PDFs and is parsed by its own 25mb
+  // parser — skip it here so the global 2mb limit doesn't reject large papers.
+  app.use((req, res, next) => {
+    if (req.path === '/api/ai/analyze-paper' || req.path === '/api/snapshots' || req.path === '/api/evidence' || req.path === '/api/harvest') return next();
+    express.json({ limit: '2mb' })(req, res, next);
+  });
   app.use(express.urlencoded({ limit: '2mb', extended: true }));
 
   // Fix #4: health check — used by Render, Railway, Docker, Vercel
@@ -302,6 +349,135 @@ function setupRoutes() {
     }
   });
 
+  // ── Oracle content store (lazy-loaded; gated by USE_ORACLE_STORE=1) ───────────
+  app.get("/api/oracle/health", async (_req, res) => {
+    if (!oracleStoreEnabled()) return res.status(503).json({ ok: false, error: "Oracle store disabled (set USE_ORACLE_STORE=1 + creds)" });
+    try {
+      const svc = await oracleSvc();
+      const ok = await svc.ping();
+      res.json({ ok, db: ok ? "reachable" : "unexpected" });
+    } catch (e: any) {
+      res.status(502).json({ ok: false, error: e.message });
+    }
+  });
+
+  // Save a ranking snapshot (header + per-gene scores + audit) to Oracle
+  app.post("/api/snapshots", requireUser, express.json({ limit: "12mb" }), async (req, res) => {
+    if (!oracleStoreEnabled()) return res.status(503).json({ ok: false, error: "Oracle store disabled" });
+    try {
+      const svc = await oracleSvc();
+      const r = await svc.saveSnapshot({ ...req.body, created_by: (req as any).appUser?.id ?? null });
+      res.json({ ok: true, ...r });
+    } catch (e: any) {
+      res.status(502).json({ ok: false, error: e.message });
+    }
+  });
+
+  // List snapshots (metadata only)
+  app.get("/api/snapshots", requireUser, async (req, res) => {
+    if (!oracleStoreEnabled()) return res.status(503).json({ error: "Oracle store disabled" });
+    try {
+      const svc = await oracleSvc();
+      res.json(await svc.listSnapshots(req.query.diseaseId as string | undefined));
+    } catch (e: any) {
+      res.status(502).json({ error: e.message });
+    }
+  });
+
+  // Load one full snapshot (with targets)
+  app.get("/api/snapshots/:id", requireUser, async (req, res) => {
+    if (!oracleStoreEnabled()) return res.status(503).json({ error: "Oracle store disabled" });
+    try {
+      const svc = await oracleSvc();
+      const snap = await svc.getSnapshot(Number(req.params.id));
+      if (!snap) return res.status(404).json({ error: "Snapshot not found" });
+      res.json(snap);
+    } catch (e: any) {
+      res.status(502).json({ error: e.message });
+    }
+  });
+
+  // Delete a snapshot
+  app.delete("/api/snapshots/:id", requireUser, async (req, res) => {
+    if (!oracleStoreEnabled()) return res.status(503).json({ error: "Oracle store disabled" });
+    try {
+      const svc = await oracleSvc();
+      await svc.deleteSnapshot(Number(req.params.id), (req as any).appUser?.id);
+      res.json({ ok: true });
+    } catch (e: any) {
+      res.status(502).json({ error: e.message });
+    }
+  });
+
+  // Per-gene scores for a snapshot (Rankings dashboard)
+  app.get("/api/snapshots/:id/scores", requireUser, async (req, res) => {
+    if (!oracleStoreEnabled()) return res.status(503).json({ error: "Oracle store disabled" });
+    try {
+      const svc = await oracleSvc();
+      res.json(await svc.listRankingScores(Number(req.params.id)));
+    } catch (e: any) {
+      res.status(502).json({ error: e.message });
+    }
+  });
+
+  // Evidence rows for a snapshot (Gene × Source matrix)
+  app.get("/api/snapshots/:id/evidence", requireUser, async (req, res) => {
+    if (!oracleStoreEnabled()) return res.status(503).json({ error: "Oracle store disabled" });
+    try {
+      const svc = await oracleSvc();
+      res.json(await svc.snapshotEvidence(Number(req.params.id)));
+    } catch (e: any) {
+      res.status(502).json({ error: e.message });
+    }
+  });
+
+  // Save paper-derived evidence cards to Oracle (EVIDENCE table)
+  app.post("/api/evidence", requireUser, express.json({ limit: "12mb" }), async (req, res) => {
+    if (!oracleStoreEnabled()) return res.status(503).json({ ok: false, error: "Oracle store disabled" });
+    try {
+      const svc = await oracleSvc();
+      const r = await svc.saveEvidenceCards(req.body?.cards || [], (req as any).appUser?.id);
+      res.json({ ok: true, ...r });
+    } catch (e: any) {
+      res.status(502).json({ ok: false, error: e.message });
+    }
+  });
+
+  // Gene symbols that have stored evidence (for the EVIDENCE badge)
+  app.get("/api/evidence/genes", requireUser, async (req, res) => {
+    if (!oracleStoreEnabled()) return res.status(503).json({ error: "Oracle store disabled" });
+    try {
+      const svc = await oracleSvc();
+      res.json(await svc.evidenceGeneSymbols(req.query.diseaseId as string | undefined));
+    } catch (e: any) {
+      res.status(502).json({ error: e.message });
+    }
+  });
+
+  // Evidence rows for one gene (for the Stored Evidence panel)
+  app.get("/api/evidence", requireUser, async (req, res) => {
+    if (!oracleStoreEnabled()) return res.status(503).json({ error: "Oracle store disabled" });
+    try {
+      const svc = await oracleSvc();
+      res.json(await svc.evidenceForGene(req.query.gene as string));
+    } catch (e: any) {
+      res.status(502).json({ error: e.message });
+    }
+  });
+
+  // Harvest → snapshot + per-gene scores + per-source evidence
+  app.post("/api/harvest", requireUser, express.json({ limit: "25mb" }), async (req, res) => {
+    if (!oracleStoreEnabled()) return res.status(503).json({ ok: false, error: "Oracle store disabled" });
+    try {
+      const svc = await oracleSvc();
+      const r = await svc.saveHarvest({ ...req.body, created_by: (req as any).appUser?.id ?? null });
+      res.json({ ok: true, ...r });
+    } catch (e: any) {
+      console.error("[/api/harvest] FAILED:", e);
+      res.status(502).json({ ok: false, error: e.message });
+    }
+  });
+
   // ── External API Proxy ───────────────────────────────────────────────────────
 
   const ALLOWED_PROXY_HOSTS = [
@@ -309,6 +485,7 @@ function setupRoutes() {
     'www.ebi.ac.uk',
     'eutils.ncbi.nlm.nih.gov',
     'www.proteinatlas.org',
+    'www.cbioportal.org',
   ];
 
   app.get("/api/proxy", async (req, res) => {
@@ -379,6 +556,172 @@ function setupRoutes() {
     } catch (err: any) {
       res.status(502).json({ error: err.message });
     }
+  });
+
+  // ── gnomAD constraint (safety axis) — live GraphQL proxy, same pattern as ot-graphql ──
+  // ADDITIVE: powers the Constraint drill-down (pLI / LOEUF). Cached server-side.
+  app.post("/api/gnomad-graphql", async (req, res) => {
+    const { query, variables } = req.body || {};
+    if (!query) return res.status(400).json({ error: "Missing query" });
+    const key = cacheKey('gnomad-graphql', JSON.stringify({ query, variables }));
+    const cached = await readApiCache(key);
+    if (cached) return res.status(cached.status).json(cached.body);
+    try {
+      const upstream = await fetch('https://gnomad.broadinstitute.org/api', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body: JSON.stringify({ query, variables }),
+      });
+      const data = await upstream.json();
+      await writeApiCache(key, { status: upstream.status, body: data, contentType: 'application/json' });
+      res.status(upstream.status).json(data);
+    } catch (err: any) {
+      res.status(502).json({ error: err.message });
+    }
+  });
+
+  // ── Preloaded reference compendia (DepMap dependency, tumor-vs-normal expression) ──
+  // ADDITIVE: these are bulk datasets with no reliable per-gene live API, so they
+  // are built once by the scripts in /scripts and served from /data as gene-keyed
+  // JSON. Lazily read + cached in memory. Missing file → 503 {notLoaded:true} so
+  // the drill-down panels degrade gracefully ("reference data not loaded yet").
+  const refCache = new Map<string, any>();
+  const loadRef = (file: string): any => {
+    if (refCache.has(file)) return refCache.get(file);
+    let parsed: any = null;
+    try { parsed = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'data', file), 'utf-8')); } catch { parsed = null; }
+    refCache.set(file, parsed);
+    return parsed;
+  };
+  const serveRef = (file: string, label: string) => (req: express.Request, res: express.Response) => {
+    const gene = String(req.query.gene || '').toUpperCase().trim();
+    if (!gene) return res.status(400).json({ error: "Missing gene param" });
+    const ref = loadRef(file);
+    if (!ref) return res.status(503).json({ error: `${label} reference data not loaded`, notLoaded: true });
+    res.json({ gene, meta: ref.meta ?? null, data: ref.genes?.[gene] ?? null });
+  };
+  app.get("/api/depmap", serveRef('depmap_pancreatic.json', 'DepMap'));
+  app.get("/api/expression", serveRef('expression_paad.json', 'Expression'));
+
+  // ── Background Jobs ──────────────────────────────────────────────────────────
+  // In-process job runner. POST /api/jobs creates a job that runs in the
+  // background (one at a time); GET lists/inspects them. A harvest job pulls the
+  // Open Targets associated-target universe for a disease (any disease, any gene
+  // count) and stores it as an Oracle snapshot via oracleService. Jobs persist to
+  // data/jobs.json so history survives restarts.
+  type JobStatus = 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
+  interface JobRec {
+    id: string; type: string; disease_query: string; disease_id: string | null; disease_name: string | null;
+    gene_count: number; status: JobStatus; progress: number; processed: number; total: number;
+    log: string[]; snapshot_id: number | null; snapshot_version: number | null; error: string | null;
+    created_by: string | null; created_at: string; started_at: string | null; finished_at: string | null;
+  }
+  const JOBS_FILE = path.join(process.cwd(), 'data', 'jobs.json');
+  let JOBS: JobRec[] = [];
+  try { JOBS = JSON.parse(fs.readFileSync(JOBS_FILE, 'utf-8')) || []; } catch { JOBS = []; }
+  const persistJobs = () => { try { fs.mkdirSync(path.dirname(JOBS_FILE), { recursive: true }); fs.writeFileSync(JOBS_FILE, JSON.stringify(JOBS.slice(-100))); } catch { /* best effort */ } };
+  const jobLog = (j: JobRec, m: string) => { j.log.push(`${new Date().toISOString().slice(11, 19)} ${m}`); if (j.log.length > 200) j.log = j.log.slice(-200); };
+  // any job left 'running'/'queued' by a previous process is stale → mark failed
+  for (const j of JOBS) if (j.status === 'running' || j.status === 'queued') { j.status = 'failed'; j.error = 'Interrupted by server restart'; }
+  persistJobs();
+
+  const OT_URL = 'https://api.platform.opentargets.org/api/v4/graphql';
+  const otFetch = async (query: string, variables: any): Promise<any> => {
+    const r = await fetch(OT_URL, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }, body: JSON.stringify({ query, variables }) });
+    const j = await r.json();
+    if (j.errors) throw new Error('Open Targets: ' + JSON.stringify(j.errors).slice(0, 200));
+    return j.data;
+  };
+  const DT_MAP: Record<string, string> = { genetic_association: 'geneticScore', rna_expression: 'expressionScore', literature: 'literatureScore', known_drug: 'targetScore' };
+
+  const resolveDisease = async (q: string): Promise<{ id: string; name: string }> => {
+    const s = q.trim();
+    if (/^[A-Za-z]+_\d+$/.test(s)) {
+      const d = await otFetch(`query($id:String!){ disease(efoId:$id){ id name } }`, { id: s });
+      if (d?.disease) return { id: d.disease.id, name: d.disease.name };
+    }
+    const d = await otFetch(`query($q:String!){ search(queryString:$q, entityNames:["disease"], page:{index:0,size:1}){ hits{ id name } } }`, { q: s });
+    const hit = d?.search?.hits?.[0];
+    if (!hit) throw new Error(`No disease found for "${q}"`);
+    return { id: hit.id, name: hit.name };
+  };
+
+  const runHarvestJob = async (job: JobRec) => {
+    // Read status via the registry so TS doesn't narrow it away — the DELETE
+    // handler flips it to 'cancelled' on this same object from another request.
+    const cancelled = (): boolean => (JOBS.find(x => x.id === job.id)?.status) === 'cancelled';
+    job.status = 'running'; job.started_at = new Date().toISOString(); jobLog(job, `Resolving disease "${job.disease_query}"…`); persistJobs();
+    try {
+      const dis = await resolveDisease(job.disease_query);
+      job.disease_id = dis.id; job.disease_name = dis.name; jobLog(job, `Disease: ${dis.name} (${dis.id})`); persistJobs();
+      const PAGE = 50; const targets: any[] = []; let count = 0;
+      for (let page = 0; targets.length < job.gene_count; page++) {
+        if (cancelled()) { jobLog(job, 'Cancelled by user'); job.finished_at = new Date().toISOString(); persistJobs(); return; }
+        const data = await otFetch(
+          `query($id:String!,$size:Int!,$page:Int!){ disease(efoId:$id){ associatedTargets(page:{index:$page,size:$size}){ count rows{ score target{ approvedSymbol approvedName } datatypeScores{ id score } } } } }`,
+          { id: dis.id, size: PAGE, page });
+        const at = data?.disease?.associatedTargets; if (!at) break;
+        count = at.count || count;
+        const rows = at.rows || []; if (!rows.length) break;
+        for (const r of rows) {
+          if (targets.length >= job.gene_count) break;
+          const t: any = { symbol: r.target?.approvedSymbol, name: r.target?.approvedName, overallScore: r.score, getScore: r.score };
+          for (const ds of (r.datatypeScores || [])) { const k = DT_MAP[ds.id]; if (k) t[k] = ds.score; }
+          if (t.symbol) targets.push(t);
+        }
+        job.processed = targets.length; job.total = Math.min(job.gene_count, count || job.gene_count);
+        job.progress = job.total ? Math.min(1, targets.length / job.total) : 0;
+        jobLog(job, `Fetched ${targets.length}/${job.total} genes`); persistJobs();
+      }
+      if (!targets.length) throw new Error('No associated targets returned for this disease');
+      jobLog(job, `Writing snapshot to Oracle (${targets.length} genes)…`); persistJobs();
+      const svc = await oracleSvc();
+      const r = await svc.saveSnapshot({
+        disease_id: dis.id, disease_name: dis.name, label: 'Job harvest', gene_count: targets.length, targets,
+        provenance: { source: 'Open Targets associatedTargets', job_id: job.id, gene_count_requested: job.gene_count },
+        created_by: job.created_by,
+      });
+      job.snapshot_id = r.id; job.snapshot_version = r.version; job.status = 'done'; job.progress = 1; job.finished_at = new Date().toISOString();
+      jobLog(job, `Done — snapshot #${r.id} (Tier ${r.version})`); persistJobs();
+    } catch (e: any) {
+      if (!cancelled()) { job.status = 'failed'; job.error = String(e?.message || e).slice(0, 500); jobLog(job, 'Failed: ' + job.error); }
+      job.finished_at = new Date().toISOString(); persistJobs();
+    }
+  };
+
+  let jobRunning = false;
+  const pumpJobs = async () => {
+    if (jobRunning) return;
+    const next = JOBS.find(j => j.status === 'queued');
+    if (!next) return;
+    jobRunning = true;
+    try { await runHarvestJob(next); } catch { /* runner self-handles */ } finally { jobRunning = false; setImmediate(pumpJobs); }
+  };
+
+  app.post("/api/jobs", requireUser, express.json({ limit: "256kb" }), (req, res) => {
+    const { disease_query, gene_count, type } = req.body || {};
+    if (!disease_query || !String(disease_query).trim()) return res.status(400).json({ error: "disease_query required" });
+    const job: JobRec = {
+      id: 'job_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+      type: type || 'harvest_ot', disease_query: String(disease_query).slice(0, 120), disease_id: null, disease_name: null,
+      gene_count: Math.max(10, Math.min(5000, Number(gene_count) || 500)),
+      status: 'queued', progress: 0, processed: 0, total: 0, log: [], snapshot_id: null, snapshot_version: null, error: null,
+      created_by: (req as any).appUser?.id ?? null, created_at: new Date().toISOString(), started_at: null, finished_at: null,
+    };
+    JOBS.push(job); persistJobs(); setImmediate(pumpJobs);
+    res.status(201).json(job);
+  });
+  app.get("/api/jobs", requireUser, (_req, res) => res.json(JOBS.slice().reverse().slice(0, 100)));
+  app.get("/api/jobs/:id", requireUser, (req, res) => {
+    const j = JOBS.find(x => x.id === req.params.id);
+    if (!j) return res.status(404).json({ error: "Job not found" });
+    res.json(j);
+  });
+  app.delete("/api/jobs/:id", requireUser, (req, res) => {
+    const j = JOBS.find(x => x.id === req.params.id);
+    if (!j) return res.status(404).json({ error: "Job not found" });
+    if (j.status === 'queued' || j.status === 'running') { j.status = 'cancelled'; persistJobs(); }
+    res.json(j);
   });
 
   // ── PubTator Proxy ───────────────────────────────────────────────────────────

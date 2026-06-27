@@ -1,3 +1,5 @@
+import type { CbioMutationProfile } from './cbioportalService';
+
 export interface PubTatorResult {
   gene: string;
   totalPapers: number;
@@ -81,6 +83,7 @@ export interface Target {
   clinical_flags?: string[];
   usefulness?: Record<string, 'useful' | 'not-useful' | 'pinned'>;
   source?: 'OT' | 'LIT' | 'PAPER';
+  mutationProfile?: CbioMutationProfile;  // cBioPortal mutation axis (cancer only)
   x?: number;
   y?: number;
   vx?: number;
@@ -142,7 +145,7 @@ export interface ExpressionRow {
 }
 
 export type Theme = 'dark' | 'light';
-export type ViewMode = 'list' | 'enrichment' | 'raw' | 'pubtator' | 'paper';
+export type ViewMode = 'list' | 'enrichment' | 'raw' | 'pubtator' | 'paper' | 'funnel' | 'rankings' | 'jobs';
 
 export interface FilterCondition {
   field: string;
@@ -182,6 +185,27 @@ export interface DrugGeneRelationship {
   action: string;
 }
 
+// One extracted fact linking a gene (and optionally a mutation/drug) to evidence.
+// Maps 1:1 to a row in the evidence_cards table. Every card carries a source_quote
+// so the value is traceable to the exact sentence in the paper.
+export interface EvidenceCard {
+  gene_symbol: string;
+  disease?: string;
+  mutation?: string;          // e.g. "G12D"
+  drug?: string;
+  drug_action?: string;       // inhibits | activates | targets
+  mechanism?: string;         // mechanism of action
+  modality?: string;          // oral small molecule | antibody | ...
+  trial_phase?: string;       // Phase 1 | Phase 3 | Approved | ...
+  trial_ids?: string[];       // NCT ids
+  primary_endpoint?: string;  // e.g. "Overall survival"
+  efficacy_result?: string;   // e.g. "6.7 -> 13.2 months"
+  effect_size?: string;       // e.g. "HR 0.40 (60% lower death risk)"
+  approval_status?: string;
+  key_finding?: string;
+  source_quote?: string;      // exact sentence the fact came from
+}
+
 export interface PaperAnalysis {
   title: string;
   genes: GeneResult[];
@@ -202,6 +226,13 @@ export interface PaperAnalysis {
   industry_funded: boolean;
   key_finding: string;
   conclusion: string;
+  // ── Added for the content store (optional; populated for clinical/drug papers) ──
+  authors?: string[];
+  journal?: string;
+  year?: number | null;
+  doi?: string;
+  // Structured per-gene/drug/mutation facts → evidence_cards rows
+  cards?: EvidenceCard[];
 }
 
 // ── Target Assessment ────────────────────────────────────────────────────────

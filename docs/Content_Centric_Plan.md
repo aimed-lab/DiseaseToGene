@@ -1,0 +1,204 @@
+# Disease2Target — Content-Centric Plan
+### Pancreatic Cancer · Glioblastoma · Alzheimer's Disease
+
+**Author:** Nikhil Kurmachalam
+**Date:** 2026-06-11
+**Status:** Working plan v1 — for review and steering
+**Repo:** github.com/aimed-lab/DiseaseToGene · **Live:** disease-to-gene.vercel.app
+
+---
+
+## 0. The reframe (what this plan is built around)
+
+Disease2Target is being repositioned from *"a UI that runs AI on demand"* to a
+**traceable, content-centric scientific engine**: for each disease we store
+**versioned, sourced, auditable target-ranking content** that can be updated,
+cited, benchmarked, and reused in manuscripts, supplemental files, and downstream
+tools (Spinner → GeneTerrain).
+
+> Guiding test for every feature: *does it produce stored, sourced, reusable
+> scientific content — not just a transient on-screen answer?*
+
+---
+
+## 1. Current app status (baseline, as of 2026-06-11)
+
+**Working today:**
+- **Disease → ranked targets** via Open Targets associations.
+- **GET score** = Genetic (G) + Expression (E) + Target/tractability (T), plus
+  literature velocity, tissue specificity (TAU, bimodality).
+- **Evidence enrichment** from public APIs: PubMed / Europe PMC / PubTator
+  (literature), ClinicalTrials.gov (trials), Protein Atlas (tissue), **ChEMBL**
+  (druggability: modalities, IC50, approved-drug status, target max phase).
+- **Assess tool** — per-gene evidence cards + AI trade-off + DOCX report.
+- **Exports** — Combined CSV (all metrics), Druggability CSV (ChEMBL, user-chosen
+  gene count), DOCX reports, Obsidian wiki pages.
+- **Infra** — Supabase auth (invite-gated registration), server-side API response
+  cache, deployed on Vercel.
+
+**Gaps the professor flagged (this plan closes them):**
+1. No **provenance/traceability** on evidence blocks. *(highest priority)*
+2. No **versioned, stored** ranking content — results are transient.
+3. Cancer targets stop at protein level — **no mutation-level data**.
+4. No **benchmarking** of the ranking against known targets.
+5. Output is "top-10 GET" — not the **full attribute table** Spinner/GeneTerrain needs.
+6. **Documentation / working-directory** discipline is thin.
+7. **Update cadence** too slow (needs daily).
+
+---
+
+## 2. Three disease case studies
+
+| Priority | Disease | Why | Depth required |
+|---|---|---|---|
+| **1** | **Pancreatic cancer (PDAC)** | Long-discussed, "not coming through yet" | gene → protein → **mutation → frequency → druggable site** → clinical |
+| **2** | **Glioblastoma (GBM)** | Second cancer example | same mutation-level depth |
+| **3** | **Alzheimer's disease (AD)** | Already useful from prior work | gene / protein / pathway level is acceptable |
+
+**Pancreatic cancer anchor targets:**
+- **KRAS** — *known strong benchmark.* Mutation-specific drugs (e.g. G12C/G12D
+  inhibitors) improving survival. The ranking must place KRAS high and resolve to
+  the **mutation** level (G12D is the dominant PDAC allele).
+- **SRC** — *target-discovery / metastatic-resistant story.* Reproduce and extend
+  the existing SRC workflow through Disease2Target.
+
+---
+
+## 3. Data sources by evidence axis
+
+| Axis | Source | Notes |
+|---|---|---|
+| **G** Genetic | Open Targets (genetic_association, somatic_mutation, genetic_literature) | live |
+| **E** Expression | Open Targets RNA + Protein Atlas (TAU, single-cell, bimodality) | live |
+| **T** Target/druggability | Open Targets tractability + **ChEMBL** (modalities, IC50, mechanism, max phase) | live |
+| **Literature** | PubMed, Europe PMC, PubTator3 | live, rate-limit-throttled |
+| **Clinical** | ClinicalTrials.gov v2 | live |
+| **Mutation (NEW, cancer)** | **cBioPortal API** (mutation site, frequency per study) | *to add* |
+
+cBioPortal is public/no-auth and gives per-gene, per-study mutation frequency and
+hotspots — the right source to take KRAS/SRC from protein to **mutation** level
+without COSMIC licensing.
+
+---
+
+## 4. Content storage model
+
+| Tier | Store | What goes here |
+|---|---|---|
+| **Top of cream** (high-value, app-used) | **Oracle DB** *(professor's infra — handoff)* / **Supabase** *(interim, in use now)* | versioned ranked targets, GET components, evidence with provenance, audit status |
+| **Long-term knowledge** | **Wiki (Obsidian vault) + LLM memory** | papers, reasoning, notes, background, manuscript drafts |
+
+**Interim decision:** use **Supabase** as the structured content store *now*
+(versioned snapshots of each disease's ranking with provenance), and treat **Oracle
+DB as a later migration** once schema/credentials are provided. This keeps the
+"content engine" real today without blocking on Oracle.
+
+---
+
+## 5. Traceability — every content block carries provenance *(priority #1)*
+
+Each evidence block (gene card, druggability card, score, trial, literature stat)
+will record and display:
+
+```
+Evidence Source:   ChEMBL API
+Retrieved:         2026-06-11
+Evidence type:     druggability · IC50 · approved drug
+Generated by:      GET-Agent v1  (or "ChEMBL fetch", "Gemini narrative")
+Audit status:      not audited | AI-verified | human-verified
+Reference:         <link to source record>
+```
+
+- Surfaced on cards **and** added as columns in every CSV / DOCX export.
+- Stored alongside the value in the Supabase content snapshot, so any number can be
+  traced to *where, when, by what* it was produced.
+- Directly answers the professor's "untraceable = toxic" concern.
+
+---
+
+## 6. Benchmarking the ranking
+
+Show that GET recovers known targets better than baseline.
+
+| Disease | Benchmark set | Question |
+|---|---|---|
+| Pancreatic cancer | KRAS, SRC, clinical-trial targets | Does GET rank them high? |
+| GBM | known GBM targets (papers/trials, e.g. EGFR, IDH1, MGMT context) | Does GET recover them? |
+| Alzheimer's | APP, APOE, BACE1, MAPT, TREM2 | Are they ranked meaningfully? |
+
+**Metric:** rank/percentile of each known target in the GET ranking + a recovery
+summary (e.g. "8/10 known targets in top 20%"). Compare against a naive baseline
+(e.g. raw association score or expression alone) to show GET adds value.
+
+---
+
+## 7. Output for Spinner / GeneTerrain
+
+Correction taken on board: the app pushes **all genes and all ranking-relevant
+attributes**, not just a top-10 GET score.
+
+Export a **rich attribute table / network** per disease: genetic, expression,
+target, literature, network/importance, selectivity (TAU/bimodality), final GET,
+cell-type-specific fields, druggability (ChEMBL), mutation (cancer), plus
+provenance. **Blocker:** need the **Spinner/GeneTerrain input schema** from the
+professor — until then I will produce a clean, complete JSON+CSV export *ready* for
+that handoff.
+
+---
+
+## 8. Documentation / working directory
+
+Each version of the project will contain:
+
+```
+/manuscript        draft + versions
+/supplemental       supplemental files + data
+/app                application (this repo)
+/cards              drug cards + target cards
+/results            analysis results, figures, tables
+/evidence           source evidence + provenance exports
+/logs               event log / heartbeat (daily updates)
+/reviews            third-party AI assessment
+```
+
+This `docs/` plan is the first artifact. The working-directory skeleton will be
+created and populated per disease case study (PDAC first).
+
+---
+
+## 9. Daily deliverables (next 7–10 days)
+
+| Day | Deliverable |
+|---|---|
+| **0 (today)** | This plan document; share with professor |
+| **1** | Traceability/provenance metadata on gene + ChEMBL cards (app) |
+| **2** | Provenance in CSV/DOCX exports; SRC case-study page started |
+| **3** | cBioPortal mutation axis — KRAS/SRC mutation site + frequency (PDAC) |
+| **4** | SRC case study complete; KRAS as known-benchmark write-up |
+| **5** | Benchmark recovery view (PDAC: KRAS/SRC/trial targets) |
+| **6** | GBM case study + benchmark recovery |
+| **7** | Versioned ranking snapshots stored in Supabase (auditable) |
+| **8** | Alzheimer's benchmark (APP/APOE/BACE1/MAPT/TREM2) |
+| **9** | Rich all-attributes export formatted for Spinner/GeneTerrain |
+| **10** | Working-directory skeleton populated; manuscript stub |
+
+*Cadence commitment: a short daily update (even one line) regardless of size.*
+
+---
+
+## 10. Decisions I need from the professor
+
+1. **Spinner/GeneTerrain input schema** — exact fields/format to push.
+2. **Oracle DB** — schema + access, or confirm Supabase is fine as the interim store.
+3. **Benchmark target lists** — accept my curated known-target sets, or provide his.
+4. **SRC reference workflow** — pointer to the existing SRC paper/workflow to reproduce.
+5. Priority confirmation: **PDAC + traceability first** (my recommendation).
+
+---
+
+## 11. One-line summary
+
+> Turn Disease2Target into a traceable, content-centric scientific system — stored
+> versioned evidence with provenance, mutation-level cancer depth (KRAS/SRC),
+> benchmarked rankings, daily updates, documentation, and a rich export ready for
+> Spinner/GeneTerrain — starting with pancreatic cancer and traceability.

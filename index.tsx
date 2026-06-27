@@ -44,6 +44,7 @@ import {
   ChevronDown,
   ChevronUp,
   Layers,
+  Cpu,
   BookOpen,
   Book,
   Calendar,
@@ -88,8 +89,17 @@ import {
 
 import PaperExtractor from './PaperExtractor';
 import DruggabilityPanel from './DruggabilityPanel';
+import MutationPanel from './MutationPanel';
+import ConstraintPanel from './ConstraintPanel';
+import ExpressionPanel from './ExpressionPanel';
+import DependencyPanel from './DependencyPanel';
+import EvidenceCardsPanel from './EvidenceCardsPanel';
+import FunnelView from './FunnelView';
+import RankingsView from './RankingsView';
+import JobsView from './JobsView';
+import { getCbioMutations } from './cbioportalService';
 import { getChEMBLDruggability } from './chemblService';
-import { supabase, authenticatedFetch, clearSupabaseSessionStorage, getInitialSession, fetchGlobalWeights, saveGlobalWeights, fetchUserProfile, updateUserProfile, saveRankingSnapshot, fetchSnapshots, fetchSnapshot, deleteSnapshot, type RankingSnapshotMeta } from './supabase';
+import { supabase, authenticatedFetch, clearSupabaseSessionStorage, getInitialSession, fetchGlobalWeights, saveGlobalWeights, fetchUserProfile, updateUserProfile, saveRankingSnapshot, fetchSnapshots, fetchSnapshot, deleteSnapshot, savePaper, fetchEvidenceGeneSymbols, saveHarvest, type HarvestRow, type RankingSnapshotMeta } from './supabase';
 import {
   Target,
   DrugInfo,
@@ -107,6 +117,7 @@ import {
   PaperAnalysis,
   GeneResult,
   GeneAssessmentData,
+  DrillDownData,
 } from './types';
 
 import { api } from './api';
@@ -719,11 +730,14 @@ const TabNavigation = ({
 }) => (
   <nav className="hidden lg:flex flex-1 items-center justify-start gap-1 min-w-0 px-6">
     {[ 
-      {id:'list',i:List,l:'Targets'}, 
-      {id:'pubtator',i:BookOpen,l:'Literature'}, 
+      {id:'list',i:List,l:'Targets'},
+      {id:'funnel',i:Filter,l:'Funnel'},
+      {id:'rankings',i:Layers,l:'Rankings'},
+      {id:'pubtator',i:BookOpen,l:'Literature'},
       {id:'paper',i:FileText,l:'Papers'},
-      {id:'enrichment',i:BarChart3,l:'Enrichment'}, 
-      {id:'raw',i:Database,l:'Cohorts'} 
+      {id:'enrichment',i:BarChart3,l:'Enrichment'},
+      {id:'raw',i:Database,l:'Cohorts'},
+      {id:'jobs',i:Cpu,l:'Jobs'}
     ].map(t => {
       const active = viewMode === t.id;
       return (
@@ -3238,6 +3252,21 @@ const TargetDetailView = ({
 
             {/* ChEMBL Druggability (additive — fetched on demand from ChEMBL) */}
             <DruggabilityPanel geneSymbol={target.symbol} currentDisease={diseaseName} theme={theme} />
+
+            {/* Mutation Axis (additive — cBioPortal; renders only for cancer diseases) */}
+            <MutationPanel geneSymbol={target.symbol} currentDisease={diseaseName} theme={theme} />
+
+            {/* Dysregulation (additive — tumor-vs-normal expression; renders only for pancreatic) */}
+            <ExpressionPanel geneSymbol={target.symbol} currentDisease={diseaseName} theme={theme} />
+
+            {/* Dependency (additive — DepMap CRISPR; renders only for pancreatic) */}
+            <DependencyPanel geneSymbol={target.symbol} currentDisease={diseaseName} theme={theme} />
+
+            {/* Safety / Constraint (additive — gnomAD; disease-independent) */}
+            <ConstraintPanel geneSymbol={target.symbol} currentDisease={diseaseName} theme={theme} />
+
+            {/* Stored Evidence (additive — content store; renders only if cards exist) */}
+            <EvidenceCardsPanel geneSymbol={target.symbol} currentDisease={diseaseName} theme={theme} />
           </div>
         ) : (
           <div className="pt-10 border-t border-neutral-100 dark:border-neutral-800 flex flex-col items-center justify-center py-12">
@@ -3423,6 +3452,117 @@ const App = () => {
     }
   }, [researchState.targets, researchState.activeDisease]);
 
+  // ── Evidence highlight: which genes have stored evidence cards in the content store ──
+  // Refreshes when the disease changes or a new paper is ingested. Not disease-scoped
+  // yet (disease names vary between sources) — flags any gene with stored evidence.
+  const [evidenceGenes, setEvidenceGenes] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    if (!isAuthenticated) { setEvidenceGenes(new Set()); return; }
+    let active = true;
+    fetchEvidenceGeneSymbols().then(set => { if (active) setEvidenceGenes(set); }).catch(() => {});
+    return () => { active = false; };
+  }, [isAuthenticated, researchState.activeDisease?.name, researchState.paperResults.length]);
+
+  // ── Harvest: fetch each loaded gene's full evidence and store it in Oracle ──
+  // (one snapshot + per-gene ranking_scores + per-source evidence). Reuses the
+  // same fetch functions the gene drill-down uses; posts the batch to /api/harvest.
+  const [harvesting, setHarvesting] = useState(false);
+  const [harvestProgress, setHarvestProgress] = useState<{ done: number; total: number } | null>(null);
+  const [loadTotal, setLoadTotal] = useState('');
+  const handleHarvest = useCallback(async () => {
+    const disease = researchState.activeDisease;
+    const genes = researchState.targets;
+    if (!disease || genes.length === 0 || harvesting) return;
+    setHarvesting(true);
+    setHarvestProgress({ done: 0, total: genes.length });
+    const today = new Date().toISOString().slice(0, 10);
+    const rows: HarvestRow[] = [];
+    for (let i = 0; i < genes.length; i++) {
+      const t = genes[i];
+      try {
+        const [dd, chembl, mut] = await Promise.all([
+          t.drillDown ? Promise.resolve(t.drillDown) : api.getDrillDownData(t.symbol, disease.name).catch(() => undefined),
+          getChEMBLDruggability(t.symbol).catch(() => null),
+          getCbioMutations(t.symbol, disease.name).catch(() => null),
+        ]);
+        const drillDown: DrillDownData | undefined = dd as DrillDownData | undefined;
+        rows.push({
+          gene_symbol: t.symbol,
+          rank: i + 1,
+          get_scores: {
+            overallScore: t.overallScore, getScore: t.getScore, geneticScore: t.geneticScore,
+            expressionScore: t.expressionScore, combinedExpression: t.combinedExpression,
+            targetScore: t.targetScore, literatureScore: t.literatureScore,
+            tauTissue: t.tauTissue, tauSingleCell: t.tauSingleCell, finalScore: t.finalScore,
+            pubTatorScore: t.pubTatorScore, pubTatorVelocity: t.pubTatorVelocity,
+            bimodalityMax: t.bimodalityScores?._max_score, bimodalityTissue: t.bimodalityScores?._max_tissue,
+          },
+          clinical: drillDown ? {
+            trial_count: drillDown.trial_count, max_phase: drillDown.max_phase,
+            active_trial_present: drillDown.active_trial_present,
+            interventional_count: drillDown.interventional_count,
+            phase_breakdown: drillDown.phase_breakdown, top_drugs: drillDown.top_drugs,
+            top_conditions: drillDown.top_conditions, clinical_summary: drillDown.clinical_summary,
+          } : null,
+          literature: drillDown ? {
+            paper_count: drillDown.paper_count, recent_paper_count: drillDown.recent_paper_count,
+            epmc_velocity: drillDown.epmc_velocity, epmc_top_paper: drillDown.epmc_top_paper,
+            total_signals: drillDown.total_signals, recent_signals: drillDown.recent_signals,
+            signal_velocity: drillDown.signal_velocity, top_papers: drillDown.top_papers,
+            latest_publication_date: drillDown.latest_publication_date,
+          } : null,
+          chembl: chembl,
+          mutations: mut && !mut.error ? mut : null,
+          retrieved: today,
+        });
+      } catch { /* skip gene on hard failure, keep going */ }
+      setHarvestProgress({ done: i + 1, total: genes.length });
+      await new Promise(r => setTimeout(r, 120)); // polite gap between genes
+    }
+    const res = await saveHarvest({
+      disease_id: disease.id,
+      disease_name: disease.name,
+      weights: researchState.weights,
+      provenance: { sources: ['Open Targets', 'ClinicalTrials.gov', 'PubMed/EuropePMC/PubTator', 'ChEMBL', 'cBioPortal'], retrieved: today, harvested_by: 'client-harvest' },
+      rows,
+    });
+    setHarvesting(false);
+    setHarvestProgress(null);
+    setMessages(prev => [...prev, { role: 'assistant', content: res.ok
+      ? `Harvest complete — stored ${res.scores ?? rows.length} gene(s) and ${res.evidence ?? 0} evidence record(s) in Oracle for ${disease.name} (snapshot Tier ${res.version}).`
+      : `Harvest failed: ${res.error}`,
+      timestamp: new Date() }]);
+  }, [researchState.activeDisease, researchState.targets, researchState.weights, harvesting]);
+
+  // Fast multi-page gene loader — pulls N pages of Open Targets genes (scores only,
+  // no per-gene clinical enrichment) so you can build a larger universe quickly for
+  // the funnel / harvest. Additive; does not change the existing "Load More" button.
+  const handleLoadMoreGenes = useCallback(async (addPages: number) => {
+    const disease = researchState.activeDisease;
+    if (!disease || loading) return;
+    setLoading(true);
+    try {
+      const genes = [...researchState.targets];
+      const seen = new Set(genes.map(t => t.symbol.toUpperCase()));
+      let page = Math.ceil(genes.length / OT_PAGE_SIZE);
+      const target = genes.length + addPages * OT_PAGE_SIZE;
+      while (genes.length < target) {
+        setLoadingMessage(`Loading genes… (${genes.length}/${target})`);
+        const next = await api.getGenes(disease.id, OT_PAGE_SIZE, page);
+        if (!next.length) break;          // no more genes available
+        for (const g of next) {
+          const s = g.symbol.toUpperCase();
+          if (!seen.has(s)) { seen.add(s); genes.push(g); }
+        }
+        page++;
+      }
+      setResearchState(p => ({ ...p, targets: genes, currentPage: Math.max(p.currentPage, page - 1) }));
+    } finally {
+      setLoading(false);
+      setLoadingMessage('Mapping Intelligence...');
+    }
+  }, [researchState.activeDisease, researchState.targets, loading]);
+
   // ── Session persistence: restore researchState from sessionStorage after login ──
   useEffect(() => {
     if (!isAuthenticated) return;
@@ -3544,7 +3684,7 @@ const App = () => {
         provenance, targets,
       });
       if (res.ok) {
-        setSnapshotToast({ ok: true, msg: `Saved snapshot v${res.version} — ${targets.length} targets for ${disease.name}.` });
+        setSnapshotToast({ ok: true, msg: `Saved snapshot Tier ${res.version} — ${targets.length} targets for ${disease.name}.` });
       } else {
         setSnapshotToast({ ok: false, msg: res.error || 'Save failed.' });
       }
@@ -3588,7 +3728,7 @@ const App = () => {
         currentPage: 0,
       }));
       setHistoryOpen(false);
-      setSnapshotToast({ ok: true, msg: `Loaded snapshot v${snap.version} (${snap.disease_name}).` });
+      setSnapshotToast({ ok: true, msg: `Loaded snapshot Tier ${snap.version} (${snap.disease_name}).` });
       setTimeout(() => setSnapshotToast(null), 4000);
     } catch (e: any) {
       setSnapshotToast({ ok: false, msg: e?.message || 'Load failed.' });
@@ -3700,6 +3840,9 @@ const App = () => {
     setLoading(true);
     setLoadingMessage("Analyzing research papers...");
     const newResults: PaperAnalysis[] = [];
+    let savedCount = 0;
+    let savedCards = 0;
+    let saveError = '';
 
     try {
       for (let i = 0; i < files.length; i++) {
@@ -3714,50 +3857,117 @@ const App = () => {
         });
 
         const prompt = `You are a biomedical literature expert. Extract structured information from this research paper.
-Return ONLY valid JSON.
+Return ONLY valid JSON matching the schema below.
+
+CRITICAL RULES:
+- Use ONLY information stated in the paper. If a field is not present, use "" / [] / null. NEVER guess or infer.
+- For every item in "cards", include "source_quote": the EXACT sentence from the paper that the fact came from (verbatim, no paraphrasing). This makes each fact traceable.
+- "cards" is the most important output: one card per (gene, and where applicable a specific mutation and/or drug) relationship the paper establishes. A clinical drug-trial paper typically yields one card per gene-drug pair.
 
 {
   "title": "paper title or empty string",
-  "genes": [
-    { "symbol": "GENE1", "mentions": 5, "role": "role in study" }
-  ],
+  "authors": ["Last F", "..."],
+  "journal": "journal name or empty string",
+  "year": 0,
+  "doi": "doi or empty string",
+  "genes": [ { "symbol": "GENE1", "mentions": 5, "role": "role in study" } ],
   "diseases": ["disease name"],
-  "chemicals": [
-    { "name": "compound", "role": "inhibitor|activator|drug|biomarker" }
-  ],
-  "variants": ["rs429358", "p.Arg47His"],
-  "study_type": "GWAS|RCT|Cohort|Case-Control|Animal Model|In Vitro|Meta-analysis|Single-cell|Other",
+  "chemicals": [ { "name": "compound", "role": "inhibitor|activator|drug|biomarker" } ],
+  "variants": ["rs429358", "G12D"],
+  "study_type": "GWAS|RCT|Phase 1|Phase 2|Phase 3|Cohort|Case-Control|Animal Model|In Vitro|Meta-analysis|Single-cell|Other",
   "sample_size": 0,
   "species": ["human", "mouse"],
   "brain_regions": ["hippocampus"],
   "cell_types": ["astrocyte", "microglia"],
   "experimental_models": ["5xFAD mouse"],
-  "drug_gene_relationships": [
-    { "drug": "compound", "gene": "GENE1", "action": "inhibits|activates|targets" }
-  ],
+  "drug_gene_relationships": [ { "drug": "compound", "gene": "GENE1", "action": "inhibits|activates|targets" } ],
   "p_value": "p < 0.001",
   "fold_change": "2.3-fold increase",
   "odds_ratio": "OR 1.8 (95% CI 1.2-2.6)",
   "funding": ["NIH"],
   "industry_funded": false,
   "key_finding": "one sentence most important result",
-  "conclusion": "2-3 sentence summary"
+  "conclusion": "2-3 sentence summary",
+  "cards": [
+    {
+      "gene_symbol": "KRAS",
+      "disease": "pancreatic cancer",
+      "mutation": "G12D",
+      "drug": "daraxonrasib",
+      "drug_action": "inhibits|activates|targets",
+      "mechanism": "mechanism of action in one phrase",
+      "modality": "oral small molecule|antibody|PROTAC|other",
+      "trial_phase": "Phase 3|Approved|Preclinical|...",
+      "trial_ids": ["NCT0000000"],
+      "primary_endpoint": "e.g. Overall survival",
+      "efficacy_result": "e.g. 6.7 -> 13.2 months",
+      "effect_size": "e.g. HR 0.40 (60% lower risk of death)",
+      "approval_status": "e.g. seeking FDA approval, or empty string",
+      "key_finding": "one sentence specific to this gene/drug",
+      "source_quote": "EXACT verbatim sentence from the paper supporting the above"
+    }
+  ]
 }`;
 
-        const aiRes = await fetch('/api/ai/analyze-paper', {
+        const aiRes = await authenticatedFetch('/api/ai/analyze-paper', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ base64, mimeType: 'application/pdf', prompt }),
         });
-        const response = await aiRes.json();
+        const response = await aiRes.json().catch(() => ({} as any));
 
-        if (!response.text) throw new Error("No response from AI");
+        if (!aiRes.ok || response.error) throw new Error(response.error || `Request failed (HTTP ${aiRes.status})`);
+        if (!response.text) throw new Error("AI returned an empty response");
         const parsed = JSON.parse(response.text) as PaperAnalysis;
         newResults.push(parsed);
+
+        // Persist to the content store (papers + evidence_cards). Best-effort:
+        // the extraction view still works even if the tables aren't created yet.
+        try {
+          const cards = (parsed.cards ?? []).map(c => ({
+            gene_symbol:      c.gene_symbol,
+            disease:          c.disease ?? parsed.diseases?.[0] ?? null,
+            mutation:         c.mutation ?? null,
+            drug:             c.drug ?? null,
+            drug_action:      c.drug_action ?? null,
+            mechanism:        c.mechanism ?? null,
+            modality:         c.modality ?? null,
+            trial_phase:      c.trial_phase ?? null,
+            trial_ids:        c.trial_ids ?? null,
+            primary_endpoint: c.primary_endpoint ?? null,
+            efficacy_result:  c.efficacy_result ?? null,
+            effect_size:      c.effect_size ?? null,
+            approval_status:  c.approval_status ?? null,
+            key_finding:      c.key_finding ?? null,
+            source_quote:     c.source_quote ?? null,
+          }));
+          const saveRes = await savePaper({
+            title:          parsed.title || file.name,
+            authors:        parsed.authors ?? null,
+            journal:        parsed.journal ?? null,
+            year:           parsed.year ?? null,
+            doi:            parsed.doi ?? null,
+            url:            null,
+            study_type:     parsed.study_type ?? null,
+            sample_size:    parsed.sample_size ?? null,
+            key_finding:    parsed.key_finding ?? null,
+            conclusion:     parsed.conclusion ?? null,
+            raw_extraction: parsed,
+          }, cards);
+          if (saveRes.ok) { savedCount += 1; savedCards += saveRes.cardCount ?? 0; }
+          else saveError = saveRes.error || saveError;
+        } catch (e: any) {
+          saveError = e?.message || saveError;
+        }
       }
       setResearchState(prev => ({ ...prev, paperResults: [...newResults, ...prev.paperResults] }));
       setViewMode('paper');
-      setMessages(prev => [...prev, { role: 'assistant', content: `Successfully analyzed ${files.length} paper(s). Switched to PAPER view to show extracted intelligence.`, timestamp: new Date() }]);
+      const saveNote = savedCount > 0
+        ? ` Saved ${savedCount} paper(s) and ${savedCards} evidence card(s) to the content store.`
+        : saveError
+          ? ` (Not stored: ${saveError} — has the papers/evidence_cards SQL been run in Supabase?)`
+          : '';
+      setMessages(prev => [...prev, { role: 'assistant', content: `Successfully analyzed ${files.length} paper(s). Switched to PAPER view to show extracted intelligence.${saveNote}`, timestamp: new Date() }]);
     } catch (err: any) {
       setMessages(prev => [...prev, { role: 'assistant', content: `Error analyzing papers: ${err.message}`, timestamp: new Date() }]);
     } finally {
@@ -5412,11 +5622,29 @@ Return ONLY valid JSON.
                     />
                   )}
                   {viewMode === 'paper' && (
-                    <PaperExtractor 
-                      theme={theme} 
-                      onAddGene={(g) => handleAddGeneFromPaper(g, 'PAPER')} 
+                    <PaperExtractor
+                      theme={theme}
+                      onAddGene={(g) => handleAddGeneFromPaper(g, 'PAPER')}
                       results={researchState.paperResults}
                     />
+                  )}
+                  {viewMode === 'funnel' && (
+                    <div className="h-full p-4 overflow-hidden">
+                      <FunnelView theme={theme} />
+                    </div>
+                  )}
+                  {viewMode === 'rankings' && (
+                    <div className="h-full p-4 overflow-hidden">
+                      <RankingsView
+                        theme={theme}
+                        onSelectGene={(s) => { setResearchState(p => ({ ...p, focusSymbol: s })); setViewMode('list'); }}
+                      />
+                    </div>
+                  )}
+                  {viewMode === 'jobs' && (
+                    <div className="h-full p-4 overflow-hidden">
+                      <JobsView theme={theme} />
+                    </div>
                   )}
                   {viewMode === 'list' && (
                     <div className="h-full flex flex-col">
@@ -5425,6 +5653,18 @@ Return ONLY valid JSON.
                           <div className="flex flex-wrap items-center gap-2">
                             <h3 className={`text-[12px] font-black uppercase tracking-widest ${theme === 'dark' ? 'text-slate-100' : 'text-slate-950'}`}>Target prioritization matrix</h3>
                             <span className="rounded-full bg-blue-600/10 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-blue-600 dark:text-blue-400">{displayTargets.length} targets</span>
+                            {researchState.activeDisease && researchState.targets.length > 0 && (
+                              <button
+                                onClick={handleHarvest}
+                                disabled={harvesting}
+                                title="Fetch & store the full evidence profile (scores, clinical, literature, ChEMBL, mutations) for all loaded genes into the content store"
+                                className="rounded-full px-2.5 py-0.5 text-[9px] font-black uppercase tracking-widest flex items-center gap-1.5 transition-all bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-60"
+                              >
+                                {harvesting
+                                  ? <><Loader2 className="w-3 h-3 animate-spin" />Harvesting {harvestProgress?.done ?? 0}/{harvestProgress?.total ?? 0}</>
+                                  : <><Database className="w-3 h-3" />Harvest to DB ({researchState.targets.length})</>}
+                              </button>
+                            )}
                           </div>
                           {(researchState.filters.length > 0 || activeCancerType) && (
                             <div className="flex flex-wrap items-center gap-2">
@@ -5540,7 +5780,7 @@ Return ONLY valid JSON.
                                       <div className="min-w-0">
                                         <div className="flex items-center gap-2">
                                           <span className={`text-[12px] font-bold truncate ${theme === 'dark' ? 'text-slate-100' : 'text-slate-800'}`}>{s.disease_name}</span>
-                                          <span className="px-1.5 py-0.5 rounded-full bg-blue-500/15 text-blue-500 text-[9px] font-black">v{s.version}</span>
+                                          <span className="px-1.5 py-0.5 rounded-full bg-blue-500/15 text-blue-500 text-[9px] font-black">Tier {s.version}</span>
                                         </div>
                                         <p className={`text-[10px] ${theme === 'dark' ? 'text-slate-500' : 'text-slate-400'}`}>{s.gene_count ?? '—'} targets · {new Date(s.created_at).toLocaleString()}</p>
                                       </div>
@@ -5727,6 +5967,7 @@ Return ONLY valid JSON.
                                       {t.source === 'PAPER' && <span className="px-1.5 py-0.5 rounded-full bg-purple-100 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400 text-[8px] font-black uppercase tracking-tighter">PAPER</span>}
                                       
                                       {t.source === 'LIT' && <span className="px-1.5 py-0.5 rounded-full bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 text-[8px] font-black uppercase tracking-tighter">LIT</span>}
+                                      {evidenceGenes.has(t.symbol) && <span title="Has stored evidence cards from ingested papers" className="px-1.5 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400 text-[8px] font-black uppercase tracking-tighter">EVIDENCE</span>}
                                       {drillDownLoading === t.symbol ? (
                                         <Loader2 className="w-3 h-3 animate-spin text-blue-500" />
                                       ) : (
@@ -5801,6 +6042,23 @@ Return ONLY valid JSON.
                               </div>
                             )}
                             <button onClick={() => handleToolExecution('load_more', {})} disabled={loading} className={`group px-10 py-4 rounded-2xl bg-blue-600 text-white text-[12px] font-bold uppercase tracking-widest hover:bg-blue-700 active:scale-95 transition-all flex items-center gap-3 shadow-lg shadow-blue-600/25 disabled:opacity-50`}>{loading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Plus className="w-5 h-5 group-hover:rotate-90 transition-transform" />} Load More Analysis</button>
+                            <div className="flex items-center gap-2">
+                              <span className="text-[9px] font-bold uppercase tracking-widest text-neutral-400">Quick load (scores only):</span>
+                              <button onClick={() => handleLoadMoreGenes(4)} disabled={loading} className="px-3 py-1.5 rounded-lg border text-[10px] font-bold uppercase tracking-widest border-blue-300 text-blue-600 hover:bg-blue-50 dark:border-blue-800 dark:text-blue-300 dark:hover:bg-blue-950/30 disabled:opacity-50">+200</button>
+                              <button onClick={() => handleLoadMoreGenes(10)} disabled={loading} className="px-3 py-1.5 rounded-lg border text-[10px] font-bold uppercase tracking-widest border-blue-300 text-blue-600 hover:bg-blue-50 dark:border-blue-800 dark:text-blue-300 dark:hover:bg-blue-950/30 disabled:opacity-50">+500</button>
+                              <span className="text-[9px] font-bold uppercase tracking-widest text-neutral-400 ml-1">or total:</span>
+                              <input
+                                type="number" min={OT_PAGE_SIZE} step={OT_PAGE_SIZE} value={loadTotal}
+                                onChange={(e) => setLoadTotal(e.target.value)}
+                                placeholder="e.g. 600"
+                                className="w-20 px-2 py-1.5 rounded-lg border text-[11px] font-bold text-neutral-800 dark:text-neutral-200 border-neutral-300 dark:border-neutral-700 bg-transparent"
+                              />
+                              <button
+                                onClick={() => { const n = parseInt(loadTotal, 10); if (n > 0) { const add = Math.ceil(Math.max(0, n - researchState.targets.length) / OT_PAGE_SIZE); if (add > 0) handleLoadMoreGenes(add); } }}
+                                disabled={loading}
+                                className="px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-widest bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+                              >Load</button>
+                            </div>
                             <p className="text-[10px] font-bold text-neutral-500 dark:text-neutral-500 uppercase tracking-tighter">Cohort Depth: {researchState.currentPage + 1} | Page Size: {OT_PAGE_SIZE} | Showing: {displayTargets.length}</p>
                           </div>
                         )}
