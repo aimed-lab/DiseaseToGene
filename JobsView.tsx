@@ -27,6 +27,11 @@ export const JobsView: React.FC<Props> = ({ theme = 'light' }) => {
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [openJob, setOpenJob] = useState<string | null>(null);
+  // add-genes-on-demand
+  const [addList, setAddList] = useState('SRC');
+  const [targetSnap, setTargetSnap] = useState('');
+  const [submittingAdd, setSubmittingAdd] = useState(false);
+  const [errAdd, setErrAdd] = useState<string | null>(null);
 
   // ── data browser state ──
   const [snapshots, setSnapshots] = useState<RankingSnapshotMeta[]>([]);
@@ -73,6 +78,26 @@ export const JobsView: React.FC<Props> = ({ theme = 'light' }) => {
 
   const cancel = async (id: string) => {
     try { await authenticatedFetch(`/api/jobs/${id}`, { method: 'DELETE' }); await loadJobs(); } catch { /* ignore */ }
+  };
+
+  // default the "add to" snapshot to the newest one
+  useEffect(() => { if (!targetSnap && snapshots.length) setTargetSnap(String(snapshots[0].id)); }, [snapshots]);
+
+  const submitAdd = async () => {
+    const list = addList.split(/[\s,;]+/).map(s => s.trim().toUpperCase()).filter(Boolean);
+    const snap = snapshots.find(s => String(s.id) === targetSnap);
+    if (!list.length) { setErrAdd('Enter at least one gene symbol'); return; }
+    if (!snap) { setErrAdd('Pick a snapshot to add into'); return; }
+    setSubmittingAdd(true); setErrAdd(null);
+    try {
+      const r = await authenticatedFetch('/api/jobs', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'add_genes', disease_query: snap.disease_name, genes: list, target_snapshot_id: snap.id }),
+      });
+      if (!r.ok) { const b = await r.json().catch(() => ({})); throw new Error(b.error || `HTTP ${r.status}`); }
+      await loadJobs();
+    } catch (e: any) { setErrAdd(e?.message || 'Failed to add genes'); }
+    finally { setSubmittingAdd(false); }
   };
 
   // ── theme tokens ──
@@ -122,6 +147,23 @@ export const JobsView: React.FC<Props> = ({ theme = 'light' }) => {
               </button>
             </div>
             {err && <div style={{ marginTop: 8, fontSize: 11.5, color: '#dc2626' }}>{err}</div>}
+          </div>
+
+          {/* add genes on demand */}
+          <div style={{ border: `1px solid ${border}`, borderRadius: 12, background: cardBg, padding: 14, marginBottom: 16 }}>
+            <div style={sectionLabel}>Add genes on demand</div>
+            <div style={{ fontSize: 11.5, color: muted, margin: '4px 0 10px' }}>Add specific genes (e.g. <strong>SRC</strong>) into an existing snapshot — they join the same universe and get the same evidence harvested, so they compete in the funnel alongside the Open Targets genes.</div>
+            <label style={{ fontSize: 11, color: muted, fontWeight: 700 }}>Gene symbols (comma or space separated)</label>
+            <textarea value={addList} onChange={e => setAddList(e.target.value)} placeholder="SRC, LYN, FYN" rows={2} style={{ ...fieldStyle, marginTop: 4, resize: 'vertical', fontFamily: 'monospace' }} />
+            <label style={{ fontSize: 11, color: muted, fontWeight: 700, marginTop: 10, display: 'block' }}>Add into snapshot</label>
+            <select value={targetSnap} onChange={e => setTargetSnap(e.target.value)} style={{ ...fieldStyle, marginTop: 4 }}>
+              {snapshots.length === 0 && <option value="">No snapshots — run a harvest first</option>}
+              {snapshots.map(s => <option key={s.id} value={String(s.id)}>{s.disease_name} · Tier {s.version} · {s.gene_count ?? '?'} genes</option>)}
+            </select>
+            <button onClick={submitAdd} disabled={submittingAdd || !addList.trim() || !snapshots.length} style={{ marginTop: 10, width: '100%', border: 'none', background: '#0d9488', color: '#fff', borderRadius: 8, padding: '10px 16px', fontSize: 12, fontWeight: 800, cursor: submittingAdd ? 'default' : 'pointer', opacity: submittingAdd ? 0.6 : 1, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+              {submittingAdd ? 'Adding…' : 'Add & harvest genes'}
+            </button>
+            {errAdd && <div style={{ marginTop: 8, fontSize: 11.5, color: '#dc2626' }}>{errAdd}</div>}
           </div>
 
           {/* jobs list */}

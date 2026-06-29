@@ -243,6 +243,96 @@ export async function saveEvidenceCards(cards: EvidenceInput[], actor?: string):
   }
 }
 
+// Idempotent per-axis evidence write for a snapshot. Clears any existing rows of
+// the same evidence_type(s) for this snapshot, then inserts the new ones — so a
+// harvest provider can be re-run (or a snapshot enriched over rounds) without
+// duplicating. Each value_json should carry the contract { axis, direction,
+// display, ...raw }.
+export async function saveAxisEvidence(
+  snapshotId: number,
+  diseaseId: string,
+  rows: EvidenceInput[],
+  actor?: string,
+  genesOnly?: boolean,            // true = only replace rows for THESE genes (incremental add); false = replace the whole type for the snapshot
+): Promise<{ count: number; types: string[] }> {
+  if (!rows.length) return { count: 0, types: [] };
+  const conn = await (await getPool()).getConnection();
+  try {
+    const types = [...new Set(rows.map((r) => String(r.evidence_type)))];
+    if (genesOnly) {
+      const genes = [...new Set(rows.map((r) => String(r.gene_symbol)))];
+      for (const t of types) {
+        for (let i = 0; i < genes.length; i += 500) {
+          const chunk = genes.slice(i, i + 500);
+          const binds: any = { s: snapshotId, t };
+          const ph = chunk.map((g, j) => { binds['g' + j] = g; return ':g' + j; }).join(',');
+          await conn.execute(`DELETE FROM ${T('evidence')} WHERE snapshot_id = :s AND evidence_type = :t AND gene_symbol IN (${ph})`, binds);
+        }
+      }
+    } else {
+      for (const t of types) {
+        await conn.execute(`DELETE FROM ${T('evidence')} WHERE snapshot_id = :s AND evidence_type = :t`, { s: snapshotId, t });
+      }
+    }
+    for (const r of rows) await insertEvidence(conn, { ...r, snapshot_id: snapshotId, disease_id: diseaseId, generated_by: r.generated_by ?? 'job', audit_status: r.audit_status ?? 'not_audited' });
+    await logAudit(conn, { actor: actor ?? 'job', action: 'evidence_saved', entity: 'evidence', entity_id: String(snapshotId), disease_id: diseaseId, details: { count: rows.length, types } });
+    await conn.commit();
+    return { count: rows.length, types };
+  } catch (e) {
+    try { await conn.rollback(); } catch { /* ignore */ }
+    throw e;
+  } finally {
+    await conn.close();
+  }
+}
+
+// Append on-demand genes to an existing snapshot's RANKING_SCORES (idempotent per
+// gene — re-adding replaces the gene's row). Used by the "add genes" job so a
+// manually-supplied gene (e.g. SRC) joins the same universe as the Open Targets
+// genes and competes in the same funnel.
+export async function addGenesToSnapshot(
+  snapshotId: number,
+  disease_id: string,
+  disease_name: string,
+  targets: any[],
+): Promise<{ count: number }> {
+  if (!targets.length) return { count: 0 };
+  const conn = await (await getPool()).getConnection();
+  try {
+    const mr = await conn.execute<any[]>(`SELECT NVL(MAX(rank_position),0) FROM ${T('ranking_scores')} WHERE snapshot_id = :s`, { s: snapshotId });
+    let rank = Number(mr.rows![0][0]) || 0;
+    for (const t of targets) {
+      const g = String(t.symbol ?? '').slice(0, 64);
+      if (!g) continue;
+      rank++;
+      await conn.execute(`DELETE FROM ${T('ranking_scores')} WHERE snapshot_id = :s AND gene_symbol = :g`, { s: snapshotId, g });
+      await conn.execute(
+        `INSERT INTO ${T('ranking_scores')}
+           (snapshot_id, disease_id, disease_name, gene_symbol, gene_name, rank_position,
+            overall_score, get_score, genetic_score, expression_score, target_score, literature_score,
+            tau_tissue, tau_single_cell, bimodality_max, bimodality_tissue, pubtator_score, created_at)
+         VALUES (:snapshot_id,:disease_id,:disease_name,:gene_symbol,:gene_name,:rank_position,
+            :overall_score,:get_score,:genetic_score,:expression_score,:target_score,:literature_score,
+            NULL,NULL,NULL,NULL,NULL, SYSTIMESTAMP)`,
+        {
+          snapshot_id: snapshotId, disease_id, disease_name, gene_symbol: g,
+          gene_name: t.name ? String(t.name).slice(0, 400) : null, rank_position: rank,
+          overall_score: num(t.overallScore), get_score: num(t.getScore ?? t.overallScore), genetic_score: num(t.geneticScore),
+          expression_score: num(t.expressionScore), target_score: num(t.targetScore), literature_score: num(t.literatureScore),
+        }
+      );
+    }
+    await logAudit(conn, { actor: 'job', action: 'genes_added', entity: 'ranking_scores', entity_id: String(snapshotId), disease_id, details: { count: targets.length } });
+    await conn.commit();
+    return { count: targets.length };
+  } catch (e) {
+    try { await conn.rollback(); } catch { /* ignore */ }
+    throw e;
+  } finally {
+    await conn.close();
+  }
+}
+
 export async function evidenceGeneSymbols(diseaseId?: string): Promise<string[]> {
   const conn = await (await getPool()).getConnection();
   try {

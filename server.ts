@@ -615,6 +615,7 @@ function setupRoutes() {
     gene_count: number; status: JobStatus; progress: number; processed: number; total: number;
     log: string[]; snapshot_id: number | null; snapshot_version: number | null; error: string | null;
     created_by: string | null; created_at: string; started_at: string | null; finished_at: string | null;
+    genes?: string[]; target_snapshot_id?: number | null;   // for type 'add_genes'
   }
   const JOBS_FILE = path.join(process.cwd(), 'data', 'jobs.json');
   let JOBS: JobRec[] = [];
@@ -644,6 +645,145 @@ function setupRoutes() {
     const hit = d?.search?.hits?.[0];
     if (!hit) throw new Error(`No disease found for "${q}"`);
     return { id: hit.id, name: hit.name };
+  };
+
+  // ── Evidence providers (the 3 cheap axes) — write the value_json contract ──────
+  const clamp01 = (n: number) => Math.max(0, Math.min(1, n));
+  const toNum = (v: any): number | null => (Number.isFinite(Number(v)) ? Number(v) : null);
+
+  // server-side gnomAD constraint (safety axis) — one GraphQL call per gene
+  const gnomadConstraint = async (symbol: string): Promise<{ pli: number | null; loeuf: number | null } | null> => {
+    try {
+      const r = await fetch('https://gnomad.broadinstitute.org/api', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body: JSON.stringify({ query: 'query($s:String!){ gene(gene_symbol:$s, reference_genome:GRCh38){ gnomad_constraint{ pLI oe_lof_upper } } }', variables: { s: symbol } }),
+      });
+      const j: any = await r.json();
+      const c = j?.data?.gene?.gnomad_constraint;
+      if (!c) return null;
+      return { pli: toNum(c.pLI), loeuf: toNum(c.oe_lof_upper) };
+    } catch { return null; }
+  };
+
+  // Enrichment pass: compute the 3 cheap axes and store them as contract-shaped
+  // EVIDENCE rows (idempotent). Expression + dependency are pancreatic-only bulk
+  // lookups; safety (gnomAD) runs for any disease, throttled per gene.
+  const enrichAxes = async (job: JobRec, snapshotId: number, diseaseId: string, diseaseName: string, genes: string[], genesOnly = false) => {
+    const isPancreatic = /pancrea|pdac|paad|ductal adenocarcinoma/i.test(diseaseName || '');
+    const isCancelled = () => (JOBS.find(x => x.id === job.id)?.status) === 'cancelled';
+    const rows: any[] = [];
+
+    if (isPancreatic) {
+      const ex = loadRef('expression_paad.json');
+      if (ex?.genes) {
+        let n = 0;
+        for (const g of genes) {
+          const d = ex.genes[g]; if (!d) continue;
+          const log2fc = toNum(d.log2fc);
+          const axis = log2fc != null ? clamp01(Math.abs(log2fc) / 4) : null;
+          const up = (log2fc ?? 0) >= 0;
+          rows.push({ gene_symbol: g, evidence_type: 'expression_tvn', source: ex.meta?.source || 'UCSC Xena Toil (TCGA-PAAD vs GTEx)',
+            value_text: `${up ? 'up' : 'down'} log2FC ${log2fc}`,
+            value_json: { axis, direction: 'pro', display: `${up ? 'up' : 'down'} log2FC ${log2fc} (p ${d.p})`, log2fc, p: d.p, tumor_median: d.tumor_median, normal_median: d.normal_median } });
+          n++;
+        }
+        jobLog(job, `Expression axis: ${n} genes`); persistJobs();
+      }
+      const dp = loadRef('depmap_pancreatic.json');
+      if (dp?.genes) {
+        let n = 0;
+        for (const g of genes) {
+          const d = dp.genes[g]; if (!d) continue;
+          const mean = toNum(d.mean);
+          const axis = mean != null ? clamp01(-mean) : null;
+          rows.push({ gene_symbol: g, evidence_type: 'dependency', source: dp.meta?.source || 'DepMap CRISPR (Chronos, Pancreas)',
+            value_text: `Chronos ${mean}`,
+            value_json: { axis, direction: 'pro', display: `Chronos ${mean}${d.frac_dependent != null ? ` · ${Math.round(d.frac_dependent * 100)}% lines` : ''}`, mean, min: d.min, frac_dependent: d.frac_dependent, n_lines: d.n_lines } });
+          n++;
+        }
+        jobLog(job, `Dependency axis: ${n} genes`); persistJobs();
+      }
+    }
+
+    // safety — gnomAD, per gene, small concurrency
+    let safeN = 0; const CONC = 6;
+    for (let i = 0; i < genes.length; i += CONC) {
+      if (isCancelled()) { jobLog(job, 'Cancelled during enrichment'); persistJobs(); break; }
+      const got = await Promise.all(genes.slice(i, i + CONC).map(async g => ({ g, c: await gnomadConstraint(g) })));
+      for (const { g, c } of got) {
+        if (!c || (c.pli == null && c.loeuf == null)) continue;
+        const concern = c.loeuf != null ? clamp01(1 - c.loeuf / 1.5) : (c.pli != null ? clamp01(c.pli) : 0);
+        rows.push({ gene_symbol: g, evidence_type: 'safety', source: 'gnomAD v4',
+          value_text: `pLI ${c.pli} · LOEUF ${c.loeuf}`,
+          value_json: { axis: concern, direction: 'con', display: `pLI ${c.pli != null ? c.pli.toFixed(2) : '—'} · LOEUF ${c.loeuf != null ? c.loeuf.toFixed(2) : '—'}`, pli: c.pli, loeuf: c.loeuf } });
+        safeN++;
+      }
+      if (i % (CONC * 10) === 0) { jobLog(job, `Safety axis: ${safeN}/${genes.length}…`); persistJobs(); }
+    }
+    jobLog(job, `Safety axis: ${safeN} genes`); persistJobs();
+
+    if (!rows.length) { jobLog(job, 'No axis evidence to store'); persistJobs(); return; }
+    const svc = await oracleSvc();
+    const res = await svc.saveAxisEvidence(snapshotId, diseaseId, rows, job.created_by || 'job', genesOnly);
+    jobLog(job, `Stored ${res.count} evidence rows: ${res.types.join(', ')}`); persistJobs();
+  };
+
+  // Best-effort Open Targets association for one gene + disease, so a manually
+  // added gene carries its real OT scores (e.g. SRC's low PDAC score) alongside
+  // the other axes. Falls back to nulls if not found — the gene is still added.
+  const otGeneAssociation = async (symbol: string, efo: string): Promise<any> => {
+    const base: any = { symbol, name: null, overallScore: null, getScore: null, geneticScore: null, expressionScore: null, literatureScore: null, targetScore: null };
+    try {
+      const s = await otFetch(`query($q:String!){ search(queryString:$q, entityNames:["target"], page:{index:0,size:1}){ hits{ id name } } }`, { q: symbol });
+      const hit = s?.search?.hits?.[0]; if (!hit) return base;
+      const d = await otFetch(`query($id:String!){ target(ensemblId:$id){ approvedSymbol approvedName associatedDiseases(page:{index:0,size:500}){ rows{ disease{ id } score datatypeScores{ id score } } } } }`, { id: hit.id });
+      const tg = d?.target;
+      if (tg) { base.symbol = tg.approvedSymbol || symbol; base.name = tg.approvedName || null; }
+      const row = (tg?.associatedDiseases?.rows || []).find((r: any) => r.disease?.id === efo);
+      if (row) {
+        base.overallScore = row.score; base.getScore = row.score;
+        for (const ds of (row.datatypeScores || [])) {
+          const k = DT_MAP[ds.id];
+          if (k === 'geneticScore') base.geneticScore = ds.score;
+          else if (k === 'expressionScore') base.expressionScore = ds.score;
+          else if (k === 'literatureScore') base.literatureScore = ds.score;
+          else if (k === 'targetScore') base.targetScore = ds.score;
+        }
+      }
+      return base;
+    } catch { return base; }
+  };
+
+  // Add-genes job: append manually-supplied genes to an existing snapshot and
+  // enrich them with the same axes — so e.g. SRC joins the funnel universe.
+  const runAddGenesJob = async (job: JobRec) => {
+    const cancelled = (): boolean => (JOBS.find(x => x.id === job.id)?.status) === 'cancelled';
+    job.status = 'running'; job.started_at = new Date().toISOString(); persistJobs();
+    try {
+      const genes = [...new Set((job.genes || []).map(g => String(g).trim().toUpperCase()).filter(Boolean))];
+      if (!genes.length) throw new Error('No genes provided');
+      if (!job.target_snapshot_id) throw new Error('No target snapshot selected');
+      jobLog(job, `Resolving disease "${job.disease_query}"…`); persistJobs();
+      const dis = await resolveDisease(job.disease_query);
+      job.disease_id = dis.id; job.disease_name = dis.name; persistJobs();
+      const targets: any[] = [];
+      for (let i = 0; i < genes.length; i++) {
+        if (cancelled()) { jobLog(job, 'Cancelled'); job.finished_at = new Date().toISOString(); persistJobs(); return; }
+        targets.push(await otGeneAssociation(genes[i], dis.id));
+        job.processed = i + 1; job.total = genes.length; job.progress = ((i + 1) / genes.length) * 0.5;
+        jobLog(job, `Open Targets lookup ${genes[i]} (${i + 1}/${genes.length})`); persistJobs();
+      }
+      const svc = await oracleSvc();
+      const added = await svc.addGenesToSnapshot(job.target_snapshot_id, dis.id, dis.name, targets);
+      job.snapshot_id = job.target_snapshot_id;
+      jobLog(job, `Added ${added.count} gene(s) to snapshot #${job.target_snapshot_id} — enriching…`); persistJobs();
+      await enrichAxes(job, job.target_snapshot_id, dis.id, dis.name, targets.map(t => t.symbol), true);
+      job.status = 'done'; job.progress = 1; job.finished_at = new Date().toISOString();
+      jobLog(job, `Done — ${genes.join(', ')} added to snapshot #${job.target_snapshot_id}.`); persistJobs();
+    } catch (e: any) {
+      if (!cancelled()) { job.status = 'failed'; job.error = String(e?.message || e).slice(0, 500); jobLog(job, 'Failed: ' + job.error); }
+      job.finished_at = new Date().toISOString(); persistJobs();
+    }
   };
 
   const runHarvestJob = async (job: JobRec) => {
@@ -681,8 +821,12 @@ function setupRoutes() {
         provenance: { source: 'Open Targets associatedTargets', job_id: job.id, gene_count_requested: job.gene_count },
         created_by: job.created_by,
       });
-      job.snapshot_id = r.id; job.snapshot_version = r.version; job.status = 'done'; job.progress = 1; job.finished_at = new Date().toISOString();
-      jobLog(job, `Done — snapshot #${r.id} (Tier ${r.version})`); persistJobs();
+      job.snapshot_id = r.id; job.snapshot_version = r.version; job.progress = 0.9;
+      jobLog(job, `Snapshot #${r.id} (Tier ${r.version}) saved — enriching evidence axes…`); persistJobs();
+      try { await enrichAxes(job, r.id, dis.id, dis.name, targets.map((t: any) => t.symbol)); }
+      catch (e: any) { jobLog(job, 'Evidence enrichment warning: ' + String(e?.message || e).slice(0, 200)); persistJobs(); }
+      job.status = 'done'; job.progress = 1; job.finished_at = new Date().toISOString();
+      jobLog(job, 'Done.'); persistJobs();
     } catch (e: any) {
       if (!cancelled()) { job.status = 'failed'; job.error = String(e?.message || e).slice(0, 500); jobLog(job, 'Failed: ' + job.error); }
       job.finished_at = new Date().toISOString(); persistJobs();
@@ -695,19 +839,28 @@ function setupRoutes() {
     const next = JOBS.find(j => j.status === 'queued');
     if (!next) return;
     jobRunning = true;
-    try { await runHarvestJob(next); } catch { /* runner self-handles */ } finally { jobRunning = false; setImmediate(pumpJobs); }
+    const run = next.type === 'add_genes' ? runAddGenesJob : runHarvestJob;
+    try { await run(next); } catch { /* runner self-handles */ } finally { jobRunning = false; setImmediate(pumpJobs); }
   };
 
   app.post("/api/jobs", requireUser, express.json({ limit: "256kb" }), (req, res) => {
-    const { disease_query, gene_count, type } = req.body || {};
+    const { disease_query, gene_count, type, genes, target_snapshot_id } = req.body || {};
     if (!disease_query || !String(disease_query).trim()) return res.status(400).json({ error: "disease_query required" });
-    const job: JobRec = {
+    const base = {
       id: 'job_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-      type: type || 'harvest_ot', disease_query: String(disease_query).slice(0, 120), disease_id: null, disease_name: null,
-      gene_count: Math.max(10, Math.min(5000, Number(gene_count) || 500)),
-      status: 'queued', progress: 0, processed: 0, total: 0, log: [], snapshot_id: null, snapshot_version: null, error: null,
+      disease_query: String(disease_query).slice(0, 120), disease_id: null, disease_name: null,
+      status: 'queued' as JobStatus, progress: 0, processed: 0, total: 0, log: [], snapshot_id: null, snapshot_version: null, error: null,
       created_by: (req as any).appUser?.id ?? null, created_at: new Date().toISOString(), started_at: null, finished_at: null,
     };
+    let job: JobRec;
+    if (type === 'add_genes') {
+      const list = Array.isArray(genes) ? genes.map((g: any) => String(g)).filter(Boolean).slice(0, 500) : [];
+      if (!list.length) return res.status(400).json({ error: "genes required" });
+      if (!target_snapshot_id) return res.status(400).json({ error: "target_snapshot_id required" });
+      job = { ...base, type: 'add_genes', gene_count: list.length, genes: list, target_snapshot_id: Number(target_snapshot_id) };
+    } else {
+      job = { ...base, type: 'harvest_ot', gene_count: Math.max(10, Math.min(5000, Number(gene_count) || 500)) };
+    }
     JOBS.push(job); persistJobs(); setImmediate(pumpJobs);
     res.status(201).json(job);
   });

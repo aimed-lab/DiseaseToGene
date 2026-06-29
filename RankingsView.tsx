@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { fetchSnapshots, fetchSnapshotScores, fetchSnapshotEvidence, type RankingSnapshotMeta } from './supabase';
+import GeneDetailDrawer from './GeneDetailDrawer';
 
 interface Props {
   theme?: 'dark' | 'light';
@@ -35,6 +36,8 @@ export const RankingsView: React.FC<Props> = ({ theme = 'light' }) => {
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<'dashboard' | 'matrix'>('dashboard');
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [drawerGene, setDrawerGene] = useState<string | null>(null);
+  const diseaseName = snapshots.find((s) => String(s.id) === selectedId)?.disease_name || '';
 
   useEffect(() => {
     let active = true;
@@ -150,7 +153,7 @@ export const RankingsView: React.FC<Props> = ({ theme = 'light' }) => {
               <React.Fragment key={r.gene_symbol}>
                 <tr onClick={() => toggle(r.gene_symbol)} style={{ cursor: 'pointer' }}>
                   <td style={{ ...td, textAlign: 'right', color: muted }}>{r.rank ?? ''}</td>
-                  <td style={{ ...td, fontWeight: 800, color: accent }}>{r.gene_symbol}</td>
+                  <td onClick={(e) => { e.stopPropagation(); setDrawerGene(r.gene_symbol); }} title="Open full drill-down" style={{ ...td, fontWeight: 800, color: accent, textDecoration: 'underline', textUnderlineOffset: 2, cursor: 'pointer' }}>{r.gene_symbol}</td>
                   <td style={{ ...td, textAlign: 'right', fontFamily: 'monospace', fontWeight: 700, color: green }}>{num(r.get_score)}</td>
                   <td style={{ ...td, textAlign: 'right', fontFamily: 'monospace' }}>{num(r.genetic_score)}</td>
                   <td style={{ ...td, textAlign: 'right', fontFamily: 'monospace' }}>{num(r.expression_score)}</td>
@@ -177,7 +180,7 @@ export const RankingsView: React.FC<Props> = ({ theme = 'light' }) => {
                 <React.Fragment key={g}>
                   <tr onClick={() => toggle(g)} style={{ cursor: 'pointer' }}>
                     <td style={{ ...td, textAlign: 'right', color: muted }}>{r.rank ?? ''}</td>
-                    <td style={{ ...td, fontWeight: 800, color: accent }}>{g}</td>
+                    <td onClick={(e) => { e.stopPropagation(); setDrawerGene(g); }} title="Open full drill-down" style={{ ...td, fontWeight: 800, color: accent, textDecoration: 'underline', textUnderlineOffset: 2, cursor: 'pointer' }}>{g}</td>
                     {COLS.map((c) => {
                       const present = c.kind === 'ot' ? (r.genetic_score != null || r.get_score != null) : !!byGene[g]?.[c.key];
                       const text = c.kind === 'ot' ? 'G / E / T' : byGene[g]?.[c.key];
@@ -200,9 +203,10 @@ export const RankingsView: React.FC<Props> = ({ theme = 'light' }) => {
 
       <div style={{ padding: '10px 18px', fontSize: 10.5, color: muted, borderTop: `1px solid ${border}` }}>
         {tab === 'matrix'
-          ? 'Each cell: ✓ = real stored evidence from that source, — = none. Click a gene to see its stored evidence (instant, from Oracle — no live fetch).'
-          : 'GET scores per gene from the stored snapshot (Oracle). Click a gene to expand its stored evidence.'}
+          ? 'Each cell: ✓ = real stored evidence from that source, — = none. Click a row for stored evidence; click the gene name for the full live drill-down.'
+          : 'GET scores per gene from the stored snapshot (Oracle). Click a row for stored evidence; click the gene name for the full live drill-down.'}
       </div>
+      <GeneDetailDrawer geneSymbol={drawerGene} diseaseName={diseaseName} theme={theme} onClose={() => setDrawerGene(null)} />
     </div>
   );
 };
