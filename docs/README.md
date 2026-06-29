@@ -11,6 +11,7 @@ current source of truth for "what we're doing and where we are."
 |---|---|
 | **`sessions/`** | **Session handoffs (read the newest first).** Add one per context window. |
 | `Disease2Target_Funnel_Design.md` | The **design document** — cost-ordered tier funnel (silos + sift, iterative). Professor's gate doc. |
+| `Oracle_Schema.md` | **Plain-English Oracle schema** — the 4 tables, columns, relationships, the `value_json` contract, conventions/gotchas. |
 | `HANDOFF.md` | Original 2026-06-22 baseline handoff. |
 | `PROJECT_BRIEF.md`, `PLAN_Target_Prioritization.md`, `Content_Centric_Plan.md`, `Update_Session.md` | Earlier plans / briefs (historical context). |
 | `Meeting_Update_2026-06.md` | Meeting update notes. |
