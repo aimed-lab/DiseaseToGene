@@ -61,6 +61,7 @@ export const FunnelView: React.FC<Props> = ({ theme = 'light' }) => {
   const [openTier, setOpenTier] = useState<string | null>(null);
   const [resultsOpen, setResultsOpen] = useState(false);
   const [drawerGene, setDrawerGene] = useState<string | null>(null);
+  const [infoTier, setInfoTier] = useState<string | null>(null);   // ⓘ tier explainer sidebar
 
   const resetGates = () => {
     setThresholds(Object.fromEntries(HEADLINE_AXES.map(a => [a.key, a.filter.default ?? 0])));
@@ -237,6 +238,13 @@ export const FunnelView: React.FC<Props> = ({ theme = 'light' }) => {
     { label: 'Exclude “no drug data”', set: list.filter(c => !/No Drug|None/i.test(c)) },
   ];
 
+  // plain-English "how the gate reads" sentence for the ⓘ tier explainer
+  const filterReadsFor = (ax: AxisDef): string =>
+    (ax.type === 'soft' ? 'Soft tier — left off it only ranks survivors; enable it to also filter. ' : '')
+    + (ax.filter.kind === 'category'
+        ? 'Keeps genes whose category is in your selected set (none selected = keep all).'
+        : `Keeps genes whose ${ax.filter.field} is ${ax.filter.op === '<=' ? 'at most (≤)' : 'at least (≥)'} the threshold${ax.filter.unit ? ` (${ax.filter.unit})` : ''}. ${ax.direction === 'con' ? 'A higher value counts AGAINST the target and inverts in the ranking.' : 'Higher is a stronger case for the target.'}`);
+
   // ── small UI atoms ──────────────────────────────────────────────────────────
   const Toggle = ({ on, has, color, onClick }: { on: boolean; has: boolean; color: string; onClick: () => void }) => (
     <button onClick={onClick} title={has ? 'Enable gate' : 'No data in this snapshot'} disabled={!has}
@@ -271,9 +279,11 @@ export const FunnelView: React.FC<Props> = ({ theme = 'light' }) => {
             <span style={{ fontFamily: mono, fontSize: 17, fontWeight: 600, lineHeight: 1, marginTop: 1 }}>{ax.tier}</span>
           </span>
           <div style={{ minWidth: 0 }}>
-            <div style={{ display: 'flex', alignItems: 'baseline', gap: 9, marginBottom: 6 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6, minWidth: 0 }}>
               <span style={{ fontSize: 13, fontWeight: 700, color: t.tx, whiteSpace: 'nowrap' }}>{ax.label}</span>
-              <span style={{ fontFamily: mono, fontSize: 10.5, color: t.faint, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{ruleText}</span>
+              <button onClick={(e) => { e.stopPropagation(); setInfoTier(o => o === ax.key ? null : ax.key); }} title="What is this tier? Source & filter info"
+                style={{ flex: '0 0 auto', width: 16, height: 16, borderRadius: '50%', border: `1px solid ${infoTier === ax.key ? ax.color : t.line}`, background: infoTier === ax.key ? ax.color : 'transparent', color: infoTier === ax.key ? '#fff' : t.faint, fontFamily: 'Georgia, "Times New Roman", serif', fontStyle: 'italic', fontWeight: 700, fontSize: 10, lineHeight: 1, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>i</button>
+              <span style={{ fontFamily: mono, fontSize: 10.5, color: t.faint, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}>{ruleText}</span>
             </div>
             <div style={{ position: 'relative', height: 26, width: has ? `${wPct(count)}%` : '13%', borderRadius: 7, background: has ? (on ? grad : hexA(t.accent, 0.22)) : 'transparent', border: has ? 'none' : `1px dashed ${t.line}`, display: 'flex', alignItems: 'center', transition: 'width .28s cubic-bezier(.3,.7,.3,1)' }}>
               <span style={{ marginLeft: 6, padding: '2px 8px', borderRadius: 5, background: has ? 'rgba(0,0,0,.24)' : 'transparent', fontFamily: mono, fontSize: 11.5, fontWeight: 600, color: has ? '#fff' : t.faint }}>{fmtN(count)}</span>
@@ -366,6 +376,7 @@ export const FunnelView: React.FC<Props> = ({ theme = 'light' }) => {
   const flowRows = orderedHeadline.map(ax => { const count = result.tierCounts[ax.key] ?? result.total; const row = { ax, prev: prevCount, count }; prevCount = count; return row; });
   const topGenes = result.shortlist.slice(0, 6).map(s => s.f.gene_symbol);
   const snapMeta = snapshots.find(s => String(s.id) === selectedId);
+  const infoAx = infoTier ? AXES.find(a => a.key === infoTier) : null;
 
   const stats = [
     { label: 'Universe', value: fmtN(result.total), color: t.tx },
@@ -547,6 +558,53 @@ export const FunnelView: React.FC<Props> = ({ theme = 'light' }) => {
               </div>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* ── ⓘ TIER EXPLAINER SIDEBAR ── */}
+      {infoAx && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 18 }}>
+          <div onClick={() => setInfoTier(null)} style={{ position: 'absolute', inset: 0, background: 'rgba(8,12,20,.34)' }} />
+          <aside style={{ position: 'absolute', top: 0, right: 0, height: '100%', width: 384, maxWidth: '92vw', background: t.panel, borderLeft: `1px solid ${t.line}`, boxShadow: '-16px 0 50px rgba(8,12,20,.22)', display: 'flex', flexDirection: 'column' }}>
+            <div style={{ padding: '16px 18px', borderBottom: `1px solid ${t.line}`, background: hexA(infoAx.color, isDark ? 0.16 : 0.08) }}>
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+                <span style={{ flex: '0 0 auto', width: 42, height: 44, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', borderRadius: 10, color: '#fff', background: infoAx.color }}>
+                  <span style={{ fontSize: 8, letterSpacing: '.12em', fontWeight: 700, opacity: .85 }}>TIER</span>
+                  <span style={{ fontFamily: mono, fontSize: 17, fontWeight: 600, lineHeight: 1, marginTop: 1 }}>{infoAx.tier}</span>
+                </span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 15, fontWeight: 700, color: t.tx }}>{infoAx.label}</div>
+                  <div style={{ fontSize: 11.5, color: t.dim, marginTop: 2, lineHeight: 1.35 }}>{infoAx.question}</div>
+                </div>
+                <button onClick={() => setInfoTier(null)} style={{ flex: '0 0 auto', width: 30, height: 30, display: 'flex', alignItems: 'center', justifyContent: 'center', background: t.panel, border: `1px solid ${t.line}`, borderRadius: 8, color: t.dim, fontSize: 15, cursor: 'pointer' }}>✕</button>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 12, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 9.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.05em', color: '#fff', background: infoAx.color, padding: '3px 9px', borderRadius: 999 }}>{infoAx.source}</span>
+                {[infoAx.type === 'hard' ? 'Hard gate' : 'Soft · ranks', infoAx.direction === 'con' ? 'Counts against' : 'Higher = better', available[infoAx.key] ? 'Data present' : 'Pending'].map(tag => (
+                  <span key={tag} style={{ fontSize: 9.5, fontWeight: 600, color: t.dim, background: t.panel, border: `1px solid ${t.line}`, padding: '3px 9px', borderRadius: 999 }}>{tag}</span>
+                ))}
+              </div>
+            </div>
+
+            <div style={{ flex: 1, overflowY: 'auto', padding: '18px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+              {([['What it measures', infoAx.measures], ['Where it comes from', infoAx.provenance], ['How the gate reads', filterReadsFor(infoAx)]] as [string, string | undefined][])
+                .filter(([, body]) => !!body).map(([label, body]) => (
+                  <div key={label} style={{ borderLeft: `3px solid ${infoAx.color}`, paddingLeft: 12 }}>
+                    <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em', color: t.faint, marginBottom: 5 }}>{label}</div>
+                    <div style={{ fontSize: 12.5, color: t.tx, lineHeight: 1.55 }}>{body}</div>
+                  </div>
+                ))}
+              {infoAx.caveat && (
+                <div style={{ padding: '11px 12px', background: hexA('#d97706', isDark ? 0.16 : 0.10), border: `1px solid ${hexA('#d97706', 0.4)}`, borderRadius: 9, color: isDark ? '#f0c27a' : '#9a6207', fontSize: 12.5, lineHeight: 1.55 }}>
+                  <span style={{ fontWeight: 700 }}>⚠ Caution · </span>{infoAx.caveat}
+                </div>
+              )}
+              <div style={{ marginTop: 'auto', paddingTop: 14, borderTop: `1px solid ${t.line}`, display: 'flex', gap: 18, fontSize: 11, color: t.faint }}>
+                <span>Composite weight · <span style={{ fontFamily: mono, color: t.dim, fontWeight: 600 }}>{infoAx.weight.toFixed(1)}</span></span>
+                <span>Evidence · <span style={{ color: t.dim, fontWeight: 600 }}>{infoAx.evidenceType ?? 'scores table'}</span></span>
+              </div>
+            </div>
+          </aside>
         </div>
       )}
 
