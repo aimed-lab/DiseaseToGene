@@ -3363,7 +3363,7 @@ const App = () => {
 
   const [viewMode, setViewMode] = useState<ViewMode>('list');
   const [sidebarNav, setSidebarNav] = useState<string>('cohort');
-  const OT_PAGE_SIZE = 50;
+  const OT_PAGE_SIZE = 15;
 
   const [loading, setLoading] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState("Mapping Intelligence...");
@@ -3469,6 +3469,8 @@ const App = () => {
   const [harvesting, setHarvesting] = useState(false);
   const [harvestProgress, setHarvestProgress] = useState<{ done: number; total: number } | null>(null);
   const [loadTotal, setLoadTotal] = useState('');
+  const [addGeneInput, setAddGeneInput] = useState('');
+  const [addGeneBusy, setAddGeneBusy] = useState(false);
   const handleHarvest = useCallback(async () => {
     const disease = researchState.activeDisease;
     const genes = researchState.targets;
@@ -3562,6 +3564,42 @@ const App = () => {
       setLoadingMessage('Mapping Intelligence...');
     }
   }, [researchState.activeDisease, researchState.targets, loading]);
+
+  // Search-to-add: append any gene (e.g. SRC) to the matrix on demand with its full
+  // drill-down evidence, so you can inspect a gene that isn't in the Open Targets
+  // top-N. Mirrors the custom-gene model used by handleAddGeneFromPaper.
+  const handleAddGeneSearch = useCallback(async () => {
+    const sym = addGeneInput.trim().toUpperCase().replace(/[^A-Z0-9\-]/g, '');
+    if (!sym || addGeneBusy) return;
+    if (researchState.targets.some(t => t.symbol.toUpperCase() === sym)) { setAddGeneInput(''); return; }
+    setAddGeneBusy(true);
+    const disease = researchState.activeDisease;
+    const placeholder: Target = { id: `search-${sym}-${Date.now()}`, symbol: sym, name: 'Loading evidence…', overallScore: 0, geneticScore: 0, expressionScore: 0, targetScore: 0, pathways: [], source: 'LIT' };
+    setResearchState(prev => prev.targets.some(t => t.symbol.toUpperCase() === sym) ? prev : ({ ...prev, targets: [placeholder, ...prev.targets] }));
+    try {
+      const [profile, ot] = await Promise.all([
+        api.getGeneFullProfile(sym, disease?.id ?? null, disease?.name ?? ''),
+        disease?.id ? api.getTargetAssociation(sym, disease.id) : Promise.resolve(null),
+      ]);
+      setResearchState(prev => ({
+        ...prev,
+        targets: prev.targets.map(t => t.symbol.toUpperCase() === sym ? {
+          ...t, name: ot?.name || profile.name || sym, drillDown: profile.drillDown,
+          literatureScore: ot?.literatureScore ?? profile.literatureScore,
+          pubTatorScore: profile.pubTatorScore, pubTatorVelocity: profile.pubTatorVelocity,
+          pubTatorTotalPapers: profile.pubTatorTotalPapers, pubTatorRecentPapers: profile.pubTatorRecentPapers,
+          // real Open Targets G/E/T/overall (genetic legitimately stays ~0 where OT has no such evidence)
+          ...(ot ? { overallScore: ot.overallScore ?? 0, geneticScore: ot.geneticScore ?? 0, expressionScore: ot.expressionScore ?? 0, combinedExpression: ot.combinedExpression ?? 0, targetScore: ot.targetScore ?? 0, getScore: ot.getScore ?? 0 } : {}),
+        } : t),
+      }));
+      setAddGeneInput('');
+    } catch (e) {
+      logDev('Add-gene search failed', e);
+      setResearchState(prev => ({ ...prev, targets: prev.targets.map(t => t.symbol.toUpperCase() === sym ? { ...t, name: sym } : t) }));
+    } finally {
+      setAddGeneBusy(false);
+    }
+  }, [addGeneInput, addGeneBusy, researchState.targets, researchState.activeDisease]);
 
   // ── Session persistence: restore researchState from sessionStorage after login ──
   useEffect(() => {
@@ -6058,6 +6096,21 @@ CRITICAL RULES:
                                 disabled={loading}
                                 className="px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-widest bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
                               >Load</button>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <span className="text-[9px] font-bold uppercase tracking-widest text-neutral-400">Add gene on demand:</span>
+                              <input
+                                value={addGeneInput}
+                                onChange={(e) => setAddGeneInput(e.target.value)}
+                                onKeyDown={(e) => { if (e.key === 'Enter') handleAddGeneSearch(); }}
+                                placeholder="e.g. SRC"
+                                className="w-28 px-2 py-1.5 rounded-lg border text-[11px] font-bold uppercase text-neutral-800 dark:text-neutral-200 border-neutral-300 dark:border-neutral-700 bg-transparent"
+                              />
+                              <button
+                                onClick={handleAddGeneSearch}
+                                disabled={addGeneBusy || !addGeneInput.trim()}
+                                className="px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-widest bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50 flex items-center gap-1.5"
+                              >{addGeneBusy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Plus className="w-3 h-3" />} Add gene</button>
                             </div>
                             <p className="text-[10px] font-bold text-neutral-500 dark:text-neutral-500 uppercase tracking-tighter">Cohort Depth: {researchState.currentPage + 1} | Page Size: {OT_PAGE_SIZE} | Showing: {displayTargets.length}</p>
                           </div>

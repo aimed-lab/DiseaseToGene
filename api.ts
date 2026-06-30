@@ -228,6 +228,55 @@ export const api = {
     } catch (err) { return []; }
   },
 
+  // Open Targets association scores for ONE gene × disease (for search-added genes,
+  // which skip the ranked-list pull). Resolves the symbol → ensembl id, then derives
+  // G / E / T / overall with the SAME logic as getGenes so the values match the
+  // matrix. Returns nulls-as-zeros gracefully; the gene is still usable if OT misses.
+  async getTargetAssociation(symbol: string, efoId: string): Promise<Partial<Target> | null> {
+    try {
+      const SEARCH = `query($q:String!){ search(queryString:$q, entityNames:["target"], page:{index:0,size:1}){ hits{ id } } }`;
+      const sres = await fetch('/api/ot-graphql', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: SEARCH, variables: { q: symbol } }) });
+      const ensemblId = (await sres.json())?.data?.search?.hits?.[0]?.id;
+      if (!ensemblId) return null;
+      const GQL = `query($id:String!){ target(ensemblId:$id){ approvedName expressions{ rna{ value } } tractability{ label modality value } associatedDiseases(page:{index:0,size:3000}){ rows{ disease{ id } score datatypeScores{ id score } } } } }`;
+      const res = await fetch('/api/ot-graphql', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: GQL, variables: { id: ensemblId } }) });
+      const target = (await res.json())?.data?.target;
+      if (!target) return null;
+      const assoc = (target.associatedDiseases?.rows || []).find((r: any) => r.disease?.id === efoId);
+      const dts: any[] = assoc?.datatypeScores || [];
+      const dt = (id: string) => dts.find(s => s.id === id)?.score || 0;
+      const geneticScore = Math.max(dt('genetic_association'), dt('somatic_mutation'), dt('genetic_literature'));
+      const literatureScore = dt('literature');
+      const overallScore = assoc?.score || 0;
+
+      const vals = (target.expressions || []).map((e: any) => e.rna?.value || 0).filter((v: number) => v > 0).sort((a: number, b: number) => b - a);
+      let expressionScore = 0;
+      if (vals.length > 0) {
+        const top1 = vals[0];
+        const top3avg = vals.slice(0, 3).reduce((a: number, b: number) => a + b, 0) / Math.min(3, vals.length);
+        const meanAll = vals.reduce((a: number, b: number) => a + b, 0) / vals.length;
+        const strength = Math.min(1, Math.log10(top3avg + 1) / 4);
+        const selectivity = meanAll > 0 ? Math.min(1, Math.log10((top1 / meanAll) + 1) / Math.log10(6)) : 0;
+        expressionScore = strength * 0.7 + selectivity * 0.3;
+      }
+
+      const tractability = target.tractability || [];
+      const sc = (modality: string, label: string) => tractability.some((t: any) => t.modality === modality && t.label === label && t.value === true);
+      const targetScore = (() => {
+        if (sc('SM', 'Approved Drug') || sc('AB', 'Approved Drug') || sc('PR', 'Approved Drug')) return 1.0;
+        if (sc('SM', 'Advanced Clinical') || sc('AB', 'Advanced Clinical') || sc('PR', 'Advanced Clinical')) return 0.85;
+        if (sc('SM', 'Phase 1 Clinical') || sc('AB', 'Phase 1 Clinical') || sc('PR', 'Phase 1 Clinical')) return 0.70;
+        if (sc('SM', 'Structure with Ligand') || sc('SM', 'High-Quality Ligand')) return 0.55;
+        if (sc('SM', 'High-Quality Pocket') || sc('SM', 'Med-Quality Pocket')) return 0.40;
+        if (sc('SM', 'Druggable Family')) return 0.25;
+        return 0.1;
+      })();
+      const getScore = geneticScore * 0.50 + expressionScore * 0.25 + targetScore * 0.25;
+
+      return { name: target.approvedName, overallScore, geneticScore, expressionScore, combinedExpression: expressionScore, targetScore, literatureScore, getScore };
+    } catch { return null; }
+  },
+
   async getTargetDrugs(ensemblId: string): Promise<DrugInfo[]> {
     // NOTE: Open Targets removed `knownDrugs` from the `Target` type in the current
     // v4 schema, so this query always 400s. Short-circuit to avoid console-error

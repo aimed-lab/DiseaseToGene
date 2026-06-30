@@ -199,16 +199,14 @@ export const FunnelView: React.FC<Props> = ({ theme = 'light' }) => {
   const pendingGates = HEADLINE_AXES.filter(a => !available[a.key]).length;
   const orderedHeadline = useMemo(() => [...HEADLINE_AXES].sort((a, b) => a.tier - b.tier), []);
 
-  // Dropdown hygiene: snapshots arrive newest-first, and every harvest of a disease
-  // adds a new version. Show only the LATEST version per disease so the picker isn't
-  // cluttered with stale runs — but always keep whatever is currently selected
-  // visible (in case the user picked an older version on purpose).
-  const visibleSnapshots = useMemo(() => {
-    const seen = new Set<string>(); const out: RankingSnapshotMeta[] = [];
-    for (const s of snapshots) { const k = s.disease_id || s.disease_name; if (seen.has(k)) continue; seen.add(k); out.push(s); }
-    if (selectedId && !out.some(s => String(s.id) === selectedId)) { const sel = snapshots.find(s => String(s.id) === selectedId); if (sel) out.push(sel); }
-    return out;
-  }, [snapshots, selectedId]);
+  // Dropdown: show EVERY stored snapshot, grouped by disease (newest version first
+  // within each group, since snapshots arrive newest-first) so any run — not just
+  // the latest — can be selected.
+  const snapshotGroups = useMemo(() => {
+    const m = new Map<string, RankingSnapshotMeta[]>();
+    for (const s of snapshots) { const k = s.disease_name || s.disease_id; const arr = m.get(k); if (arr) arr.push(s); else m.set(k, [s]); }
+    return [...m.entries()].map(([disease, items]) => ({ disease, items }));
+  }, [snapshots]);
 
   const exportCsv = () => {
     const cols = ['rank', 'gene', 'composite', 'get_score', 'completeness', ...COMPOSITE_AXES.map(a => a.key)];
@@ -221,8 +219,10 @@ export const FunnelView: React.FC<Props> = ({ theme = 'light' }) => {
     a.href = url; a.download = `funnel_${(snap?.disease_name || 'snapshot').replace(/\s+/g, '_')}.csv`; a.click(); URL.revokeObjectURL(url);
   };
 
-  // preset cut-offs for a range gate (Lenient / Suggested / Strict / Very strict)
+  // preset cut-offs for a range gate. Prefer the registry's hand-picked presets
+  // (tuned to each axis's real distribution); fall back to a generic linear spread.
   const rangePresets = (f: FilterDef) => {
+    if (f.presets && f.presets.length) return f.presets.map(p => ({ label: p.label, value: p.value }));
     const step = f.step || 0.01; const dec = (String(step).split('.')[1] || '').length;
     const round = (v: number) => +(Math.round(v / step) * step).toFixed(dec);
     const lo = f.min ?? 0, hi = f.max ?? 1, def = f.default ?? 0;
@@ -231,6 +231,8 @@ export const FunnelView: React.FC<Props> = ({ theme = 'light' }) => {
       : [['Lenient', lo], ['Suggested', def], ['Strict', def + (hi - def) * 0.45], ['Very strict', def + (hi - def) * 0.8]];
     return arr.map(([label, v]) => ({ label, value: round(Math.max(lo, Math.min(hi, v))) }));
   };
+  // human-readable threshold: percent axes (frequency, velocity) show as %, else value + unit
+  const fmtThresh = (f: FilterDef, v: number) => f.percent ? `${+(v * 100).toFixed(2)}%` : `${v}${f.unit ? ' ' + f.unit : ''}`;
   const catPresets = (list: string[]) => [
     { label: 'All categories', set: list.slice() },
     { label: 'Validated + in development', set: list.filter(c => /Validated|Development/i.test(c)) },
@@ -266,7 +268,7 @@ export const FunnelView: React.FC<Props> = ({ theme = 'light' }) => {
       ? 'no data in snapshot'
       : ax.filter.kind === 'category'
         ? ((cats[ax.key] || []).length === 0 || (cats[ax.key] || []).length === (ax.filter.categories || []).length ? 'any category' : (cats[ax.key] || []).join(' / '))
-        : `${ax.filter.op === '<=' ? '≤' : '≥'} ${thresholds[ax.key] ?? ax.filter.default ?? 0}${ax.filter.unit ? ' ' + ax.filter.unit : ''}`;
+        : `${ax.filter.op === '<=' ? '≤' : '≥'} ${fmtThresh(ax.filter, thresholds[ax.key] ?? ax.filter.default ?? 0)}`;
     const thr = thresholds[ax.key] ?? ax.filter.default ?? 0;
     const presetMatch = isRange ? rangePresets(ax.filter).find(p => Math.abs(p.value - thr) < 1e-9) : undefined;
 
@@ -311,24 +313,28 @@ export const FunnelView: React.FC<Props> = ({ theme = 'light' }) => {
               <div style={{ marginTop: 12, opacity: on ? 1 : .55 }}>
                 <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 6 }}>
                   <span style={{ fontSize: 10.5, color: t.faint }}>{ax.filter.op === '<=' ? 'keep ≤ threshold' : 'keep ≥ threshold'}</span>
-                  <span style={{ fontFamily: mono, fontSize: 13, fontWeight: 600, color: t.tx }}>{ax.filter.op === '<=' ? '≤ ' : '≥ '}{thr}{ax.filter.unit ? ' ' + ax.filter.unit : ''}</span>
+                  <span style={{ fontFamily: mono, fontSize: 13, fontWeight: 600, color: t.tx }}>{ax.filter.op === '<=' ? '≤ ' : '≥ '}{fmtThresh(ax.filter, thr)}</span>
                 </div>
                 <input type="range" min={ax.filter.min ?? 0} max={ax.filter.max ?? 1} step={ax.filter.step ?? 0.01} value={thr} disabled={!on}
                   onChange={e => setThresholds(p => ({ ...p, [ax.key]: parseFloat(e.target.value) }))} style={{ width: '100%', height: 4, accentColor: ax.color, cursor: on ? 'pointer' : 'default' }} />
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 3, fontFamily: mono, fontSize: 9.5, color: t.faint }}>
-                  <span>{ax.filter.min ?? 0}</span><span>{ax.filter.max ?? 1}</span>
+                  <span>{fmtThresh(ax.filter, ax.filter.min ?? 0)}</span><span>{fmtThresh(ax.filter, ax.filter.max ?? 1)}</span>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
                   <select value={presetMatch ? String(presetMatch.value) : ''} disabled={!on}
                     onChange={e => { if (e.target.value !== '') setThresholds(p => ({ ...p, [ax.key]: parseFloat(e.target.value) })); }}
                     style={{ flex: 1, minWidth: 150, appearance: 'none', background: t.panel, border: `1px solid ${t.line}`, color: t.tx, font: 'inherit', fontSize: 11.5, padding: '7px 10px', borderRadius: 8, cursor: on ? 'pointer' : 'default' }}>
                     <option value="">Preset cut-off…</option>
-                    {rangePresets(ax.filter).map(p => <option key={p.label} value={String(p.value)}>{p.label} · {p.value}{ax.filter.unit ? ' ' + ax.filter.unit : ''}</option>)}
+                    {rangePresets(ax.filter).map(p => <option key={p.label} value={String(p.value)}>{p.label} · {ax.filter.op === '<=' ? '≤ ' : '≥ '}{fmtThresh(ax.filter, p.value)}</option>)}
                   </select>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6, flex: '0 0 auto' }}>
-                    <span style={{ fontSize: 10, color: t.faint, textTransform: 'uppercase', letterSpacing: '.05em', fontWeight: 600 }}>Exact</span>
-                    <input type="number" min={ax.filter.min ?? 0} max={ax.filter.max ?? 1} step={ax.filter.step ?? 0.01} value={thr} disabled={!on}
-                      onChange={e => { const v = parseFloat(e.target.value); if (!Number.isNaN(v)) setThresholds(p => ({ ...p, [ax.key]: v })); }}
+                    <span style={{ fontSize: 10, color: t.faint, textTransform: 'uppercase', letterSpacing: '.05em', fontWeight: 600 }}>Exact{ax.filter.percent ? ' %' : (ax.filter.unit ? ' ' + ax.filter.unit : '')}</span>
+                    <input type="number"
+                      min={(ax.filter.min ?? 0) * (ax.filter.percent ? 100 : 1)}
+                      max={(ax.filter.max ?? 1) * (ax.filter.percent ? 100 : 1)}
+                      step={(ax.filter.step ?? 0.01) * (ax.filter.percent ? 100 : 1)}
+                      value={ax.filter.percent ? +(thr * 100).toFixed(2) : thr} disabled={!on}
+                      onChange={e => { const raw = parseFloat(e.target.value); if (!Number.isNaN(raw)) setThresholds(p => ({ ...p, [ax.key]: ax.filter.percent ? raw / 100 : raw })); }}
                       style={{ width: 80, background: t.panel, border: `1px solid ${t.line}`, color: t.tx, fontFamily: mono, fontSize: 11.5, padding: '6px 8px', borderRadius: 8 }} />
                   </div>
                 </div>
@@ -401,7 +407,11 @@ export const FunnelView: React.FC<Props> = ({ theme = 'light' }) => {
           <select value={selectedId} onChange={e => { setSelectedId(e.target.value); setResultsOpen(false); setOpenTier(null); }}
             style={{ appearance: 'none', background: t.panel2, border: `1px solid ${t.line}`, color: t.tx, font: 'inherit', fontSize: 12.5, fontWeight: 500, padding: '6px 11px', borderRadius: 8, cursor: 'pointer', maxWidth: 360, overflow: 'hidden', textOverflow: 'ellipsis' }}>
             {snapshots.length === 0 && <option value="">No stored snapshots</option>}
-            {visibleSnapshots.map(s => <option key={s.id} value={String(s.id)}>{s.disease_name} · v{s.version} · {s.gene_count ?? '?'} genes</option>)}
+            {snapshotGroups.map(g => (
+              <optgroup key={g.disease} label={g.disease}>
+                {g.items.map(s => <option key={s.id} value={String(s.id)}>v{s.version} · {s.gene_count ?? '?'} genes · {(s.created_at || '').slice(0, 10)}</option>)}
+              </optgroup>
+            ))}
           </select>
           {snapMeta && <span style={{ fontSize: 11, color: t.faint }}>· {(snapMeta.created_at || '').slice(0, 10)}</span>}
         </div>
