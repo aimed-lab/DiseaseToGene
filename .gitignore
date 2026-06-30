@@ -33,6 +33,7 @@ dist-ssr
 # Raw bulk downloads — huge; regenerate with scripts/build_*.mjs
 xena_raw/
 depmap_raw/
+gnomad_raw/
 
 # Runtime job state (the reference tables data/*.json ARE committed)
 data/jobs.json

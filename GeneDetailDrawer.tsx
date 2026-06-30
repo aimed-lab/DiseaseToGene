@@ -4,6 +4,8 @@ import ExpressionPanel from './ExpressionPanel';
 import DependencyPanel from './DependencyPanel';
 import MutationPanel from './MutationPanel';
 import DruggabilityPanel from './DruggabilityPanel';
+import ClinicalPanel from './ClinicalPanel';
+import LiteraturePanel from './LiteraturePanel';
 import EvidenceCardsPanel from './EvidenceCardsPanel';
 
 // ── On-demand gene-detail drawer ──────────────────────────────────────────────
@@ -41,13 +43,15 @@ export const GeneDetailDrawer: React.FC<Props> = ({ geneSymbol, diseaseName, the
         {/* body — the existing panels, fetched on demand by symbol */}
         <div style={{ flex: 1, overflow: 'auto', padding: '8px 16px 24px' }}>
           <div style={{ fontSize: 10.5, color: muted, margin: '6px 0 2px', fontStyle: 'italic' }}>
-            Live evidence is fetched for this gene now — gnomAD constraint is queried; expression &amp; dependency read the reference tables; mutation &amp; druggability fetch from cBioPortal / ChEMBL.
+            Live evidence is fetched for this gene now — expression, dependency &amp; gnomAD constraint read the reference tables; mutation, druggability, clinical &amp; literature fetch from cBioPortal / ChEMBL / ClinicalTrials.gov / Europe PMC.
           </div>
           <DruggabilityPanel geneSymbol={geneSymbol} currentDisease={diseaseName} theme={theme} />
           <MutationPanel geneSymbol={geneSymbol} currentDisease={diseaseName} theme={theme} />
           <ExpressionPanel geneSymbol={geneSymbol} currentDisease={diseaseName} theme={theme} />
           <DependencyPanel geneSymbol={geneSymbol} currentDisease={diseaseName} theme={theme} />
           <ConstraintPanel geneSymbol={geneSymbol} currentDisease={diseaseName} theme={theme} />
+          <ClinicalPanel geneSymbol={geneSymbol} currentDisease={diseaseName} theme={theme} />
+          <LiteraturePanel geneSymbol={geneSymbol} currentDisease={diseaseName} theme={theme} />
           <EvidenceCardsPanel geneSymbol={geneSymbol} currentDisease={diseaseName} theme={theme} />
         </div>
       </div>

@@ -31,7 +31,7 @@ export interface GnomadConstraint {
   // (highest toxicity risk for a knockdown strategy), 0 = fully tolerant.
   safetyConcern: number;
   retrieved: string;              // ISO date — provenance
-  source: 'gnomAD v4';
+  source: string;                 // 'gnomAD v4.1' (preloaded table) or 'gnomAD v4' (live)
   error: string | null;
 }
 
@@ -94,6 +94,34 @@ export async function getGnomadConstraint(geneSymbol: string): Promise<GnomadCon
     source: 'gnomAD v4',
     error: null,
   };
+
+  // Prefer the preloaded gnomAD v4.1 constraint table (served at /api/gnomad) so
+  // this drill-down shows the SAME pLI / LOEUF the harvest stored in Oracle and the
+  // funnel filters on — one source of truth. The live v4 GraphQL API returns values
+  // that differ slightly from gnomAD's own published file (e.g. KRAS LOEUF 0.226 vs
+  // 0.264), which is why we standardize on the published table. Fall back to the
+  // live API only for genes the table is missing.
+  try {
+    const tRes = await fetch(`/api/gnomad?gene=${encodeURIComponent(geneSymbol)}`);
+    if (tRes.ok) {
+      const tj = await tRes.json();
+      const d = tj?.data;
+      if (d && (d.pli != null || d.loeuf != null)) {
+        const pli = num(d.pli);
+        const loeuf = num(d.loeuf);
+        return {
+          ...base,
+          pli, loeuf,
+          oeLof: num(d.oe_lof),
+          lofZ: num(d.lof_z),
+          misZ: num(d.mis_z),
+          constraintClass: classify(pli, loeuf),
+          safetyConcern: safetyConcern(pli, loeuf),
+          source: 'gnomAD v4.1',
+        };
+      }
+    }
+  } catch { /* table unavailable — fall through to the live API */ }
 
   try {
     const data = await gnomadGraphql(geneSymbol);

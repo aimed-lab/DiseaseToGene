@@ -1,16 +1,20 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { fetchSnapshots, fetchSnapshotScores, fetchSnapshotEvidence, type RankingSnapshotMeta } from './supabase';
-import { AXES, HEADLINE_AXES, HARD_AXES, COMPOSITE_AXES, type AxisDef } from './evidenceRegistry';
+import { AXES, HEADLINE_AXES, COMPOSITE_AXES, type AxisDef, type FilterDef } from './evidenceRegistry';
 import GeneDetailDrawer from './GeneDetailDrawer';
 
-// ── DB-backed Target Funnel — vertical tier pipeline ──────────────────────────
-// Reads a stored snapshot from Oracle, then runs the registry's tier gates as a
-// step-ordered funnel (T0 at top → narrows downward). Tier NAMES sit on the left,
-// COUNTS on the right. Hard gates narrow; soft gates rank. Filters act on each
-// axis's RAW value in real units (log2FC, LOEUF, Chronos…); the normalized `axis`
-// is used only for ranking. The gene list is on demand — click "View genes", then
-// click any gene to open its full drill-down (works for snapshot genes too).
-// Pure compute, no live API calls in the funnel itself.
+// ── DB-backed Target Funnel — "narrowing flow" redesign ───────────────────────
+// Reads one stored snapshot from Oracle, then runs the registry's tier gates as a
+// step-ordered cascade (universe → T1 → … → T8). Each tier is a horizontal bar
+// whose length is its surviving count; click a tier to tune its gate inline. A
+// sticky bar summarises the shortlist; "View full shortlist" opens a results sheet
+// where each gene shows pass/fail per axis + its composite, and clicking a row
+// opens the full drill-down (drawer parity).
+//
+// INVARIANTS preserved from the design brief §6: registry-driven (UI iterates the
+// registry — nothing hard-coded to 8), raw-value filters (real units, not the
+// normalized axis), cascade semantics, direction-aware weighted-harmonic composite,
+// DB-backed & read-only, drawer parity, graceful "pending" axes.
 
 interface Props { theme?: 'dark' | 'light' }
 
@@ -26,6 +30,18 @@ type GeneFeature = {
 const safeParse = (s: any) => { try { return typeof s === 'string' ? JSON.parse(s) : s; } catch { return null; } };
 const num = (v: any) => (v == null || isNaN(Number(v)) ? null : Number(v));
 const csvCell = (v: any) => { const s = String(v ?? ''); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+const fmtN = (n: number) => n.toLocaleString('en-US');
+
+// hex → rgba with alpha; and a lighten toward white for the bar gradient.
+const hexA = (hex: string, a: number) => {
+  const h = hex.replace('#', ''); const r = parseInt(h.slice(0, 2), 16), g = parseInt(h.slice(2, 4), 16), b = parseInt(h.slice(4, 6), 16);
+  return `rgba(${r},${g},${b},${a})`;
+};
+const lighten = (hex: string, t: number) => {
+  const h = hex.replace('#', ''); const r = parseInt(h.slice(0, 2), 16), g = parseInt(h.slice(2, 4), 16), b = parseInt(h.slice(4, 6), 16);
+  const m = (c: number) => Math.round(c + (255 - c) * t);
+  return `rgb(${m(r)},${m(g)},${m(b)})`;
+};
 
 export const FunnelView: React.FC<Props> = ({ theme = 'light' }) => {
   const isDark = theme === 'dark';
@@ -35,13 +51,21 @@ export const FunnelView: React.FC<Props> = ({ theme = 'light' }) => {
   const [diseaseName, setDiseaseName] = useState('');
   const [loading, setLoading] = useState(true);
 
-  const [thresholds, setThresholds] = useState<Record<string, number>>(() => Object.fromEntries(HARD_AXES.map(a => [a.key, a.filter.default ?? 0])));
+  // Every headline tier can act as a filter step (the registry's hard/soft split
+  // only sets the DEFAULT intent; here each tier narrows when its gate is enabled,
+  // so the funnel is a true top-to-bottom cascade T1→T8).
+  const [thresholds, setThresholds] = useState<Record<string, number>>(() => Object.fromEntries(HEADLINE_AXES.map(a => [a.key, a.filter.default ?? 0])));
   const [cats, setCats] = useState<Record<string, string[]>>({});
-  const [hardOn, setHardOn] = useState<Record<string, boolean>>(() => Object.fromEntries(HARD_AXES.map(a => [a.key, false])));
+  const [hardOn, setHardOn] = useState<Record<string, boolean>>(() => Object.fromEntries(HEADLINE_AXES.map(a => [a.key, false])));
   const [requirePresent, setRequirePresent] = useState<Record<string, boolean>>({});
   const [openTier, setOpenTier] = useState<string | null>(null);
-  const [showList, setShowList] = useState(false);
+  const [resultsOpen, setResultsOpen] = useState(false);
   const [drawerGene, setDrawerGene] = useState<string | null>(null);
+
+  const resetGates = () => {
+    setThresholds(Object.fromEntries(HEADLINE_AXES.map(a => [a.key, a.filter.default ?? 0])));
+    setCats({}); setHardOn(Object.fromEntries(HEADLINE_AXES.map(a => [a.key, false]))); setRequirePresent({});
+  };
 
   useEffect(() => {
     let active = true;
@@ -65,13 +89,15 @@ export const FunnelView: React.FC<Props> = ({ theme = 'light' }) => {
         const g = r.gene_symbol;
         const mut = ev[g]?.mutation, drug = ev[g]?.druggability, clin = ev[g]?.clinical, lit = ev[g]?.literature;
         const dys = ev[g]?.expression_tvn, dep = ev[g]?.dependency, saf = ev[g]?.safety;
+        // Raw values pulled straight from the stored value_json contract — the
+        // SAME fields the gene drawer panels display, so funnel == drawer.
         const genetic = num(r.genetic_score);
-        const frequency = mut ? num(mut.mutationFrequency) : null;
+        const frequency = mut ? num(mut.frequency) : null;
         const log2fc = dys ? num(dys.log2fc) : null;
         const chronos = dep ? num(dep.mean) : null;
         const loeuf = saf ? num(saf.loeuf) : null;
         const trial_count = clin ? num(clin.trial_count) : null;
-        const velocity = lit ? num(lit.signal_velocity ?? lit.recent_paper_count) : null;
+        const velocity = lit ? num(lit.velocity) : null;
         return {
           gene_symbol: g,
           rank: num(r.rank),
@@ -79,13 +105,13 @@ export const FunnelView: React.FC<Props> = ({ theme = 'light' }) => {
           drugLabel: drug ? (drug.label ?? null) : null,
           axis: {
             genetic,
-            mutation: mut ? num(mut.axis ?? mut.mutationFrequency) : null,
+            mutation: mut ? num(mut.axis ?? frequency) : null,
             dysregulation: dys ? num(dys.axis ?? (log2fc != null ? Math.abs(log2fc) / 4 : null)) : null,
             dependency: dep ? num(dep.axis ?? (chronos != null ? -chronos : null)) : null,
-            druggability: num(r.target_score),
+            druggability: drug ? num(drug.axis ?? drug.score) : num(r.target_score),
             safety: saf ? num(saf.axis ?? saf.pli) : null,
             clinical: clin ? num(clin.axis ?? clin.trial_count) : null,
-            literature: lit ? num(lit.axis ?? lit.signal_velocity ?? lit.recent_paper_count) : null,
+            literature: lit ? num(lit.axis ?? velocity) : null,
             tissue: num(r.tau_tissue),
           },
           raw: { genetic, frequency, log2fc, chronos, loeuf, trial_count, velocity },
@@ -125,7 +151,11 @@ export const FunnelView: React.FC<Props> = ({ theme = 'light' }) => {
     const total = features.length;
     let current = features.slice();
     const tierCounts: Record<string, number> = {};
-    for (const ax of HARD_AXES) { current = current.filter(f => passesGate(ax, f)); tierCounts[ax.key] = current.length; }
+    // Cascade the filters in tier order (T1→T8) so each step narrows the survivors
+    // of the one above it — a real funnel. Any enabled tier narrows; disabled tiers
+    // pass through (passesGate returns true when its gate is off).
+    const ordered = [...HEADLINE_AXES].sort((a, b) => a.tier - b.tier);
+    for (const ax of ordered) { current = current.filter(f => passesGate(ax, f)); tierCounts[ax.key] = current.length; }
 
     const norm: Record<string, (v: number | null) => number | null> = {};
     for (const ax of COMPOSITE_AXES) {
@@ -155,16 +185,29 @@ export const FunnelView: React.FC<Props> = ({ theme = 'light' }) => {
     return { total, tierCounts, shortlist: scored };
   }, [features, thresholds, cats, hardOn, requirePresent, available]);
 
-  // theme tokens
-  const bg = isDark ? '#0b1220' : '#ffffff', border = isDark ? '#1e293b' : '#e2e8f0';
-  const ink = isDark ? '#e2e8f0' : '#0f172a', muted = isDark ? '#64748b' : '#94a3b8';
-  const cardBg = isDark ? '#0f172a' : '#fbfdff', track = isDark ? '#1e293b' : '#eef2f7';
-  const accent = '#7c3aed', green = '#16a34a';
+  // ── theme tokens (match the design language) ────────────────────────────────
+  const t = isDark
+    ? { bg: '#0c0f14', panel: '#13181f', panel2: '#171d26', line: '#242c38', line2: '#1d242e', tx: '#e6edf3', dim: '#9aa6b4', faint: '#5f6b7a', accent: '#3b6fe0', accentWeak: '#16233f' }
+    : { bg: '#f3f5f8', panel: '#ffffff', panel2: '#f7f9fc', line: '#e6e9ef', line2: '#eef1f6', tx: '#10151d', dim: '#5a6573', faint: '#8a93a3', accent: '#3b6fe0', accentWeak: '#eaf0fd' };
+  const grad = `linear-gradient(90deg, ${t.accent}, ${lighten(t.accent, 0.34)})`;
+  const mono = "'IBM Plex Mono', ui-monospace, monospace";
+
   const total = result.total || 1;
-  const pct = (n: number) => Math.round((n / total) * 100);
-  const tint = (hex: string) => hex + (isDark ? '22' : '14');
-  const activeGates = HARD_AXES.filter(a => hardOn[a.key] && available[a.key]).length;
+  const wPct = (n: number) => Math.max((n / total) * 100, 13).toFixed(1);
+  const activeGates = HEADLINE_AXES.filter(a => hardOn[a.key] && available[a.key]).length;
   const pendingGates = HEADLINE_AXES.filter(a => !available[a.key]).length;
+  const orderedHeadline = useMemo(() => [...HEADLINE_AXES].sort((a, b) => a.tier - b.tier), []);
+
+  // Dropdown hygiene: snapshots arrive newest-first, and every harvest of a disease
+  // adds a new version. Show only the LATEST version per disease so the picker isn't
+  // cluttered with stale runs — but always keep whatever is currently selected
+  // visible (in case the user picked an older version on purpose).
+  const visibleSnapshots = useMemo(() => {
+    const seen = new Set<string>(); const out: RankingSnapshotMeta[] = [];
+    for (const s of snapshots) { const k = s.disease_id || s.disease_name; if (seen.has(k)) continue; seen.add(k); out.push(s); }
+    if (selectedId && !out.some(s => String(s.id) === selectedId)) { const sel = snapshots.find(s => String(s.id) === selectedId); if (sel) out.push(sel); }
+    return out;
+  }, [snapshots, selectedId]);
 
   const exportCsv = () => {
     const cols = ['rank', 'gene', 'composite', 'get_score', 'completeness', ...COMPOSITE_AXES.map(a => a.key)];
@@ -177,152 +220,332 @@ export const FunnelView: React.FC<Props> = ({ theme = 'light' }) => {
     a.href = url; a.download = `funnel_${(snap?.disease_name || 'snapshot').replace(/\s+/g, '_')}.csv`; a.click(); URL.revokeObjectURL(url);
   };
 
-  const wrap: React.CSSProperties = { height: '100%', overflow: 'auto', background: bg, color: ink, border: `1px solid ${border}`, borderRadius: 12, position: 'relative' };
-  const chip = (c: string, fill = false): React.CSSProperties => ({ fontSize: 9, fontWeight: 800, letterSpacing: '0.04em', textTransform: 'uppercase', padding: '2px 7px', borderRadius: 999, color: fill ? '#fff' : c, background: fill ? c : tint(c), whiteSpace: 'nowrap' });
+  // preset cut-offs for a range gate (Lenient / Suggested / Strict / Very strict)
+  const rangePresets = (f: FilterDef) => {
+    const step = f.step || 0.01; const dec = (String(step).split('.')[1] || '').length;
+    const round = (v: number) => +(Math.round(v / step) * step).toFixed(dec);
+    const lo = f.min ?? 0, hi = f.max ?? 1, def = f.default ?? 0;
+    const arr: [string, number][] = f.op === '<='
+      ? [['Lenient', hi], ['Suggested', def], ['Strict', def + (lo - def) * 0.5], ['Very strict', def + (lo - def) * 0.82]]
+      : [['Lenient', lo], ['Suggested', def], ['Strict', def + (hi - def) * 0.45], ['Very strict', def + (hi - def) * 0.8]];
+    return arr.map(([label, v]) => ({ label, value: round(Math.max(lo, Math.min(hi, v))) }));
+  };
+  const catPresets = (list: string[]) => [
+    { label: 'All categories', set: list.slice() },
+    { label: 'Validated + in development', set: list.filter(c => /Validated|Development/i.test(c)) },
+    { label: 'Validated only', set: list.filter(c => /Validated/i.test(c)) },
+    { label: 'Exclude “no drug data”', set: list.filter(c => !/No Drug|None/i.test(c)) },
+  ];
 
-  // a single step in the vertical funnel — NAME on the left, COUNT on the right
-  const StepRow = (ax: AxisDef) => {
-    const on = !!hardOn[ax.key], has = !!available[ax.key];
-    const count = result.tierCounts[ax.key] ?? result.total;
-    const active = on && has && ax.type === 'hard';
+  // ── small UI atoms ──────────────────────────────────────────────────────────
+  const Toggle = ({ on, has, color, onClick }: { on: boolean; has: boolean; color: string; onClick: () => void }) => (
+    <button onClick={onClick} title={has ? 'Enable gate' : 'No data in this snapshot'} disabled={!has}
+      style={{ flex: '0 0 auto', width: 38, height: 21, borderRadius: 12, border: 'none', cursor: has ? 'pointer' : 'not-allowed', padding: 2, display: 'flex', background: on && has ? color : t.line, transition: 'background .15s' }}>
+      <span style={{ width: 17, height: 17, borderRadius: '50%', background: '#fff', boxShadow: '0 1px 2px rgba(0,0,0,.25)', transition: 'transform .15s', transform: `translateX(${on && has ? 17 : 0}px)` }} />
+    </button>
+  );
+
+  const badge = (bg: string): React.CSSProperties => ({ flex: '0 0 auto', width: 42, height: 44, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', borderRadius: 10, color: '#fff', background: bg });
+
+  // a single tier in the narrowing flow
+  const FlowRow = ({ ax, prev, count }: { ax: AxisDef; prev: number; count: number }) => {
+    const has = !!available[ax.key];
+    const on = !!hardOn[ax.key] && has;
     const isOpen = openTier === ax.key;
-    const width = has ? Math.max(14, pct(count)) : 100;
+    const drop = prev > 0 ? Math.round((prev - count) / prev * 100) : 0;
+    const isRange = ax.filter.kind === 'range';
+    const ruleText = !has
+      ? 'no data in snapshot'
+      : ax.filter.kind === 'category'
+        ? ((cats[ax.key] || []).length === 0 || (cats[ax.key] || []).length === (ax.filter.categories || []).length ? 'any category' : (cats[ax.key] || []).join(' / '))
+        : `${ax.filter.op === '<=' ? '≤' : '≥'} ${thresholds[ax.key] ?? ax.filter.default ?? 0}${ax.filter.unit ? ' ' + ax.filter.unit : ''}`;
+    const thr = thresholds[ax.key] ?? ax.filter.default ?? 0;
+    const presetMatch = isRange ? rangePresets(ax.filter).find(p => Math.abs(p.value - thr) < 1e-9) : undefined;
+
     return (
-      <div key={ax.key}>
-        <div style={{ border: `1px solid ${active ? ax.color : border}`, borderRadius: 12, background: has ? cardBg : (isDark ? '#0c1322' : '#f8fafc'), opacity: has ? 1 : 0.74, width: `${width}%`, minWidth: 280, marginInline: 'auto', transition: 'width 160ms' }}>
-          <div onClick={() => has && setOpenTier(o => o === ax.key ? null : ax.key)} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 12px', cursor: has ? 'pointer' : 'default' }}>
-            {/* LEFT: tier name */}
-            <div style={{ width: 28, height: 28, borderRadius: 7, background: ax.color, color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 900, fontSize: 10, flexShrink: 0 }}>T{ax.tier}</div>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <span style={{ fontWeight: 800, fontSize: 13, color: ink }}>{ax.label}</span>
-                <span style={chip(ax.type === 'hard' ? '#334155' : ax.color)}>{ax.type}</span>
-                {!has && <span style={chip('#b45309', true)}>pending</span>}
-              </div>
-              <div style={{ fontSize: 10.5, color: muted, fontStyle: 'italic', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ax.question}</div>
+      <div>
+        <div onClick={() => has && setOpenTier(o => o === ax.key ? null : ax.key)}
+          style={{ display: 'grid', gridTemplateColumns: '46px 1fr 150px', alignItems: 'center', gap: 15, cursor: has ? 'pointer' : 'default' }}>
+          <span style={badge(ax.color)}>
+            <span style={{ fontSize: 8, letterSpacing: '.12em', fontWeight: 700, opacity: .85 }}>TIER</span>
+            <span style={{ fontFamily: mono, fontSize: 17, fontWeight: 600, lineHeight: 1, marginTop: 1 }}>{ax.tier}</span>
+          </span>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 9, marginBottom: 6 }}>
+              <span style={{ fontSize: 13, fontWeight: 700, color: t.tx, whiteSpace: 'nowrap' }}>{ax.label}</span>
+              <span style={{ fontFamily: mono, fontSize: 10.5, color: t.faint, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{ruleText}</span>
             </div>
-            {/* RIGHT: count */}
-            <div style={{ textAlign: 'right', flexShrink: 0 }}>
-              <div style={{ fontWeight: 900, fontSize: 16, color: active ? ax.color : (has ? ink : muted) }}>{has ? count.toLocaleString() : '—'}</div>
-              <div style={{ fontSize: 9, color: muted }}>{has ? `${pct(count)}%` : 'awaiting data'}</div>
+            <div style={{ position: 'relative', height: 26, width: has ? `${wPct(count)}%` : '13%', borderRadius: 7, background: has ? (on ? grad : hexA(t.accent, 0.22)) : 'transparent', border: has ? 'none' : `1px dashed ${t.line}`, display: 'flex', alignItems: 'center', transition: 'width .28s cubic-bezier(.3,.7,.3,1)' }}>
+              <span style={{ marginLeft: 6, padding: '2px 8px', borderRadius: 5, background: has ? 'rgba(0,0,0,.24)' : 'transparent', fontFamily: mono, fontSize: 11.5, fontWeight: 600, color: has ? '#fff' : t.faint }}>{fmtN(count)}</span>
             </div>
-            {has && <span style={{ color: muted, fontSize: 11, transform: isOpen ? 'rotate(180deg)' : 'none' }}>▾</span>}
           </div>
-          {isOpen && has && (
-            <div style={{ borderTop: `1px solid ${border}`, padding: '10px 12px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, color: muted, cursor: 'pointer' }}>
-                  <input type="checkbox" checked={on} onChange={e => setHardOn(p => ({ ...p, [ax.key]: e.target.checked }))} /> enable gate
-                </label>
-                <span style={{ marginLeft: 'auto', fontSize: 9, fontWeight: 800, color: ax.color, textTransform: 'uppercase' }}>{ax.source}</span>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 10 }}>
+            <span style={{ fontSize: 11.5, color: t.faint, whiteSpace: 'nowrap' }}>{fmtN(prev)} in → <span style={{ fontWeight: 700, color: drop > 0 ? '#e0567a' : t.faint }}>−{drop}%</span></span>
+            {has && <span style={{ fontSize: 10, color: t.faint, transition: 'transform .18s', transform: `rotate(${isOpen ? 90 : 0}deg)` }}>▸</span>}
+          </div>
+        </div>
+
+        {isOpen && (
+          <div style={{ margin: '11px 0 2px 61px', background: t.panel2, border: `1px solid ${t.line}`, borderRadius: 10, padding: '13px 15px' }}>
+            <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 11.5, color: t.dim, lineHeight: 1.35 }}>{ax.question}</div>
+                <div style={{ fontSize: 10, color: t.faint, marginTop: 3, textTransform: 'uppercase', letterSpacing: '.05em', fontWeight: 600 }}>Source · {ax.source}</div>
               </div>
-              {ax.filter.kind === 'range' && (
-                <div style={{ opacity: on ? 1 : 0.5 }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10.5, color: muted, marginBottom: 2 }}>
-                    <span>keep genes with {ax.filter.field} {ax.filter.op === '<=' ? '≤' : '≥'}</span>
-                    <span style={{ fontFamily: 'monospace', color: on ? ax.color : muted }}>{(thresholds[ax.key] ?? ax.filter.default ?? 0)} {ax.filter.unit}</span>
+              <Toggle on={!!hardOn[ax.key]} has={has} color={ax.color} onClick={() => has && setHardOn(p => ({ ...p, [ax.key]: !p[ax.key] }))} />
+            </div>
+
+            {!has && <div style={{ marginTop: 10, fontSize: 10.5, fontWeight: 600, color: t.faint }}>No data in this snapshot — gate disabled.</div>}
+
+            {has && isRange && (
+              <div style={{ marginTop: 12, opacity: on ? 1 : .55 }}>
+                <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 6 }}>
+                  <span style={{ fontSize: 10.5, color: t.faint }}>{ax.filter.op === '<=' ? 'keep ≤ threshold' : 'keep ≥ threshold'}</span>
+                  <span style={{ fontFamily: mono, fontSize: 13, fontWeight: 600, color: t.tx }}>{ax.filter.op === '<=' ? '≤ ' : '≥ '}{thr}{ax.filter.unit ? ' ' + ax.filter.unit : ''}</span>
+                </div>
+                <input type="range" min={ax.filter.min ?? 0} max={ax.filter.max ?? 1} step={ax.filter.step ?? 0.01} value={thr} disabled={!on}
+                  onChange={e => setThresholds(p => ({ ...p, [ax.key]: parseFloat(e.target.value) }))} style={{ width: '100%', height: 4, accentColor: ax.color, cursor: on ? 'pointer' : 'default' }} />
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 3, fontFamily: mono, fontSize: 9.5, color: t.faint }}>
+                  <span>{ax.filter.min ?? 0}</span><span>{ax.filter.max ?? 1}</span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
+                  <select value={presetMatch ? String(presetMatch.value) : ''} disabled={!on}
+                    onChange={e => { if (e.target.value !== '') setThresholds(p => ({ ...p, [ax.key]: parseFloat(e.target.value) })); }}
+                    style={{ flex: 1, minWidth: 150, appearance: 'none', background: t.panel, border: `1px solid ${t.line}`, color: t.tx, font: 'inherit', fontSize: 11.5, padding: '7px 10px', borderRadius: 8, cursor: on ? 'pointer' : 'default' }}>
+                    <option value="">Preset cut-off…</option>
+                    {rangePresets(ax.filter).map(p => <option key={p.label} value={String(p.value)}>{p.label} · {p.value}{ax.filter.unit ? ' ' + ax.filter.unit : ''}</option>)}
+                  </select>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, flex: '0 0 auto' }}>
+                    <span style={{ fontSize: 10, color: t.faint, textTransform: 'uppercase', letterSpacing: '.05em', fontWeight: 600 }}>Exact</span>
+                    <input type="number" min={ax.filter.min ?? 0} max={ax.filter.max ?? 1} step={ax.filter.step ?? 0.01} value={thr} disabled={!on}
+                      onChange={e => { const v = parseFloat(e.target.value); if (!Number.isNaN(v)) setThresholds(p => ({ ...p, [ax.key]: v })); }}
+                      style={{ width: 80, background: t.panel, border: `1px solid ${t.line}`, color: t.tx, fontFamily: mono, fontSize: 11.5, padding: '6px 8px', borderRadius: 8 }} />
                   </div>
-                  <input type="range" min={ax.filter.min ?? 0} max={ax.filter.max ?? 1} step={ax.filter.step ?? 0.01} value={thresholds[ax.key] ?? ax.filter.default ?? 0} disabled={!on}
-                    onChange={e => setThresholds(p => ({ ...p, [ax.key]: parseFloat(e.target.value) }))} style={{ width: '100%', accentColor: ax.color }} />
-                  <label style={{ fontSize: 10, color: muted, display: 'flex', alignItems: 'center', gap: 4, marginTop: 4 }}>
-                    <input type="checkbox" checked={!!requirePresent[ax.key]} disabled={!on} onChange={e => setRequirePresent(p => ({ ...p, [ax.key]: e.target.checked }))} /> drop genes with no {ax.filter.field} value
+                </div>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 5, marginTop: 10, fontSize: 10, color: t.faint, cursor: on ? 'pointer' : 'default' }}>
+                  <input type="checkbox" checked={!!requirePresent[ax.key]} disabled={!on} onChange={e => setRequirePresent(p => ({ ...p, [ax.key]: e.target.checked }))} />
+                  also drop genes with no {ax.filter.field} value
+                </label>
+              </div>
+            )}
+
+            {has && ax.filter.kind === 'category' && (
+              <div style={{ marginTop: 12, opacity: on ? 1 : .55 }}>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                  {(ax.filter.categories || []).map(c => {
+                    const sel = (cats[ax.key] || []).includes(c);
+                    return (
+                      <button key={c} disabled={!on} onClick={() => setCats(p => { const cur = new Set(p[ax.key] || []); cur.has(c) ? cur.delete(c) : cur.add(c); return { ...p, [ax.key]: [...cur] }; })}
+                        style={{ font: 'inherit', fontSize: 10.5, fontWeight: 500, padding: '5px 9px', borderRadius: 7, cursor: on ? 'pointer' : 'default', border: `1px solid ${sel ? 'transparent' : t.line}`, color: sel ? '#fff' : t.dim, background: sel ? ax.color : t.panel }}>{c}</button>
+                    );
+                  })}
+                </div>
+                <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <select value="" disabled={!on}
+                    onChange={e => { const i = parseInt(e.target.value, 10); if (!Number.isNaN(i)) setCats(p => ({ ...p, [ax.key]: catPresets(ax.filter.categories || [])[i].set })); }}
+                    style={{ flex: 1, minWidth: 160, appearance: 'none', background: t.panel, border: `1px solid ${t.line}`, color: t.tx, font: 'inherit', fontSize: 11.5, padding: '7px 10px', borderRadius: 8, cursor: on ? 'pointer' : 'default' }}>
+                    <option value="">Quick select…</option>
+                    {catPresets(ax.filter.categories || []).map((p, i) => <option key={p.label} value={String(i)}>{p.label}</option>)}
+                  </select>
+                  <button disabled={!on} onClick={() => setCats(p => ({ ...p, [ax.key]: (ax.filter.categories || []).slice() }))} style={{ font: 'inherit', fontSize: 10.5, fontWeight: 600, color: t.dim, background: t.panel, border: `1px solid ${t.line}`, borderRadius: 7, padding: '6px 11px', cursor: on ? 'pointer' : 'default' }}>All</button>
+                  <button disabled={!on} onClick={() => setCats(p => ({ ...p, [ax.key]: [] }))} style={{ font: 'inherit', fontSize: 10.5, fontWeight: 600, color: t.dim, background: t.panel, border: `1px solid ${t.line}`, borderRadius: 7, padding: '6px 11px', cursor: on ? 'pointer' : 'default' }}>None</button>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 10, color: t.faint, cursor: on ? 'pointer' : 'default' }}>
+                    <input type="checkbox" checked={!!requirePresent[ax.key]} disabled={!on} onChange={e => setRequirePresent(p => ({ ...p, [ax.key]: e.target.checked }))} /> require a category
                   </label>
                 </div>
-              )}
-              {ax.filter.kind === 'category' && (
-                <div style={{ opacity: on ? 1 : 0.5 }}>
-                  <div style={{ fontSize: 10.5, color: muted, marginBottom: 4 }}>keep only (none checked = keep all)</div>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                    {(ax.filter.categories || []).map(c => {
-                      const sel = (cats[ax.key] || []).includes(c);
-                      return (
-                        <label key={c} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10.5, color: ink, background: sel ? tint(ax.color) : track, borderRadius: 999, padding: '3px 8px', cursor: on ? 'pointer' : 'default' }}>
-                          <input type="checkbox" checked={sel} disabled={!on} onChange={() => setCats(p => { const cur = new Set(p[ax.key] || []); cur.has(c) ? cur.delete(c) : cur.add(c); return { ...p, [ax.key]: [...cur] }; })} /> {c}
-                        </label>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-        <div style={{ textAlign: 'center', color: muted, fontSize: 12, lineHeight: '16px' }}>▼</div>
+              </div>
+            )}
+          </div>
+        )}
       </div>
     );
   };
 
-  const orderedHeadline = [...HEADLINE_AXES].sort((a, b) => a.tier - b.tier);
+  // flow rows with running "in" count for the drop readout
+  let prevCount = result.total;
+  const flowRows = orderedHeadline.map(ax => { const count = result.tierCounts[ax.key] ?? result.total; const row = { ax, prev: prevCount, count }; prevCount = count; return row; });
+  const topGenes = result.shortlist.slice(0, 6).map(s => s.f.gene_symbol);
+  const snapMeta = snapshots.find(s => String(s.id) === selectedId);
+
+  const stats = [
+    { label: 'Universe', value: fmtN(result.total), color: t.tx },
+    { label: 'Shortlist', value: fmtN(result.shortlist.length), color: t.accent },
+    { label: 'Active gates', value: String(activeGates), color: t.tx },
+    { label: 'Pending', value: String(pendingGates), color: pendingGates ? '#e0567a' : t.faint },
+  ];
 
   return (
-    <div style={wrap}>
-      {/* ── INFO BAR (top) ── */}
-      <div style={{ padding: '12px 18px', borderBottom: `1px solid ${border}`, position: 'sticky', top: 0, background: bg, zIndex: 3 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-          <div style={{ fontWeight: 800, fontSize: 15 }}>Target Funnel</div>
-          <select value={selectedId} onChange={e => { setSelectedId(e.target.value); setShowList(false); }} style={{ background: cardBg, color: ink, border: `1px solid ${border}`, borderRadius: 8, padding: '6px 10px', fontSize: 12 }}>
+    <div style={{ height: '100%', width: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: "'IBM Plex Sans', system-ui, sans-serif", color: t.tx, background: t.bg, border: `1px solid ${t.line}`, borderRadius: 12 }}>
+      {/* ── HEADER ── */}
+      <header style={{ display: 'flex', alignItems: 'center', gap: 16, padding: '0 16px', height: 54, borderBottom: `1px solid ${t.line}`, background: t.panel, flex: '0 0 auto', zIndex: 2 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+          <div style={{ width: 22, height: 22, borderRadius: 6, background: t.accent, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <div style={{ width: 0, height: 0, borderLeft: '5px solid transparent', borderRight: '5px solid transparent', borderTop: '7px solid #fff' }} />
+          </div>
+          <span style={{ fontWeight: 700, letterSpacing: '.16em', fontSize: 13, color: t.tx }}>FUNNEL</span>
+        </div>
+        <div style={{ height: 22, width: 1, background: t.line }} />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+          <span style={{ fontSize: 10, color: t.faint, textTransform: 'uppercase', letterSpacing: '.09em', fontWeight: 600 }}>Snapshot</span>
+          <select value={selectedId} onChange={e => { setSelectedId(e.target.value); setResultsOpen(false); setOpenTier(null); }}
+            style={{ appearance: 'none', background: t.panel2, border: `1px solid ${t.line}`, color: t.tx, font: 'inherit', fontSize: 12.5, fontWeight: 500, padding: '6px 11px', borderRadius: 8, cursor: 'pointer', maxWidth: 360, overflow: 'hidden', textOverflow: 'ellipsis' }}>
             {snapshots.length === 0 && <option value="">No stored snapshots</option>}
-            {snapshots.map(s => <option key={s.id} value={String(s.id)}>{s.disease_name} · Tier {s.version} · {s.gene_count ?? '?'} genes · {(s.created_at || '').slice(0, 10)}</option>)}
+            {visibleSnapshots.map(s => <option key={s.id} value={String(s.id)}>{s.disease_name} · v{s.version} · {s.gene_count ?? '?'} genes</option>)}
           </select>
-          <button onClick={() => setShowList(v => !v)} disabled={!result.shortlist.length} style={{ marginLeft: 'auto', border: `1px solid ${border}`, background: showList ? accent : 'transparent', color: showList ? '#fff' : ink, borderRadius: 8, padding: '7px 12px', fontSize: 11, fontWeight: 800, cursor: 'pointer' }}>{showList ? 'Hide genes' : `View genes (${result.shortlist.length})`}</button>
-          <button onClick={exportCsv} disabled={!result.shortlist.length} style={{ border: 'none', background: accent, color: '#fff', borderRadius: 8, padding: '7px 14px', fontSize: 11, fontWeight: 800, cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Export</button>
+          {snapMeta && <span style={{ fontSize: 11, color: t.faint }}>· {(snapMeta.created_at || '').slice(0, 10)}</span>}
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 18, marginTop: 10, flexWrap: 'wrap' }}>
-          <Stat label="Universe" value={result.total.toLocaleString()} color={ink} muted={muted} />
-          <span style={{ color: muted }}>→</span>
-          <Stat label="Shortlist" value={result.shortlist.length.toLocaleString()} color={green} muted={muted} />
-          <Stat label="Active gates" value={String(activeGates)} color={accent} muted={muted} />
-          <Stat label="Pending axes" value={String(pendingGates)} color="#b45309" muted={muted} />
+        <div style={{ flex: 1 }} />
+        <div style={{ display: 'flex', alignItems: 'stretch', border: `1px solid ${t.line}`, borderRadius: 9, overflow: 'hidden' }}>
+          {stats.map((s, i) => (
+            <div key={s.label} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '6px 13px', minWidth: 64, borderLeft: i ? `1px solid ${t.line}` : 'none', background: t.panel }}>
+              <span style={{ fontFamily: mono, fontSize: 15, fontWeight: 600, lineHeight: 1, color: s.color }}>{s.value}</span>
+              <span style={{ fontSize: 9.5, letterSpacing: '.05em', textTransform: 'uppercase', color: t.faint, fontWeight: 600, marginTop: 3 }}>{s.label}</span>
+            </div>
+          ))}
         </div>
+        <button onClick={exportCsv} disabled={!result.shortlist.length} style={{ display: 'flex', alignItems: 'center', gap: 6, background: t.panel2, border: `1px solid ${t.line}`, color: t.tx, font: 'inherit', fontSize: 12.5, fontWeight: 500, padding: '7px 12px', borderRadius: 8, cursor: result.shortlist.length ? 'pointer' : 'not-allowed', opacity: result.shortlist.length ? 1 : .5 }}>↓ Export CSV</button>
+      </header>
+
+      {/* ── BODY ── */}
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, background: t.bg }}>
+        <div style={{ flex: 1, overflowY: 'auto' }}>
+          {loading ? (
+            <div style={{ padding: 40, color: t.faint, fontStyle: 'italic' }}>Loading snapshot from Oracle…</div>
+          ) : !selectedId ? (
+            <div style={{ padding: 40, color: t.faint, fontStyle: 'italic' }}>No stored snapshots yet — run a harvest job first.</div>
+          ) : (
+            <div style={{ padding: '20px 26px 30px', maxWidth: 1000, margin: '0 auto', width: '100%' }}>
+              <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', marginBottom: 14 }}>
+                <div>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: t.tx }}>Narrowing flow</div>
+                  <div style={{ fontSize: 11, color: t.faint, marginTop: 3 }}>Universe of {fmtN(result.total)} → {fmtN(result.shortlist.length)} shortlisted · {activeGates} gates active · click a tier to tune its gate</div>
+                </div>
+                <button onClick={resetGates} style={{ background: t.panel, border: `1px solid ${t.line}`, color: t.accent, font: 'inherit', fontSize: 11.5, fontWeight: 600, cursor: 'pointer', padding: '7px 13px', borderRadius: 8, flex: '0 0 auto' }}>Reset gates</button>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                {/* universe pool row */}
+                <div style={{ display: 'grid', gridTemplateColumns: '46px 1fr 150px', alignItems: 'center', gap: 15 }}>
+                  <span style={badge(isDark ? '#3a4150' : '#9aa3b2')}>
+                    <span style={{ fontSize: 8, letterSpacing: '.12em', fontWeight: 700, opacity: .85 }}>POOL</span>
+                    <span style={{ fontFamily: mono, fontSize: 17, fontWeight: 600, lineHeight: 1, marginTop: 1 }}>0</span>
+                  </span>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'baseline', gap: 9, marginBottom: 6 }}>
+                      <span style={{ fontSize: 13, fontWeight: 700, color: t.tx }}>Gene universe</span>
+                      <span style={{ fontFamily: mono, fontSize: 10.5, color: t.faint }}>full Open Targets set — no early triage</span>
+                    </div>
+                    <div style={{ position: 'relative', height: 26, width: '100%', borderRadius: 7, background: isDark ? '#39424f' : '#c9d0db', display: 'flex', alignItems: 'center' }}>
+                      <span style={{ marginLeft: 6, padding: '2px 8px', borderRadius: 5, background: 'rgba(0,0,0,.22)', fontFamily: mono, fontSize: 11.5, fontWeight: 600, color: '#fff' }}>{fmtN(result.total)}</span>
+                    </div>
+                  </div>
+                  <div style={{ textAlign: 'right', fontSize: 11.5, color: t.faint }}>{fmtN(result.total)} in → <span style={{ fontWeight: 700 }}>−0%</span></div>
+                </div>
+
+                {flowRows.map(r => <FlowRow key={r.ax.key} ax={r.ax} prev={r.prev} count={r.count} />)}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* ── sticky shortlist bar ── */}
+        {!loading && selectedId && (
+          <div onClick={() => result.shortlist.length && setResultsOpen(true)} style={{ flex: '0 0 auto', display: 'flex', alignItems: 'center', gap: 14, padding: '0 22px', height: 60, borderTop: `1px solid ${t.line}`, background: t.panel, cursor: result.shortlist.length ? 'pointer' : 'default', boxShadow: '0 -2px 14px rgba(8,12,20,.05)', zIndex: 3 }}>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flex: '0 0 auto' }}>
+              <span style={{ fontSize: 13.5, fontWeight: 700, color: t.tx }}>Shortlist</span>
+              <span style={{ fontFamily: mono, fontSize: 15, fontWeight: 600, color: t.accent }}>{fmtN(result.shortlist.length)}</span>
+              <span style={{ fontSize: 11.5, color: t.faint }}>ranked targets</span>
+            </div>
+            <div style={{ height: 20, width: 1, background: t.line, flex: '0 0 auto' }} />
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, overflow: 'hidden', flex: 1, minWidth: 0 }}>
+              <span style={{ fontSize: 10, color: t.faint, textTransform: 'uppercase', letterSpacing: '.06em', fontWeight: 600, flex: '0 0 auto' }}>Top</span>
+              {topGenes.map(g => <span key={g} style={{ fontFamily: mono, fontSize: 11, fontWeight: 600, color: t.dim, background: t.panel2, border: `1px solid ${t.line}`, padding: '3px 8px', borderRadius: 6, whiteSpace: 'nowrap', flex: '0 0 auto' }}>{g}</span>)}
+            </div>
+            <span style={{ fontSize: 12.5, fontWeight: 600, color: t.accent, flex: '0 0 auto', display: 'flex', alignItems: 'center', gap: 5 }}>View full shortlist <span style={{ fontSize: 14 }}>▴</span></span>
+          </div>
+        )}
       </div>
 
-      {loading ? (
-        <div style={{ padding: 40, color: muted, fontStyle: 'italic' }}>Loading snapshot from Oracle…</div>
-      ) : !selectedId ? (
-        <div style={{ padding: 40, color: muted, fontStyle: 'italic' }}>No stored snapshots yet — run a harvest job first.</div>
-      ) : (
-        <div style={{ padding: '18px', maxWidth: 760, margin: '0 auto' }}>
-          {/* T0 universe */}
-          <div>
-            <div style={{ border: `1px solid ${border}`, borderRadius: 12, background: track, padding: '10px 12px', display: 'flex', alignItems: 'center', gap: 10 }}>
-              <div style={{ width: 28, height: 28, borderRadius: 7, background: '#334155', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 900, fontSize: 10 }}>T0</div>
-              <div style={{ flex: 1 }}><div style={{ fontWeight: 800, fontSize: 13 }}>Gene universe</div><div style={{ fontSize: 10.5, color: muted }}>full Open Targets set — no early triage</div></div>
-              <div style={{ fontWeight: 900, fontSize: 16, color: ink }}>{result.total.toLocaleString()}</div>
-            </div>
-            <div style={{ textAlign: 'center', color: muted, fontSize: 12, lineHeight: '16px' }}>▼</div>
-          </div>
-
-          {orderedHeadline.map(StepRow)}
-
-          {/* composite */}
-          <div style={{ border: `1px solid ${accent}`, borderRadius: 12, background: tint(accent), padding: '10px 12px', display: 'flex', alignItems: 'center', gap: 10, width: '70%', minWidth: 280, marginInline: 'auto' }}>
-            <div style={{ width: 28, height: 28, borderRadius: 7, background: accent, color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 900, fontSize: 10 }}>T9</div>
-            <div style={{ flex: 1 }}><div style={{ fontWeight: 800, fontSize: 13 }}>Composite ranking</div><div style={{ fontSize: 10.5, color: muted }}>weighted-harmonic of the rank-normalized axes</div></div>
-            <button onClick={() => setShowList(true)} style={{ border: 'none', background: green, color: '#fff', borderRadius: 999, padding: '5px 12px', fontSize: 11, fontWeight: 800, cursor: 'pointer' }}>{result.shortlist.length.toLocaleString()} →</button>
-          </div>
-        </div>
-      )}
-
-      {/* ── on-demand gene list ── */}
-      {showList && !loading && selectedId && (
-        <div style={{ borderTop: `1px solid ${border}`, padding: '14px 18px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
-            <span style={{ fontSize: 11, fontWeight: 800, color: muted, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Shortlist · click a gene for full detail</span>
-            <span style={{ fontSize: 11, color: green, fontWeight: 800 }}>{result.shortlist.length} genes</span>
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-            {result.shortlist.slice(0, 100).map((s, i) => (
-              <div key={s.f.gene_symbol} onClick={() => setDrawerGene(s.f.gene_symbol)} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 10px', border: `1px solid ${border}`, borderRadius: 9, background: cardBg, cursor: 'pointer' }}>
-                <span style={{ width: 26, textAlign: 'right', color: muted, fontSize: 11, fontWeight: 700 }}>{i + 1}</span>
-                <span style={{ fontWeight: 800, color: accent, minWidth: 66 }}>{s.f.gene_symbol}</span>
-                <div style={{ flex: 1, display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-                  {COMPOSITE_AXES.map(ax => { const v = s.axisScores[ax.key]; return <span key={ax.key} title={`${ax.label}${available[ax.key] ? '' : ' (pending)'}`} style={{ fontSize: 9, padding: '1px 5px', borderRadius: 999, background: v == null ? track : tint(ax.color), color: v == null ? muted : ax.color, fontWeight: 700 }}>{ax.key.slice(0, 3)} {v == null ? '–' : v.toFixed(2)}</span>; })}
+      {/* ── RESULTS SHEET ── */}
+      {resultsOpen && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 15, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>
+          <div onClick={() => setResultsOpen(false)} style={{ position: 'absolute', inset: 0, background: 'rgba(8,12,20,.34)' }} />
+          <div style={{ position: 'relative', height: '84vh', background: t.bg, borderTop: `1px solid ${t.line}`, borderRadius: '16px 16px 0 0', boxShadow: '0 -16px 50px rgba(8,12,20,.22)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+            <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', padding: '16px 22px 13px', flex: '0 0 auto', borderBottom: `1px solid ${t.line}`, background: t.panel }}>
+              <div>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 9 }}>
+                  <span style={{ fontSize: 16, fontWeight: 700, color: t.tx }}>Shortlist</span>
+                  <span style={{ fontFamily: mono, fontSize: 13, fontWeight: 600, color: t.accent }}>{fmtN(result.shortlist.length)} targets</span>
                 </div>
-                <span style={{ fontSize: 10, color: muted }}>{Math.round(s.completeness * 100)}%</span>
-                <span style={{ fontFamily: 'monospace', fontWeight: 800, fontSize: 12, color: green, minWidth: 46, textAlign: 'right' }}>{s.composite == null ? '—' : s.composite.toFixed(3)}</span>
-                <span style={{ color: muted, fontSize: 12 }}>›</span>
+                <div style={{ fontSize: 11.5, color: t.faint, marginTop: 3 }}>Ranked by direction-aware weighted-harmonic composite · click a row for full evidence</div>
               </div>
-            ))}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 13, fontSize: 10.5, color: t.faint }}>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}><span style={{ width: 10, height: 10, borderRadius: 3, background: t.accent, opacity: .8 }} />passes gate</span>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}><span style={{ width: 10, height: 10, borderRadius: 3, background: t.line }} />below / off</span>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}><span style={{ width: 10, height: 10, borderRadius: 3, border: `1px dashed ${t.faint}` }} />no data</span>
+                </div>
+                <button onClick={() => setResultsOpen(false)} style={{ width: 30, height: 30, display: 'flex', alignItems: 'center', justifyContent: 'center', background: t.panel2, border: `1px solid ${t.line}`, borderRadius: 8, color: t.dim, fontSize: 15, cursor: 'pointer' }}>✕</button>
+              </div>
+            </div>
+
+            <div style={{ flex: 1, overflow: 'auto', padding: '18px 22px 24px' }}>
+              <div style={{ minWidth: 820, border: `1px solid ${t.line}`, borderRadius: 11, overflow: 'hidden', background: t.panel }}>
+                <div style={{ display: 'grid', gridTemplateColumns: `44px minmax(116px,150px) repeat(${HEADLINE_AXES.length},minmax(38px,1fr)) 56px 96px`, alignItems: 'center', background: t.panel2, borderBottom: `1px solid ${t.line}`, position: 'sticky', top: 0, zIndex: 1 }}>
+                  <div style={{ padding: '9px 10px', fontSize: 10, fontWeight: 700, letterSpacing: '.05em', textTransform: 'uppercase', color: t.faint }}>#</div>
+                  <div style={{ padding: '9px 10px', fontSize: 10, fontWeight: 700, letterSpacing: '.05em', textTransform: 'uppercase', color: t.faint }}>Gene</div>
+                  {orderedHeadline.map(ax => (
+                    <div key={ax.key} title={`${ax.label} — ${ax.source}`} style={{ padding: '9px 4px', display: 'flex', justifyContent: 'center', borderLeft: `1px solid ${t.line2}` }}>
+                      <span style={{ width: 26, height: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 6, fontFamily: mono, fontSize: 10, fontWeight: 600, color: '#fff', background: ax.color }}>T{ax.tier}</span>
+                    </div>
+                  ))}
+                  <div style={{ padding: '9px 6px', fontSize: 10, fontWeight: 700, letterSpacing: '.04em', textTransform: 'uppercase', color: t.faint, textAlign: 'center', borderLeft: `1px solid ${t.line2}` }}>Compl.</div>
+                  <div style={{ padding: '9px 10px', fontSize: 10, fontWeight: 700, letterSpacing: '.04em', textTransform: 'uppercase', color: t.faint, textAlign: 'right', borderLeft: `1px solid ${t.line2}` }}>Composite</div>
+                </div>
+
+                {result.shortlist.length === 0 && <div style={{ padding: '48px 20px', textAlign: 'center', color: t.faint, fontSize: 13 }}>No genes survive the current gates. Loosen a threshold or disable a gate.</div>}
+
+                {result.shortlist.slice(0, 300).map((s, idx) => {
+                  const compPct = Math.round((s.composite ?? 0) * 100);
+                  return (
+                    <div key={s.f.gene_symbol} onClick={() => setDrawerGene(s.f.gene_symbol)} style={{ display: 'grid', gridTemplateColumns: `44px minmax(116px,150px) repeat(${HEADLINE_AXES.length},minmax(38px,1fr)) 56px 96px`, alignItems: 'center', borderTop: `1px solid ${t.line2}`, cursor: 'pointer', background: idx % 2 ? (isDark ? 'rgba(255,255,255,.015)' : 'rgba(0,0,0,.012)') : 'transparent' }}>
+                      <div style={{ padding: '11px 10px', fontFamily: mono, fontSize: 13, fontWeight: 600, color: idx < 3 ? t.accent : t.dim }}>{idx + 1}</div>
+                      <div style={{ padding: '11px 10px', minWidth: 0 }}>
+                        <div style={{ fontSize: 13, fontWeight: 700, color: t.tx }}>{s.f.gene_symbol}</div>
+                        <div style={{ fontSize: 10.5, color: t.faint }}>{s.completeness >= 0.999 ? 'complete evidence' : `${Math.round(s.completeness * 100)}% evidence`}</div>
+                      </div>
+                      {orderedHeadline.map(ax => {
+                        const has = !!available[ax.key];
+                        const v = ax.filter.kind === 'category' ? null : rawOf(ax.filter.field, s.f);
+                        const cat = ax.filter.kind === 'category' ? categoryOf(ax.key, s.f) : null;
+                        const present = ax.filter.kind === 'category' ? cat != null : v != null;
+                        const on = !!hardOn[ax.key] && has;
+                        const pass = on ? passesGate(ax, s.f) : true;
+                        let chipStyle: React.CSSProperties;
+                        let label: string;
+                        if (!present || !has) { chipStyle = { color: t.faint, border: `1px dashed ${t.line}` }; label = '–'; }
+                        else if (on && !pass) { chipStyle = { color: t.faint, background: t.line2, textDecoration: 'line-through' }; label = ax.filter.kind === 'category' ? '×' : String(v); }
+                        else { chipStyle = { color: isDark ? '#fff' : ax.color, background: hexA(ax.color, isDark ? 0.30 : 0.16), border: `1px solid ${hexA(ax.color, 0.3)}` }; label = ax.filter.kind === 'category' ? '✓' : (v != null ? (Number.isInteger(v) ? String(v) : v.toFixed(2)) : '–'); }
+                        return (
+                          <div key={ax.key} style={{ padding: '8px 4px', display: 'flex', justifyContent: 'center', borderLeft: `1px solid ${t.line2}` }}>
+                            <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', minWidth: 34, padding: '3px 5px', borderRadius: 6, fontFamily: mono, fontSize: 10.5, fontWeight: 600, ...chipStyle }}>{label}</span>
+                          </div>
+                        );
+                      })}
+                      <div style={{ padding: '11px 6px', textAlign: 'center', borderLeft: `1px solid ${t.line2}` }}>
+                        <span style={{ fontFamily: mono, fontSize: 11.5, fontWeight: 500, color: t.dim }}>{Math.round(s.completeness * 100)}%</span>
+                      </div>
+                      <div style={{ padding: '11px 10px', borderLeft: `1px solid ${t.line2}` }}>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 7 }}>
+                          <span style={{ fontFamily: mono, fontSize: 14, fontWeight: 600, color: t.tx }}>{s.composite == null ? '—' : s.composite.toFixed(2)}</span>
+                        </div>
+                        <div style={{ marginTop: 5, height: 5, borderRadius: 3, background: t.line2, overflow: 'hidden' }}><div style={{ height: '100%', width: `${compPct}%`, background: t.accent, borderRadius: 3 }} /></div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
           </div>
         </div>
       )}
@@ -331,9 +554,5 @@ export const FunnelView: React.FC<Props> = ({ theme = 'light' }) => {
     </div>
   );
 };
-
-const Stat: React.FC<{ label: string; value: string; color: string; muted: string }> = ({ label, value, color, muted }) => (
-  <div><span style={{ fontWeight: 900, fontSize: 18, color }}>{value}</span><span style={{ fontSize: 10, color: muted, textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 700, marginLeft: 6 }}>{label}</span></div>
-);
 
 export default FunnelView;

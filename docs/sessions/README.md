@@ -14,6 +14,7 @@ fills up, drop a new file here so the next window can get up to speed fast.
 ## Index (newest first)
 | Date | File | Summary |
 |---|---|---|
+| 2026-06-29 | [2026-06-29-2.md](2026-06-29-2.md) | Job now ingests ALL 8 axes as raw Oracle rows (added mutation/druggability/clinical/literature providers + gnomAD constraint table + full-universe cap). Funnel raw-filter cascade + drawer parity (clinical/literature panels). |
 | 2026-06-29 | [2026-06-29.md](2026-06-29.md) | 3 evidence axes (gnomAD/expression/DepMap), registry+contract, funnel reskin, background Jobs + add-genes, gene drawer. SRC case study live. |
 | 2026-06-22 | [../HANDOFF.md](../HANDOFF.md) | Original baseline: Oracle content store, Rankings, DB-backed funnel, mutation/paper evidence. |
 

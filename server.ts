@@ -4,6 +4,7 @@ import path from "path";
 import fs from "fs";
 import { createClient } from "@supabase/supabase-js";
 import { createHash } from "crypto";
+import { fetchCohortMutations, fetchDruggability, fetchClinical, fetchLiterature, fetchPubmedLiterature, resolveCbioStudy } from "./evidenceProviders";
 
 // ── Supabase admin client (service role — server-side only, never sent to browser) ──
 const supabaseAdmin = (() => {
@@ -602,6 +603,39 @@ function setupRoutes() {
   };
   app.get("/api/depmap", serveRef('depmap_pancreatic.json', 'DepMap'));
   app.get("/api/expression", serveRef('expression_paad.json', 'Expression'));
+  app.get("/api/gnomad", serveRef('gnomad_constraint.json', 'gnomAD'));
+
+  // ── Live per-gene clinical / literature (same providers the harvest stores) ──
+  // Power the gene-drawer Clinical & Literature panels so the drill-down shows the
+  // SAME numbers the funnel filters on (the funnel reads these from stored Oracle
+  // evidence; here we compute them live for any gene on demand). Cached server-side.
+  app.get("/api/clinical", async (req, res) => {
+    const gene = String(req.query.gene || '').toUpperCase().trim();
+    const disease = String(req.query.disease || '').trim();
+    if (!gene || !disease) return res.status(400).json({ error: "gene and disease required" });
+    const key = cacheKey('clinical', `${gene}::${disease}`);
+    const cached = await readApiCache(key); if (cached) return res.json(cached.body);
+    try {
+      const { fetchClinical } = await import('./evidenceProviders');
+      const data = await fetchClinical(gene, disease);
+      await writeApiCache(key, { status: 200, body: { gene, data }, contentType: 'application/json' });
+      res.json({ gene, data });
+    } catch (e: any) { res.status(502).json({ error: e?.message || 'clinical fetch failed' }); }
+  });
+  app.get("/api/literature", async (req, res) => {
+    const gene = String(req.query.gene || '').toUpperCase().trim();
+    const disease = String(req.query.disease || '').trim();
+    if (!gene || !disease) return res.status(400).json({ error: "gene and disease required" });
+    const key = cacheKey('literature', `${gene}::${disease}::both`);
+    const cached = await readApiCache(key); if (cached) return res.json(cached.body);
+    try {
+      const { fetchLiterature, fetchPubmedLiterature } = await import('./evidenceProviders');
+      const [pubmed, epmc] = await Promise.all([fetchPubmedLiterature(gene, disease), fetchLiterature(gene, disease)]);
+      const body = { gene, pubmed, epmc };
+      await writeApiCache(key, { status: 200, body, contentType: 'application/json' });
+      res.json(body);
+    } catch (e: any) { res.status(502).json({ error: e?.message || 'literature fetch failed' }); }
+  });
 
   // ── Background Jobs ──────────────────────────────────────────────────────────
   // In-process job runner. POST /api/jobs creates a job that runs in the
@@ -651,8 +685,14 @@ function setupRoutes() {
   const clamp01 = (n: number) => Math.max(0, Math.min(1, n));
   const toNum = (v: any): number | null => (Number.isFinite(Number(v)) ? Number(v) : null);
 
-  // server-side gnomAD constraint (safety axis) — one GraphQL call per gene
+  // server-side gnomAD constraint (safety axis). Reads the preloaded v4.0
+  // constraint table first (instant — built by scripts/build_gnomad_constraint.mjs),
+  // and only falls back to the live v4 GraphQL API for genes the table is missing.
+  // This removes the per-gene network loop that was the slowest step of a harvest.
   const gnomadConstraint = async (symbol: string): Promise<{ pli: number | null; loeuf: number | null } | null> => {
+    const tbl = loadRef('gnomad_constraint.json');
+    const hit = tbl?.genes?.[symbol];
+    if (hit) return { pli: toNum(hit.pli), loeuf: toNum(hit.loeuf) };
     try {
       const r = await fetch('https://gnomad.broadinstitute.org/api', {
         method: 'POST', headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
@@ -721,6 +761,101 @@ function setupRoutes() {
       if (i % (CONC * 10) === 0) { jobLog(job, `Safety axis: ${safeN}/${genes.length}…`); persistJobs(); }
     }
     jobLog(job, `Safety axis: ${safeN} genes`); persistJobs();
+
+    // mutation — cBioPortal, ONE bulk cohort pull (per disease study), aggregated
+    // per gene. Skipped for diseases with no mapped cancer cohort.
+    if (resolveCbioStudy(diseaseName)) {
+      try {
+        const cohort = await fetchCohortMutations(diseaseName);
+        if (cohort && cohort.size) {
+          let n = 0;
+          for (const g of genes) {
+            const d = cohort.get(g); if (!d) continue;
+            const freq = toNum(d.frequency);
+            const pct = freq != null ? Math.round(freq * 100) : null;
+            rows.push({ gene_symbol: g, evidence_type: 'mutation', source: `cBioPortal · ${d.study_name}`,
+              value_text: `${pct ?? '?'}% mutated${d.dominant_variant ? ` · ${d.dominant_variant}` : ''}`,
+              value_json: { axis: freq != null ? clamp01(freq) : null, direction: 'pro',
+                display: `${pct ?? '?'}% of cohort${d.dominant_variant ? ` · ${d.dominant_variant}` : ''}`,
+                frequency: freq, mutated_samples: d.mutated_samples, total_samples: d.total_samples,
+                dominant_variant: d.dominant_variant, top_variants: d.top_variants, study_id: d.study_id } });
+            n++;
+          }
+          jobLog(job, `Mutation axis: ${n} genes (cohort ${cohort.size})`); persistJobs();
+        } else { jobLog(job, 'Mutation axis: no cohort data'); persistJobs(); }
+      } catch (e: any) { jobLog(job, 'Mutation axis warning: ' + String(e?.message || e).slice(0, 160)); persistJobs(); }
+    }
+
+    // druggability — ChEMBL, per gene (no bulk endpoint), small concurrency.
+    let drugN = 0; const DCONC = 5;
+    for (let i = 0; i < genes.length; i += DCONC) {
+      if (isCancelled()) { jobLog(job, 'Cancelled during druggability'); persistJobs(); break; }
+      const got = await Promise.all(genes.slice(i, i + DCONC).map(async g => ({ g, d: await fetchDruggability(g).catch(() => null) })));
+      for (const { g, d } of got) {
+        if (!d) continue;
+        rows.push({ gene_symbol: g, evidence_type: 'druggability', source: 'ChEMBL',
+          value_text: `${d.label}${d.best_ic50_nm != null ? ` · IC50 ${d.best_ic50_nm} nM` : ''}`,
+          value_json: { axis: clamp01(d.score), direction: 'pro', label: d.label,
+            display: `${d.label}${d.best_ic50_nm != null ? ` · IC50 ${d.best_ic50_nm.toFixed(1)} nM` : ''}`,
+            score: d.score, best_ic50_nm: d.best_ic50_nm, total_compounds: d.total_compounds,
+            target_max_phase: d.target_max_phase, target_drug_count: d.target_drug_count } });
+        drugN++;
+      }
+      if (i % (DCONC * 20) === 0) { jobLog(job, `Druggability axis: ${drugN}/${genes.length}…`); persistJobs(); }
+    }
+    jobLog(job, `Druggability axis: ${drugN} genes`); persistJobs();
+
+    // clinical — ClinicalTrials.gov, per gene (disease-scoped), small concurrency.
+    let clinN = 0; const CCONC = 5;
+    for (let i = 0; i < genes.length; i += CCONC) {
+      if (isCancelled()) { jobLog(job, 'Cancelled during clinical'); persistJobs(); break; }
+      const got = await Promise.all(genes.slice(i, i + CCONC).map(async g => ({ g, c: await fetchClinical(g, diseaseName).catch(() => null) })));
+      for (const { g, c } of got) {
+        if (!c || c.trial_count === 0) continue;     // only store genes with real trial activity
+        rows.push({ gene_symbol: g, evidence_type: 'clinical', source: 'ClinicalTrials.gov',
+          value_text: `${c.trial_count} trials${c.max_phase ? ` · Phase ${c.max_phase}` : ''}`,
+          value_json: { axis: clamp01(c.trial_count / 30), direction: 'pro',
+            display: `${c.trial_count} trials${c.max_phase ? ` · max Phase ${c.max_phase}` : ''}`,
+            trial_count: c.trial_count, max_phase: c.max_phase } });
+        clinN++;
+      }
+      if (i % (CCONC * 20) === 0) { jobLog(job, `Clinical axis: ${clinN}/${genes.length}…`); persistJobs(); }
+    }
+    jobLog(job, `Clinical axis: ${clinN} genes`); persistJobs();
+
+    // literature — BOTH sources per gene (disease-scoped), small concurrency.
+    //   'literature'      = PubMed [Gene Name] (gene-specific, the funnel axis)
+    //   'literature_epmc' = Europe PMC full-text (broader, supplementary)
+    // Both stored as raw rows so a case study can use either.
+    let litN = 0, epmcN = 0; const LCONC = 5;
+    for (let i = 0; i < genes.length; i += LCONC) {
+      if (isCancelled()) { jobLog(job, 'Cancelled during literature'); persistJobs(); break; }
+      const got = await Promise.all(genes.slice(i, i + LCONC).map(async g => ({
+        g,
+        pm: await fetchPubmedLiterature(g, diseaseName).catch(() => null),
+        ep: await fetchLiterature(g, diseaseName).catch(() => null),
+      })));
+      for (const { g, pm, ep } of got) {
+        if (pm && pm.paper_count > 0) {
+          rows.push({ gene_symbol: g, evidence_type: 'literature', source: 'PubMed',
+            value_text: `${pm.paper_count} papers${pm.recent_count ? ` · ${pm.recent_count} recent` : ''}`,
+            value_json: { axis: clamp01(pm.velocity), direction: 'pro',
+              display: `${pm.paper_count} papers · ${Math.round(pm.velocity * 100)}% in last 3y`,
+              paper_count: pm.paper_count, recent_count: pm.recent_count, velocity: pm.velocity } });
+          litN++;
+        }
+        if (ep && ep.paper_count > 0) {
+          rows.push({ gene_symbol: g, evidence_type: 'literature_epmc', source: 'Europe PMC',
+            value_text: `${ep.paper_count} papers${ep.recent_count ? ` · ${ep.recent_count} recent` : ''}`,
+            value_json: { axis: clamp01(ep.velocity), direction: 'pro',
+              display: `${ep.paper_count} papers · ${Math.round(ep.velocity * 100)}% in last 3y`,
+              paper_count: ep.paper_count, recent_count: ep.recent_count, velocity: ep.velocity } });
+          epmcN++;
+        }
+      }
+      if (i % (LCONC * 20) === 0) { jobLog(job, `Literature axis: PubMed ${litN} · EuropePMC ${epmcN}/${genes.length}…`); persistJobs(); }
+    }
+    jobLog(job, `Literature axis: PubMed ${litN} · Europe PMC ${epmcN} genes`); persistJobs();
 
     if (!rows.length) { jobLog(job, 'No axis evidence to store'); persistJobs(); return; }
     const svc = await oracleSvc();
@@ -859,7 +994,10 @@ function setupRoutes() {
       if (!target_snapshot_id) return res.status(400).json({ error: "target_snapshot_id required" });
       job = { ...base, type: 'add_genes', gene_count: list.length, genes: list, target_snapshot_id: Number(target_snapshot_id) };
     } else {
-      job = { ...base, type: 'harvest_ot', gene_count: Math.max(10, Math.min(5000, Number(gene_count) || 500)) };
+      // Cap raised to cover the full OT universe (pancreatic ~7.3k associated
+      // targets). The harvest loop also stops when OT returns no more rows, so a
+      // large request naturally settles at the true universe size.
+      job = { ...base, type: 'harvest_ot', gene_count: Math.max(10, Math.min(25000, Number(gene_count) || 500)) };
     }
     JOBS.push(job); persistJobs(); setImmediate(pumpJobs);
     res.status(201).json(job);

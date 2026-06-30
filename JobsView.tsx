@@ -17,7 +17,10 @@ interface JobRec {
   created_at: string; started_at: string | null; finished_at: string | null;
 }
 
-const GENE_COUNTS = [100, 250, 500, 1000, 2000];
+// 25000 = "full universe": the harvest loop stops when Open Targets runs out of
+// associated targets (pancreatic settles at ~7.3k), so this just removes the cap.
+const GENE_COUNTS = [100, 250, 500, 1000, 2000, 25000];
+const geneCountLabel = (n: number) => (n >= 25000 ? 'Full universe (all genes)' : `${n} genes`);
 
 export const JobsView: React.FC<Props> = ({ theme = 'light' }) => {
   const isDark = theme === 'dark';
@@ -139,7 +142,7 @@ export const JobsView: React.FC<Props> = ({ theme = 'light' }) => {
               <div style={{ flex: 1 }}>
                 <label style={{ fontSize: 11, color: muted, fontWeight: 700 }}>Genes to harvest</label>
                 <select value={geneCount} onChange={e => setGeneCount(Number(e.target.value))} style={{ ...fieldStyle, marginTop: 4 }}>
-                  {GENE_COUNTS.map(n => <option key={n} value={n}>{n} genes</option>)}
+                  {GENE_COUNTS.map(n => <option key={n} value={n}>{geneCountLabel(n)}</option>)}
                 </select>
               </div>
               <button onClick={submit} disabled={submitting || !disease.trim()} style={{ border: 'none', background: accent, color: '#fff', borderRadius: 8, padding: '10px 16px', fontSize: 12, fontWeight: 800, cursor: submitting ? 'default' : 'pointer', opacity: submitting ? 0.6 : 1, textTransform: 'uppercase', letterSpacing: '0.05em', whiteSpace: 'nowrap' }}>

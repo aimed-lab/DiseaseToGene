@@ -64,7 +64,7 @@ export const AXES: AxisDef[] = [
     filter: { kind: 'range', field: 'loeuf', unit: 'LOEUF', min: 0, max: 2, step: 0.05, default: 0, op: '>=' } },
   { key: 'clinical', tier: 7, label: 'Clinical landscape', question: 'Is there trial activity / room?', type: 'soft', source: 'ClinicalTrials.gov', color: '#16a34a', evidenceType: 'clinical', direction: 'pro', weight: 0.75, headline: true,
     filter: { kind: 'range', field: 'trial_count', unit: 'trials', min: 0, max: 50, step: 1, default: 0, op: '>=' } },
-  { key: 'literature', tier: 8, label: 'Literature signal', question: 'Is interest established / rising?', type: 'soft', source: 'PubMed / PubTator', color: '#0ea5e9', evidenceType: 'literature', direction: 'pro', weight: 0.75, headline: true,
+  { key: 'literature', tier: 8, label: 'Literature signal', question: 'Is interest established / rising?', type: 'soft', source: 'PubMed', color: '#0ea5e9', evidenceType: 'literature', direction: 'pro', weight: 0.75, headline: true,
     filter: { kind: 'range', field: 'velocity', unit: 'velocity', min: 0, max: 1, step: 0.01, default: 0, op: '>=' } },
   // Modifier — feeds the composite but is not its own tier card.
   { key: 'tissue', tier: 0, label: 'Tissue specificity', question: '', type: 'soft', source: 'Protein Atlas', color: '#64748b', evidenceType: null, direction: 'pro', weight: 0.5, headline: false,
