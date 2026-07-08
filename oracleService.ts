@@ -29,7 +29,7 @@ async function getPool(): Promise<oracledb.Pool> {
     user: process.env.ORACLE_USER,
     password: process.env.ORACLE_PASSWORD,
     connectString: process.env.ORACLE_CONNECT_STRING,
-    poolMin: 0, poolMax: 4, poolIncrement: 1, poolTimeout: 60,
+    poolMin: 0, poolMax: 4, poolIncrement: 1, poolTimeout: 60, poolPingInterval: 60,
   });
   return pool;
 }

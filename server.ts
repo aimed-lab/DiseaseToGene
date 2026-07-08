@@ -649,7 +649,8 @@ function setupRoutes() {
     gene_count: number; status: JobStatus; progress: number; processed: number; total: number;
     log: string[]; snapshot_id: number | null; snapshot_version: number | null; error: string | null;
     created_by: string | null; created_at: string; started_at: string | null; finished_at: string | null;
-    genes?: string[]; target_snapshot_id?: number | null;   // for type 'add_genes'
+    genes?: string[]; target_snapshot_id?: number | null;   // for type 'add_genes' / 'enrich'
+    axes?: string[];                                          // for type 'enrich' — selected evidence axes
   }
   const JOBS_FILE = path.join(process.cwd(), 'data', 'jobs.json');
   let JOBS: JobRec[] = [];
@@ -708,13 +709,39 @@ function setupRoutes() {
   // Enrichment pass: compute the 3 cheap axes and store them as contract-shaped
   // EVIDENCE rows (idempotent). Expression + dependency are pancreatic-only bulk
   // lookups; safety (gnomAD) runs for any disease, throttled per gene.
-  const enrichAxes = async (job: JobRec, snapshotId: number, diseaseId: string, diseaseName: string, genes: string[], genesOnly = false) => {
+  const enrichAxes = async (job: JobRec, snapshotId: number, diseaseId: string, diseaseName: string, genes: string[], genesOnly = false, axisSel?: string[]) => {
     const isPancreatic = /pancrea|pdac|paad|ductal adenocarcinoma/i.test(diseaseName || '');
+    // axisSel = which axes to run; undefined/empty = all. Lets callers enrich a
+    // snapshot with only the axes they pick (e.g. just the slow druggability/clinical/literature).
+    const want = (a: string) => !axisSel || axisSel.length === 0 || axisSel.includes(a);
     const isCancelled = () => (JOBS.find(x => x.id === job.id)?.status) === 'cancelled';
     const rows: any[] = [];
 
+    // Save evidence INCREMENTALLY, one axis at a time, with retry — instead of one
+    // giant write at the very end. A transient Oracle/VPN blip (e.g. NJS-510 connect
+    // timeout) then costs at most the current axis, which retries — not the entire
+    // multi-hour run. Failures are logged loudly, never swallowed.
+    let savedTotal = 0; const failedAxes: string[] = [];
+    const flush = async (label: string) => {
+      if (!rows.length) return;
+      const batch = rows.splice(0, rows.length);
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          const svc = await oracleSvc();
+          const res = await svc.saveAxisEvidence(snapshotId, diseaseId, batch, job.created_by || 'job', genesOnly);
+          savedTotal += res.count;
+          jobLog(job, `Saved ${res.count} ${label} rows to Oracle (running total ${savedTotal})`); persistJobs();
+          return;
+        } catch (e: any) {
+          const msg = String(e?.message || e).slice(0, 120);
+          if (attempt < 3) { jobLog(job, `Save ${label} failed (try ${attempt}/3): ${msg} — retrying…`); persistJobs(); await new Promise(r => setTimeout(r, 8000 * attempt)); }
+          else { failedAxes.push(label); jobLog(job, `WARNING: ${label} NOT saved after 3 tries: ${msg}`); persistJobs(); }
+        }
+      }
+    };
+
     if (isPancreatic) {
-      const ex = loadRef('expression_paad.json');
+      const ex = want('expression') ? loadRef('expression_paad.json') : null;
       if (ex?.genes) {
         let n = 0;
         for (const g of genes) {
@@ -729,7 +756,7 @@ function setupRoutes() {
         }
         jobLog(job, `Expression axis: ${n} genes`); persistJobs();
       }
-      const dp = loadRef('depmap_pancreatic.json');
+      const dp = want('dependency') ? loadRef('depmap_pancreatic.json') : null;
       if (dp?.genes) {
         let n = 0;
         for (const g of genes) {
@@ -744,10 +771,11 @@ function setupRoutes() {
         jobLog(job, `Dependency axis: ${n} genes`); persistJobs();
       }
     }
+    await flush('expression + dependency');
 
     // safety — gnomAD, per gene, small concurrency
     let safeN = 0; const CONC = 6;
-    for (let i = 0; i < genes.length; i += CONC) {
+    for (let i = 0; want('safety') && i < genes.length; i += CONC) {
       if (isCancelled()) { jobLog(job, 'Cancelled during enrichment'); persistJobs(); break; }
       const got = await Promise.all(genes.slice(i, i + CONC).map(async g => ({ g, c: await gnomadConstraint(g) })));
       for (const { g, c } of got) {
@@ -761,10 +789,11 @@ function setupRoutes() {
       if (i % (CONC * 10) === 0) { jobLog(job, `Safety axis: ${safeN}/${genes.length}…`); persistJobs(); }
     }
     jobLog(job, `Safety axis: ${safeN} genes`); persistJobs();
+    await flush('safety');
 
     // mutation — cBioPortal, ONE bulk cohort pull (per disease study), aggregated
     // per gene. Skipped for diseases with no mapped cancer cohort.
-    if (resolveCbioStudy(diseaseName)) {
+    if (want('mutation') && resolveCbioStudy(diseaseName)) {
       try {
         const cohort = await fetchCohortMutations(diseaseName);
         if (cohort && cohort.size) {
@@ -785,10 +814,11 @@ function setupRoutes() {
         } else { jobLog(job, 'Mutation axis: no cohort data'); persistJobs(); }
       } catch (e: any) { jobLog(job, 'Mutation axis warning: ' + String(e?.message || e).slice(0, 160)); persistJobs(); }
     }
+    await flush('mutation');
 
     // druggability — ChEMBL, per gene (no bulk endpoint), small concurrency.
     let drugN = 0; const DCONC = 5;
-    for (let i = 0; i < genes.length; i += DCONC) {
+    for (let i = 0; want('druggability') && i < genes.length; i += DCONC) {
       if (isCancelled()) { jobLog(job, 'Cancelled during druggability'); persistJobs(); break; }
       const got = await Promise.all(genes.slice(i, i + DCONC).map(async g => ({ g, d: await fetchDruggability(g).catch(() => null) })));
       for (const { g, d } of got) {
@@ -804,10 +834,11 @@ function setupRoutes() {
       if (i % (DCONC * 20) === 0) { jobLog(job, `Druggability axis: ${drugN}/${genes.length}…`); persistJobs(); }
     }
     jobLog(job, `Druggability axis: ${drugN} genes`); persistJobs();
+    await flush('druggability');
 
     // clinical — ClinicalTrials.gov, per gene (disease-scoped), small concurrency.
     let clinN = 0; const CCONC = 5;
-    for (let i = 0; i < genes.length; i += CCONC) {
+    for (let i = 0; want('clinical') && i < genes.length; i += CCONC) {
       if (isCancelled()) { jobLog(job, 'Cancelled during clinical'); persistJobs(); break; }
       const got = await Promise.all(genes.slice(i, i + CCONC).map(async g => ({ g, c: await fetchClinical(g, diseaseName).catch(() => null) })));
       for (const { g, c } of got) {
@@ -822,13 +853,14 @@ function setupRoutes() {
       if (i % (CCONC * 20) === 0) { jobLog(job, `Clinical axis: ${clinN}/${genes.length}…`); persistJobs(); }
     }
     jobLog(job, `Clinical axis: ${clinN} genes`); persistJobs();
+    await flush('clinical');
 
     // literature — BOTH sources per gene (disease-scoped), small concurrency.
     //   'literature'      = PubMed [Gene Name] (gene-specific, the funnel axis)
     //   'literature_epmc' = Europe PMC full-text (broader, supplementary)
     // Both stored as raw rows so a case study can use either.
     let litN = 0, epmcN = 0; const LCONC = 5;
-    for (let i = 0; i < genes.length; i += LCONC) {
+    for (let i = 0; want('literature') && i < genes.length; i += LCONC) {
       if (isCancelled()) { jobLog(job, 'Cancelled during literature'); persistJobs(); break; }
       const got = await Promise.all(genes.slice(i, i + LCONC).map(async g => ({
         g,
@@ -856,11 +888,12 @@ function setupRoutes() {
       if (i % (LCONC * 20) === 0) { jobLog(job, `Literature axis: PubMed ${litN} · EuropePMC ${epmcN}/${genes.length}…`); persistJobs(); }
     }
     jobLog(job, `Literature axis: PubMed ${litN} · Europe PMC ${epmcN} genes`); persistJobs();
+    await flush('literature');
 
-    if (!rows.length) { jobLog(job, 'No axis evidence to store'); persistJobs(); return; }
-    const svc = await oracleSvc();
-    const res = await svc.saveAxisEvidence(snapshotId, diseaseId, rows, job.created_by || 'job', genesOnly);
-    jobLog(job, `Stored ${res.count} evidence rows: ${res.types.join(', ')}`); persistJobs();
+    if (failedAxes.length) jobLog(job, `PARTIAL — saved ${savedTotal} evidence rows, but these axes FAILED to store: ${failedAxes.join(', ')}. Oracle was unreachable; re-run to complete them.`);
+    else if (savedTotal === 0) jobLog(job, 'No axis evidence to store');
+    else jobLog(job, `Enrichment complete — ${savedTotal} evidence rows saved across all axes.`);
+    persistJobs();
   };
 
   // Best-effort Open Targets association for one gene + disease, so a manually
@@ -921,6 +954,33 @@ function setupRoutes() {
     }
   };
 
+  // Enrich an EXISTING snapshot with only the selected axes — runs the chosen
+  // evidence providers over all genes already in the snapshot (no OT re-harvest,
+  // no new snapshot). Lets you top up a snapshot that only has the fast axes with
+  // the slow druggability/clinical/literature axes, or refresh a single axis.
+  const runEnrichJob = async (job: JobRec) => {
+    const cancelled = (): boolean => (JOBS.find(x => x.id === job.id)?.status) === 'cancelled';
+    job.status = 'running'; job.started_at = new Date().toISOString(); job.progress = 0.05; persistJobs();
+    try {
+      if (!job.target_snapshot_id) throw new Error('No target snapshot selected');
+      const svc = await oracleSvc();
+      const snap = await svc.getSnapshot(job.target_snapshot_id);
+      if (!snap) throw new Error(`Snapshot #${job.target_snapshot_id} not found`);
+      job.disease_id = snap.disease_id; job.disease_name = snap.disease_name; job.snapshot_id = job.target_snapshot_id;
+      const scores = await svc.listRankingScores(job.target_snapshot_id);
+      const genes = [...new Set((scores as any[]).map(r => String(r.gene_symbol)).filter(Boolean))];
+      if (!genes.length) throw new Error('Snapshot has no genes');
+      job.total = genes.length; job.gene_count = genes.length; job.processed = genes.length; persistJobs();
+      jobLog(job, `Enriching snapshot #${job.target_snapshot_id} (${genes.length} genes) — axes: ${(job.axes || []).join(', ') || 'all'}`); persistJobs();
+      await enrichAxes(job, job.target_snapshot_id, snap.disease_id, snap.disease_name, genes, false, job.axes);
+      job.status = 'done'; job.progress = 1; job.finished_at = new Date().toISOString();
+      jobLog(job, 'Done.'); persistJobs();
+    } catch (e: any) {
+      if (!cancelled()) { job.status = 'failed'; job.error = String(e?.message || e).slice(0, 500); jobLog(job, 'Failed: ' + job.error); }
+      job.finished_at = new Date().toISOString(); persistJobs();
+    }
+  };
+
   const runHarvestJob = async (job: JobRec) => {
     // Read status via the registry so TS doesn't narrow it away — the DELETE
     // handler flips it to 'cancelled' on this same object from another request.
@@ -974,16 +1034,17 @@ function setupRoutes() {
     const next = JOBS.find(j => j.status === 'queued');
     if (!next) return;
     jobRunning = true;
-    const run = next.type === 'add_genes' ? runAddGenesJob : runHarvestJob;
+    const run = next.type === 'add_genes' ? runAddGenesJob : next.type === 'enrich' ? runEnrichJob : runHarvestJob;
     try { await run(next); } catch { /* runner self-handles */ } finally { jobRunning = false; setImmediate(pumpJobs); }
   };
 
   app.post("/api/jobs", requireUser, express.json({ limit: "256kb" }), (req, res) => {
-    const { disease_query, gene_count, type, genes, target_snapshot_id } = req.body || {};
-    if (!disease_query || !String(disease_query).trim()) return res.status(400).json({ error: "disease_query required" });
+    const { disease_query, gene_count, type, genes, target_snapshot_id, axes } = req.body || {};
+    // 'enrich' derives its disease from the snapshot, so it needs no disease_query.
+    if (type !== 'enrich' && (!disease_query || !String(disease_query).trim())) return res.status(400).json({ error: "disease_query required" });
     const base = {
       id: 'job_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-      disease_query: String(disease_query).slice(0, 120), disease_id: null, disease_name: null,
+      disease_query: String(disease_query || '').slice(0, 120), disease_id: null, disease_name: null,
       status: 'queued' as JobStatus, progress: 0, processed: 0, total: 0, log: [], snapshot_id: null, snapshot_version: null, error: null,
       created_by: (req as any).appUser?.id ?? null, created_at: new Date().toISOString(), started_at: null, finished_at: null,
     };
@@ -993,6 +1054,11 @@ function setupRoutes() {
       if (!list.length) return res.status(400).json({ error: "genes required" });
       if (!target_snapshot_id) return res.status(400).json({ error: "target_snapshot_id required" });
       job = { ...base, type: 'add_genes', gene_count: list.length, genes: list, target_snapshot_id: Number(target_snapshot_id) };
+    } else if (type === 'enrich') {
+      const ax = Array.isArray(axes) ? axes.map((a: any) => String(a)).filter(Boolean) : [];
+      if (!target_snapshot_id) return res.status(400).json({ error: "target_snapshot_id required" });
+      if (!ax.length) return res.status(400).json({ error: "axes required" });
+      job = { ...base, type: 'enrich', gene_count: 0, target_snapshot_id: Number(target_snapshot_id), axes: ax };
     } else {
       // Cap raised to cover the full OT universe (pancreatic ~7.3k associated
       // targets). The harvest loop also stops when OT returns no more rows, so a

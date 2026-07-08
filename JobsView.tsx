@@ -35,6 +35,20 @@ export const JobsView: React.FC<Props> = ({ theme = 'light' }) => {
   const [targetSnap, setTargetSnap] = useState('');
   const [submittingAdd, setSubmittingAdd] = useState(false);
   const [errAdd, setErrAdd] = useState<string | null>(null);
+  // enrich-snapshot-with-selected-axes
+  const AXIS_OPTIONS = [
+    { key: 'expression', label: 'Dysregulation', slow: false },
+    { key: 'dependency', label: 'Dependency', slow: false },
+    { key: 'safety', label: 'Safety', slow: false },
+    { key: 'mutation', label: 'Mutation', slow: false },
+    { key: 'druggability', label: 'Druggability', slow: true },
+    { key: 'clinical', label: 'Clinical', slow: true },
+    { key: 'literature', label: 'Literature', slow: true },
+  ];
+  const [enrichSnap, setEnrichSnap] = useState('');
+  const [enrichSel, setEnrichSel] = useState<string[]>(['druggability', 'clinical', 'literature']);
+  const [submittingEnrich, setSubmittingEnrich] = useState(false);
+  const [errEnrich, setErrEnrich] = useState<string | null>(null);
 
   // ── data browser state ──
   const [snapshots, setSnapshots] = useState<RankingSnapshotMeta[]>([]);
@@ -83,8 +97,25 @@ export const JobsView: React.FC<Props> = ({ theme = 'light' }) => {
     try { await authenticatedFetch(`/api/jobs/${id}`, { method: 'DELETE' }); await loadJobs(); } catch { /* ignore */ }
   };
 
-  // default the "add to" snapshot to the newest one
+  // default the "add to" / "enrich" snapshot to the newest one
   useEffect(() => { if (!targetSnap && snapshots.length) setTargetSnap(String(snapshots[0].id)); }, [snapshots]);
+  useEffect(() => { if (!enrichSnap && snapshots.length) setEnrichSnap(String(snapshots[0].id)); }, [snapshots]);
+
+  const submitEnrich = async () => {
+    const snap = snapshots.find(s => String(s.id) === enrichSnap);
+    if (!snap) { setErrEnrich('Pick a snapshot to enrich'); return; }
+    if (!enrichSel.length) { setErrEnrich('Select at least one axis'); return; }
+    setSubmittingEnrich(true); setErrEnrich(null);
+    try {
+      const r = await authenticatedFetch('/api/jobs', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'enrich', target_snapshot_id: snap.id, axes: enrichSel }),
+      });
+      if (!r.ok) { const b = await r.json().catch(() => ({})); throw new Error(b.error || `HTTP ${r.status}`); }
+      await loadJobs();
+    } catch (e: any) { setErrEnrich(e?.message || 'Failed to start enrichment'); }
+    finally { setSubmittingEnrich(false); }
+  };
 
   const submitAdd = async () => {
     const list = addList.split(/[\s,;]+/).map(s => s.trim().toUpperCase()).filter(Boolean);
@@ -167,6 +198,34 @@ export const JobsView: React.FC<Props> = ({ theme = 'light' }) => {
               {submittingAdd ? 'Adding…' : 'Add & harvest genes'}
             </button>
             {errAdd && <div style={{ marginTop: 8, fontSize: 11.5, color: '#dc2626' }}>{errAdd}</div>}
+          </div>
+
+          {/* enrich snapshot with selected axes */}
+          <div style={{ border: `1px solid ${border}`, borderRadius: 12, background: cardBg, padding: 14, marginBottom: 16 }}>
+            <div style={sectionLabel}>Enrich snapshot · pick axes</div>
+            <div style={{ fontSize: 11.5, color: muted, margin: '4px 0 10px' }}>Run only the axes you choose into an existing snapshot — e.g. add the slow druggability / clinical / literature axes to a snapshot that only has the fast ones, without re-harvesting. Idempotent: re-running an axis replaces it.</div>
+            <label style={{ fontSize: 11, color: muted, fontWeight: 700 }}>Snapshot to enrich</label>
+            <select value={enrichSnap} onChange={e => setEnrichSnap(e.target.value)} style={{ ...fieldStyle, marginTop: 4 }}>
+              {snapshots.length === 0 && <option value="">No snapshots — run a harvest first</option>}
+              {snapshots.map(s => <option key={s.id} value={String(s.id)}>{s.disease_name} · v{s.version} · {s.gene_count ?? '?'} genes</option>)}
+            </select>
+            <div style={{ fontSize: 11, color: muted, fontWeight: 700, marginTop: 10, marginBottom: 4 }}>Axes to run</div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              {AXIS_OPTIONS.map(a => {
+                const on = enrichSel.includes(a.key);
+                return (
+                  <label key={a.key} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, fontWeight: 700, color: on ? ink : muted, background: on ? track : 'transparent', border: `1px solid ${border}`, borderRadius: 8, padding: '5px 9px', cursor: 'pointer' }}>
+                    <input type="checkbox" checked={on} onChange={() => setEnrichSel(p => on ? p.filter(x => x !== a.key) : [...p, a.key])} />
+                    {a.label}{a.slow && <span style={{ fontSize: 8, color: '#b45309', fontWeight: 900, marginLeft: 2 }}>SLOW</span>}
+                  </label>
+                );
+              })}
+            </div>
+            <button onClick={submitEnrich} disabled={submittingEnrich || !enrichSel.length || !snapshots.length} style={{ marginTop: 10, width: '100%', border: 'none', background: '#7c3aed', color: '#fff', borderRadius: 8, padding: '10px 16px', fontSize: 12, fontWeight: 800, cursor: submittingEnrich ? 'default' : 'pointer', opacity: submittingEnrich ? 0.6 : 1, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+              {submittingEnrich ? 'Starting…' : `Run ${enrichSel.length} selected ${enrichSel.length === 1 ? 'axis' : 'axes'}`}
+            </button>
+            <div style={{ marginTop: 6, fontSize: 10, color: muted }}>Fast axes finish in minutes; SLOW axes (per-gene API) take ~1 hr each for a full universe.</div>
+            {errEnrich && <div style={{ marginTop: 8, fontSize: 11.5, color: '#dc2626' }}>{errEnrich}</div>}
           </div>
 
           {/* jobs list */}
