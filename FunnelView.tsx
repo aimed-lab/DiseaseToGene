@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { fetchSnapshots, fetchSnapshotScores, fetchSnapshotEvidence, type RankingSnapshotMeta } from './supabase';
 import { AXES, HEADLINE_AXES, COMPOSITE_AXES, type AxisDef, type FilterDef } from './evidenceRegistry';
+import { runFunnel, DEFAULT_ELIGIBILITY, type FunnelGene, type EligibilityConfig } from './funnelEngine';
 import GeneDetailDrawer from './GeneDetailDrawer';
 
 // ── DB-backed Target Funnel — "narrowing flow" redesign ───────────────────────
@@ -148,42 +149,51 @@ export const FunnelView: React.FC<Props> = ({ theme = 'light' }) => {
     return ax.filter.op === '<=' ? v <= th : v >= th;
   };
 
+  // ── TWO-STAGE engine (funnelEngine.ts, per Disease2Target_App_Design.md) ──────
+  // Stage 1 eligibility (permissive OR-nexus + optional tractability) removes only
+  // out-of-scope genes; Stage 2 ranks the rest by a weighted-ARITHMETIC composite of
+  // externally-normalized axes minus bounded risk penalties. This replaces the old
+  // strict hard-gate cascade + within-survivor harmonic composite, which — verified
+  // on 12 canonical PDAC genes — collapsed to zero and deleted KRAS at the LOEUF gate.
   const result = useMemo(() => {
     const total = features.length;
-    let current = features.slice();
+    const genes: FunnelGene[] = features.map(f => ({
+      gene_symbol: f.gene_symbol,
+      otOverall: f.getScore,               // OT overall/indirect association (not the always-0 genetic datatype)
+      frequency: f.raw.frequency ?? null,
+      log2fc: f.raw.log2fc ?? null,
+      chronos: f.raw.chronos ?? null,
+      loeuf: f.raw.loeuf ?? null,
+      drugLabel: f.drugLabel,
+      trialCount: f.raw.trial_count ?? null,
+      velocity: f.raw.velocity ?? null,
+      tissueTau: f.axis.tissue ?? null,
+    }));
+    // Eligibility config follows the funnel's own gate controls where the user has
+    // enabled them, otherwise the design defaults. The genetic/mutation/dependency
+    // controls feed the OR-nexus; the druggability toggle turns on the tractability gate.
+    const cfg: EligibilityConfig = {
+      nexus: true,
+      otMin: hardOn['genetic'] ? (thresholds['genetic'] ?? DEFAULT_ELIGIBILITY.otMin) : DEFAULT_ELIGIBILITY.otMin,
+      mutMin: hardOn['mutation'] ? (thresholds['mutation'] ?? DEFAULT_ELIGIBILITY.mutMin) : DEFAULT_ELIGIBILITY.mutMin,
+      depMax: hardOn['dependency'] ? (thresholds['dependency'] ?? DEFAULT_ELIGIBILITY.depMax) : DEFAULT_ELIGIBILITY.depMax,
+      tractability: !!hardOn['druggability'],
+    };
+    const eng = runFunnel(genes, cfg);
+    const byGene = new Map(features.map(f => [f.gene_symbol, f] as const));
+    const shortlist = eng.ranked
+      .filter(s => byGene.has(s.gene.gene_symbol))
+      .map(s => ({ f: byGene.get(s.gene.gene_symbol)!, composite: s.score, completeness: s.completeness, axisScores: s.axisScores }));
+    // tierCounts drive the narrowing-flow bars: the OR-nexus axes show the post-nexus
+    // survivor count, druggability shows post-tractability, and the score-only axes
+    // show the eligible set (they rank, they do not narrow).
     const tierCounts: Record<string, number> = {};
-    // Cascade the filters in tier order (T1→T8) so each step narrows the survivors
-    // of the one above it — a real funnel. Any enabled tier narrows; disabled tiers
-    // pass through (passesGate returns true when its gate is off).
-    const ordered = [...HEADLINE_AXES].sort((a, b) => a.tier - b.tier);
-    for (const ax of ordered) { current = current.filter(f => passesGate(ax, f)); tierCounts[ax.key] = current.length; }
-
-    const norm: Record<string, (v: number | null) => number | null> = {};
-    for (const ax of COMPOSITE_AXES) {
-      const vals = current.map(f => valueOf(ax.key, f)).filter((v): v is number => v != null).sort((a, b) => a - b);
-      const n = vals.length;
-      norm[ax.key] = (v) => {
-        if (v == null || n === 0) return null;
-        let lo = 0, eq = 0;
-        for (const x of vals) { if (x < v) lo++; else if (x === v) eq++; }
-        const p = (lo + eq * 0.5) / n;
-        return ax.direction === 'con' ? 1 - p : p;
-      };
+    for (const ax of HEADLINE_AXES) {
+      tierCounts[ax.key] = (ax.key === 'genetic' || ax.key === 'mutation' || ax.key === 'dependency')
+        ? eng.stage1.afterNexus
+        : ax.key === 'druggability' ? eng.stage1.afterTractability : eng.eligibleCount;
     }
-    const scored = current.map(f => {
-      const axisScores: Record<string, number | null> = {};
-      let wsum = 0, whx = 0, present = 0;
-      for (const ax of COMPOSITE_AXES) {
-        const x = norm[ax.key](valueOf(ax.key, f));
-        axisScores[ax.key] = x;
-        if (x == null) continue;
-        present++;
-        wsum += ax.weight; whx += ax.weight / Math.max(x, 1e-3);
-      }
-      return { f, composite: wsum > 0 ? wsum / whx : null, completeness: COMPOSITE_AXES.length ? present / COMPOSITE_AXES.length : 0, axisScores };
-    });
-    scored.sort((a, b) => (b.composite ?? -1) - (a.composite ?? -1));
-    return { total, tierCounts, shortlist: scored };
+    return { total, tierCounts, shortlist };
   }, [features, thresholds, cats, hardOn, requirePresent, available]);
 
   // ── theme tokens (match the design language) ────────────────────────────────
@@ -498,7 +508,7 @@ export const FunnelView: React.FC<Props> = ({ theme = 'light' }) => {
                   <span style={{ fontSize: 16, fontWeight: 700, color: t.tx }}>Shortlist</span>
                   <span style={{ fontFamily: mono, fontSize: 13, fontWeight: 600, color: t.accent }}>{fmtN(result.shortlist.length)} targets</span>
                 </div>
-                <div style={{ fontSize: 11.5, color: t.faint, marginTop: 3 }}>Ranked by direction-aware weighted-harmonic composite · click a row for full evidence</div>
+                <div style={{ fontSize: 11.5, color: t.faint, marginTop: 3 }}>Two-stage: eligible genes ranked by weighted-arithmetic composite (constraint = risk penalty, not a gate) · click a row for full evidence + pocket-level druggability (DoGSiteScorer protein tier)</div>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 13, fontSize: 10.5, color: t.faint }}>
@@ -524,7 +534,7 @@ export const FunnelView: React.FC<Props> = ({ theme = 'light' }) => {
                   <div style={{ padding: '9px 10px', fontSize: 10, fontWeight: 700, letterSpacing: '.04em', textTransform: 'uppercase', color: t.faint, textAlign: 'right', borderLeft: `1px solid ${t.line2}` }}>Composite</div>
                 </div>
 
-                {result.shortlist.length === 0 && <div style={{ padding: '48px 20px', textAlign: 'center', color: t.faint, fontSize: 13 }}>No genes survive the current gates. Loosen a threshold or disable a gate.</div>}
+                {result.shortlist.length === 0 && <div style={{ padding: '48px 20px', textAlign: 'center', color: t.faint, fontSize: 13 }}>No genes are eligible — every gene lacks a disease link (OT / mutation / dependency). Loosen the nexus thresholds.</div>}
 
                 {result.shortlist.slice(0, 300).map((s, idx) => {
                   const compPct = Math.round((s.composite ?? 0) * 100);
