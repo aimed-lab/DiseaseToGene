@@ -118,10 +118,6 @@ export const api = {
                 approvedSymbol 
                 approvedName 
                 pathways { pathway }
-                expressions {
-                  tissue { label }
-                  rna { value }
-                }
                 tractability {
                   label
                   modality
@@ -238,7 +234,7 @@ export const api = {
       const sres = await fetch('/api/ot-graphql', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: SEARCH, variables: { q: symbol } }) });
       const ensemblId = (await sres.json())?.data?.search?.hits?.[0]?.id;
       if (!ensemblId) return null;
-      const GQL = `query($id:String!){ target(ensemblId:$id){ approvedName expressions{ rna{ value } } tractability{ label modality value } associatedDiseases(page:{index:0,size:3000}){ rows{ disease{ id } score datatypeScores{ id score } } } } }`;
+      const GQL = `query($id:String!){ target(ensemblId:$id){ approvedName tractability{ label modality value } associatedDiseases(page:{index:0,size:3000}){ rows{ disease{ id } score datatypeScores{ id score } } } } }`;
       const res = await fetch('/api/ot-graphql', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: GQL, variables: { id: ensemblId } }) });
       const target = (await res.json())?.data?.target;
       if (!target) return null;
