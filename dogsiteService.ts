@@ -5,11 +5,16 @@
 // RNA-binding surface not). Runs SERVER-SIDE (multi-step upload→submit→poll→descriptors
 // flow + CORS), public-API only (no Oracle) so it works locally and on Vercel.
 //
-// The v2 API returns validated pocket DESCRIPTORS (volume, enclosure, depth,
-// hydrophobicity — the exact druggability determinants of Volkamer 2012 /
-// Schmidtke-Barril 2010) but not DoGSite's own SVM drugScore, so we compute a
-// transparent estimate from those determinants. Verified on PHGDH: 2 druggable
-// pockets vs 13 shallow surface patches.
+// The v2 API (the endpoint we call here) returns validated pocket DESCRIPTORS
+// (volume, enclosure, depth, hydrophobicity) but does NOT surface DoGSite's own
+// SVM drugScore — so as an INTERIM we compute a transparent estimate from those
+// descriptors. NOTE: DoGSite's real drugScore IS available from the v1 REST API
+// (bindingSitePredictionGranularity=1); switching to it is the planned fix — the
+// interim estimate correlates only moderately with the real drugScore (ρ≈0.80 on
+// 1kzk) and can mis-rank pockets, so treat drugEst as provisional.
+// Determinant background: Schmidtke-Barril 2010 (volume / hydrophobicity / geometry);
+// Volkamer 2012 (DoGSiteScorer). 'enclosure' and 'depth' are DoGSite's descriptor
+// names, not Schmidtke-Barril terms.
 
 const BASE = 'https://proteins.plus/api/v2';
 const H = { 'Accept': 'application/json', 'Content-Type': 'application/json' };
@@ -109,7 +114,7 @@ export async function getPocketDruggability(gene: string, uniprotIn?: string | n
     base.pockets = pockets;
     base.bestDrug = pockets.length ? pockets[0].drugEst : 0;
     base.nDruggable = pockets.filter(p => p.druggable).length;
-    base.note = `${pockets.length} pockets · ${base.nDruggable} druggable (DoGSiteScorer; druggability estimated from validated pocket descriptors, not DoGSite's SVM drugScore)`;
+    base.note = `${pockets.length} pockets · ${base.nDruggable} druggable · DoGSiteScorer pockets; INTERIM descriptor-based estimate (DoGSite's real drugScore is available via the v1 API — switch pending; treat scores as provisional)`;
     return base;
   } catch (e: any) {
     return { ...base, error: String(e?.message || e).slice(0, 200) };
