@@ -5,7 +5,7 @@ import fs from "fs";
 import { createClient } from "@supabase/supabase-js";
 import { createHash } from "crypto";
 import { fetchCohortMutations, fetchDruggability, fetchClinical, fetchLiterature, fetchPubmedLiterature, resolveCbioStudy } from "./evidenceProviders";
-import { getPocketDruggability } from "./dogsiteService";
+import { getPocketStructure } from "./dogsiteService";
 
 // ── Supabase admin client (service role — server-side only, never sent to browser) ──
 const supabaseAdmin = (() => {
@@ -490,15 +490,17 @@ function setupRoutes() {
     'www.cbioportal.org',
   ];
 
-  // Pocket-level (region-specific) druggability — DoGSiteScorer "protein tier".
-  // Public API only (no Oracle) so it works locally and on Vercel. On-demand: a
-  // ~30-60s round-trip per target (cached by proteins.plus after the first run).
+  // Pocket STRUCTURAL drill-down (descriptive evidence only — NOT a scoring axis).
+  // Detects pockets on the target's best structure (experimental PDB → AlphaFold →
+  // none) and returns per-pocket DoGSite3 descriptors. Public API only (no Oracle),
+  // so it works locally and on Vercel; on-demand ~30-60s round-trip (cached by
+  // proteins.plus and by structure id here). No druggability score is emitted.
   app.get("/api/druggability/pockets", async (req, res) => {
     const gene = String(req.query.gene || '').trim().toUpperCase();
     const uniprot = req.query.uniprot ? String(req.query.uniprot) : undefined;
     if (!gene) return res.status(400).json({ error: "Missing gene param" });
     try {
-      res.json(await getPocketDruggability(gene, uniprot));
+      res.json(await getPocketStructure(gene, uniprot));
     } catch (e: any) {
       res.status(502).json({ error: String(e?.message || e).slice(0, 200) });
     }

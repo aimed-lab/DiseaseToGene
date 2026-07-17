@@ -89,7 +89,7 @@ import {
 
 import PaperExtractor from './PaperExtractor';
 import DruggabilityPanel from './DruggabilityPanel';
-import PocketDruggabilityPanel from './PocketDruggabilityPanel';
+import PocketStructurePanel from './PocketStructurePanel';
 import MutationPanel from './MutationPanel';
 import ConstraintPanel from './ConstraintPanel';
 import ExpressionPanel from './ExpressionPanel';
@@ -3255,7 +3255,7 @@ const TargetDetailView = ({
             <DruggabilityPanel geneSymbol={target.symbol} currentDisease={diseaseName} theme={theme} />
 
             {/* Pocket-level druggability (additive — DoGSiteScorer protein tier, on-demand) */}
-            <PocketDruggabilityPanel geneSymbol={target.symbol} currentDisease={diseaseName} theme={theme} />
+            <PocketStructurePanel geneSymbol={target.symbol} currentDisease={diseaseName} theme={theme} />
 
             {/* Mutation Axis (additive — cBioPortal; renders only for cancer diseases) */}
             <MutationPanel geneSymbol={target.symbol} currentDisease={diseaseName} theme={theme} />

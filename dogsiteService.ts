@@ -1,46 +1,63 @@
 // dogsiteService.ts ───────────────────────────────────────────────────────────
-// Region-specific (pocket-level) druggability via DoGSiteScorer (proteins.plus v2
-// REST API). This is the "protein tier" the professor asked for: druggability is a
-// property of a POCKET, not of the whole protein (PHGDH: catalytic pocket druggable,
-// RNA-binding surface not). Runs SERVER-SIDE (multi-step upload→submit→poll→descriptors
-// flow + CORS), public-API only (no Oracle) so it works locally and on Vercel.
+// Pocket STRUCTURAL DRILL-DOWN (descriptive evidence only — NOT a scoring axis).
 //
-// The v2 API (the endpoint we call here) returns validated pocket DESCRIPTORS
-// (volume, enclosure, depth, hydrophobicity) but does NOT surface DoGSite's own
-// SVM drugScore — so as an INTERIM we compute a transparent estimate from those
-// descriptors. NOTE: DoGSite's real drugScore IS available from the v1 REST API
-// (bindingSitePredictionGranularity=1); switching to it is the planned fix — the
-// interim estimate correlates only moderately with the real drugScore (ρ≈0.80 on
-// 1kzk) and can mis-rank pockets, so treat drugEst as provisional.
-// Determinant background: Schmidtke-Barril 2010 (volume / hydrophobicity / geometry);
-// Volkamer 2012 (DoGSiteScorer). 'enclosure' and 'depth' are DoGSite's descriptor
-// names, not Schmidtke-Barril terms.
+// The funnel's "can we drug it" axis stays on Open Targets tractability buckets.
+// This service backs a per-target "Pocket structure" panel in the detail drawer:
+// it detects binding pockets on the target's best 3D structure and reports each
+// pocket's geometric/physicochemical DESCRIPTORS. It does NOT emit a druggability
+// score — DoGSite3 (Graef et al. 2023) computes descriptors only; the SVM
+// "drugScore" of the older DoGSiteScorer is not exposed by any current DoGSite tool,
+// and its "simpleScore" coefficients were never published, so we do not fabricate one.
+//
+// Flow:  gene → UniProt → BEST structure (experimental PDB, else AlphaFold, else none)
+//        → DoGSite3 descriptors (proteins.plus v2 API, or the local binary if enabled)
+//        → top-3 pockets by volume, largest enclosed flagged "primary".
+//
+// DEPLOY: the default engine is the proteins.plus REST API (public; runs on Vercel;
+// it IS DoGSite3 server-side, so the descriptor set is identical to the local binary).
+// The local DoGSite3 v1.2.0 binary is an OPTIONAL engine (USE_DOGSITE3=1 + DOGSITE3_BIN),
+// server/Docker only, kept internal per the ZBH license (no redistribution).
 
 const BASE = 'https://proteins.plus/api/v2';
-const H = { 'Accept': 'application/json', 'Content-Type': 'application/json' };
+const H = { Accept: 'application/json', 'Content-Type': 'application/json' };
+// AlphaFold blocks requests without a User-Agent; PDBe/RCSB are fine with one too.
+const UA = 'Disease2Target/1.0 (academic research; contact via app)';
 
-export interface Pocket {
-  name: string;
-  drugEst: number;      // 0..1 transparent druggability estimate
-  volume: number;       // Å³
-  enclosure: number;    // 0..1 (buriedness)
-  hydrophobicity: number;
-  depth: number;        // Å
-  druggable: boolean;   // drugEst >= 0.5
+// ── public result types (consumed by the panel) ──
+export interface StructureRef {
+  kind: 'experimental' | 'alphafold' | 'none';
+  id: string | null;            // PDB id (experimental) or UniProt accession (AlphaFold)
+  label: string;                // human-readable provenance, e.g. "Experimental · X-ray 1.70 Å · PDB 7VVB"
+  method: string | null;        // experimental method, when known
+  resolution: number | null;    // Å (experimental)
+  plddt: number | null;         // mean pLDDT 0–100 (AlphaFold model confidence)
+  url: string | null;           // structure file URL used
 }
-export interface PocketDruggability {
+export interface PocketRow {
+  name: string;                 // DoGSite pocket id, e.g. "P_1"
+  volume: number;               // Å³
+  enclosure: number;            // 0..1 (buriedness; higher = more enclosed)
+  depth: number;                // Å
+  hydrophobicity: number;       // 0..1 (lipophilic character)
+  surfVol: number;              // Å⁻¹ surface/volume (shape: lower = more compact/enclosed)
+  primary: boolean;             // the largest enclosed pocket among those shown
+}
+export interface PocketStructure {
   gene: string;
   uniprot: string | null;
-  source: string;                 // 'AlphaFold O43175' etc.
-  pockets: Pocket[];              // top-level pockets, ranked by drugEst
-  bestDrug: number;               // max pocket drugEst
-  nDruggable: number;             // count of druggable pockets
+  structure: StructureRef;
+  engine: string;               // "DoGSite3 (proteins.plus)" | "DoGSite3 v1.2.0 (local)"
+  pockets: PocketRow[];         // top 3 by volume
+  totalPockets: number;         // total top-level pockets detected
   note: string;
   error?: string;
 }
 
+// A raw descriptor row, common to both engines.
+interface RawPocket { name: string; volume: number; enclosure: number; depth: number; hydrophobicity: number; surfVol: number; }
+
 const jget = async (path: string): Promise<any> => {
-  const r = await fetch(BASE + path, { headers: { 'Accept': 'application/json' } });
+  const r = await fetch(BASE + path, { headers: { Accept: 'application/json' } });
   if (!r.ok) throw new Error(`GET ${path} → ${r.status}`);
   return r.json();
 };
@@ -51,9 +68,10 @@ const jpost = async (path: string, body: any): Promise<any> => {
 };
 const sleep = (ms: number) => new Promise(res => setTimeout(res, ms));
 const num = (v: any) => { const n = Number(v); return isFinite(n) ? n : 0; };
-const clip = (x: number) => Math.max(0, Math.min(1, x));
+const r0 = (x: number) => Math.round(x);
+const r1 = (x: number) => Math.round(x * 10) / 10;
+const r2 = (x: number) => Math.round(x * 100) / 100;
 
-// Poll a proteins.plus job resource until it succeeds. Cached jobs return instantly.
 async function pollJob(path: string, tries = 40, waitMs = 3000): Promise<any> {
   for (let i = 0; i < tries; i++) {
     const j = await jget(path);
@@ -65,56 +83,203 @@ async function pollJob(path: string, tries = 40, waitMs = 3000): Promise<any> {
   throw new Error('job timed out');
 }
 
-// Resolve a gene symbol → reviewed human UniProt accession (for the AlphaFold model).
+// ── gene → reviewed human UniProt accession ──
 export async function geneToUniprot(symbol: string): Promise<string | null> {
   const q = encodeURIComponent(`gene_exact:${symbol} AND organism_id:9606 AND reviewed:true`);
   const r = await fetch(`https://rest.uniprot.org/uniprotkb/search?query=${q}&fields=accession&format=json&size=1`,
-    { headers: { 'Accept': 'application/json' } });
+    { headers: { Accept: 'application/json' } });
   if (!r.ok) return null;
   const d: any = await r.json();
   return d?.results?.[0]?.primaryAccession ?? null;
 }
 
-// Transparent per-pocket druggability from DoGSite's own descriptors (literature
-// determinants: volume, enclosure/buriedness, hydrophobicity, depth).
-function drugEstimate(p: any): number {
-  const vol = num(p.volume), enc = num(p.enclosure), hyd = num(p.hydrophobicity), depth = num(p.depth);
-  return Math.round((0.35 * clip((vol - 100) / 500) + 0.30 * clip(enc) + 0.20 * clip(hyd) + 0.15 * clip((depth - 8) / 12)) * 100) / 100;
+// ── structure resolution: experimental PDB → AlphaFold → none ──
+// Best experimental structure via PDBe "best_structures" (ranked by coverage/resolution).
+async function bestExperimental(uniprot: string): Promise<StructureRef | null> {
+  try {
+    const r = await fetch(`https://www.ebi.ac.uk/pdbe/graph-api/mappings/best_structures/${uniprot}`,
+      { headers: { Accept: 'application/json', 'User-Agent': UA } });
+    if (!r.ok) return null;
+    const j: any = await r.json();
+    const rows: any[] = j?.[uniprot] || [];
+    if (!rows.length) return null;
+    const top = rows[0]; // already ranked best-first
+    const pdb = String(top.pdb_id || '').toUpperCase();
+    if (!pdb) return null;
+    const res = typeof top.resolution === 'number' ? top.resolution : null;
+    const method = top.experimental_method || null;
+    const label = `Experimental · ${method || 'structure'}${res != null ? ` · ${res.toFixed(2)} Å` : ''} · PDB ${pdb}`;
+    return { kind: 'experimental', id: pdb, label, method, resolution: res, plddt: null,
+      url: `https://files.rcsb.org/download/${pdb}.pdb` };
+  } catch { return null; }
 }
 
-// Full pocket-druggability run for one gene (via its AlphaFold model on proteins.plus).
-export async function getPocketDruggability(gene: string, uniprotIn?: string | null): Promise<PocketDruggability> {
-  const base: PocketDruggability = { gene, uniprot: uniprotIn ?? null, source: '', pockets: [], bestDrug: 0, nDruggable: 0, note: '' };
+// AlphaFold model (the API needs a User-Agent; it returns the exact file URL + mean pLDDT).
+async function alphaFold(uniprot: string): Promise<StructureRef | null> {
+  try {
+    const r = await fetch(`https://alphafold.ebi.ac.uk/api/prediction/${uniprot}`,
+      { headers: { Accept: 'application/json', 'User-Agent': UA } });
+    if (!r.ok) return null;
+    const arr: any[] = await r.json();
+    const e = arr?.[0];
+    if (!e?.pdbUrl) return null;
+    const plddt = typeof e.globalMetricValue === 'number' ? Math.round(e.globalMetricValue) : null;
+    const label = `AlphaFold model${plddt != null ? ` · mean pLDDT ${plddt}` : ''} · ${uniprot}`;
+    return { kind: 'alphafold', id: uniprot, label, method: 'AlphaFold (predicted)', resolution: null, plddt, url: e.pdbUrl };
+  } catch { return null; }
+}
+
+async function resolveStructure(uniprot: string): Promise<StructureRef> {
+  return (await bestExperimental(uniprot))
+    || (await alphaFold(uniprot))
+    || { kind: 'none', id: null, label: 'No experimental or AlphaFold structure available', method: null, resolution: null, plddt: null, url: null };
+}
+
+// ── engine A: proteins.plus v2 (DoGSite3 server-side) — the portable default ──
+async function pocketsViaProteinsPlus(structure: StructureRef): Promise<RawPocket[]> {
+  // upload the chosen structure (by PDB code, or AlphaFold-by-UniProt)
+  const uploadBody = structure.kind === 'experimental'
+    ? { pdb_code: structure.id, use_cache: true }
+    : { uniprot_code: structure.id, use_cache: true };
+  const up = await jpost('/molecule_handler/upload/', uploadBody);
+  const upJob = await pollJob(`/molecule_handler/upload/jobs/${up.job_id}/`);
+  const proteinId = upJob.output_protein;
+  if (!proteinId) throw new Error('structure upload produced no protein');
+
+  const ds = await jpost('/dogsite/', { protein_id: String(proteinId), calc_subpockets: false, ligand_bias: false });
+  const dsJob = await pollJob(`/dogsite/jobs/${ds.job_id}/`);
+  const info = await jget(`/dogsite/info/${dsJob.dogsite_info}/`);
+  const list: any[] = Array.isArray(info.info) ? info.info : [];
+  return list
+    .filter(p => p && typeof p.name === 'string' && /^P_\d+$/.test(p.name)) // top-level pockets only
+    .map(p => ({
+      name: p.name, volume: num(p.volume), enclosure: num(p.enclosure),
+      depth: num(p.depth), hydrophobicity: num(p.hydrophobicity), surfVol: num(p['surf/vol']),
+    }));
+}
+
+// ── engine B: local DoGSite3 v1.2.0 binary (optional; server/Docker only) ──
+export const DOGSITE3_BIN = process.env.DOGSITE3_BIN || '';
+export const DOGSITE3_ENABLED = process.env.USE_DOGSITE3 === '1' && !!DOGSITE3_BIN;
+
+async function pocketsViaLocalBinary(structure: StructureRef): Promise<RawPocket[]> {
+  // Node-only deps, imported lazily so this module stays importable elsewhere.
+  const { spawn } = await import('node:child_process');
+  const { promises: fs } = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+
+  const workDir = await fs.mkdtemp(path.join(os.tmpdir(), `dogsite3-`));
+  try {
+    // fetch the structure file (RCSB for experimental, AlphaFold URL for the model)
+    const sr = await fetch(structure.url!, { headers: { 'User-Agent': UA } });
+    if (!sr.ok) throw new Error(`structure download ${structure.url} → ${sr.status}`);
+    const ext = structure.kind === 'experimental' ? 'pdb' : 'pdb';
+    const inFile = path.join(workDir, `in.${ext}`);
+    await fs.writeFile(inFile, await sr.text(), 'utf8');
+
+    const outBase = path.join(workDir, 'out');
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn(DOGSITE3_BIN, ['--proteinFile', inFile, '--writeDescToFile', '-o', outBase],
+        { cwd: path.dirname(DOGSITE3_BIN) });
+      let stderr = '';
+      child.stderr.on('data', d => (stderr += d.toString()));
+      child.on('error', reject);
+      child.on('close', code => (code === 0 ? resolve() : reject(new Error(`dogsite3 exit ${code}: ${stderr.slice(0, 200)}`))));
+    });
+
+    // find + parse the descriptor TSV (header-driven, so column order changes don't break us)
+    const files = await fs.readdir(workDir);
+    const descName = files.find(f => f.startsWith('out') && /desc|\.txt$|\.tsv$/i.test(f));
+    if (!descName) throw new Error(`no descriptor file (have: ${files.join(', ')})`);
+    const text = await fs.readFile(path.join(workDir, descName), 'utf8');
+    return parseDescriptorTSV(text);
+  } finally {
+    fs.rm(workDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+// Header-driven parse of the DoGSite3 `--writeDescToFile` TSV (verified against v1.2.0).
+export function parseDescriptorTSV(text: string): RawPocket[] {
+  const lines = text.split(/\r?\n/).filter(l => l.trim().length);
+  if (!lines.length) return [];
+  const header = lines[0].split('\t').map(h => h.trim());
+  const col = (name: string) => header.indexOf(name);
+  const ci = {
+    name: col('name'), volume: col('volume'), enclosure: col('enclosure'),
+    depth: col('depth'), hydrophobicity: col('hydrophobicity'), surfVol: col('surf/vol'),
+  };
+  if (ci.name < 0 || ci.volume < 0) return [];
+  const out: RawPocket[] = [];
+  for (let i = 1; i < lines.length; i++) {
+    const c = lines[i].split('\t');
+    const name = (c[ci.name] || '').trim();
+    if (!/^P_\d+$/.test(name)) continue; // top-level pockets only
+    out.push({
+      name, volume: num(c[ci.volume]), enclosure: num(c[ci.enclosure]),
+      depth: num(c[ci.depth]), hydrophobicity: num(c[ci.hydrophobicity]), surfVol: num(c[ci.surfVol]),
+    });
+  }
+  return out;
+}
+
+// ── shape the raw pockets into the top-3 display rows ──
+function shapePockets(raw: RawPocket[]): { rows: PocketRow[]; total: number } {
+  const byVolume = [...raw].sort((a, b) => b.volume - a.volume);
+  const top3 = byVolume.slice(0, 3);
+  // "primary" = the largest ENCLOSED pocket among those shown (enclosure ≥ 0.5);
+  // if none of the shown pockets is enclosed, fall back to the largest by volume.
+  const enclosedShown = top3.filter(p => p.enclosure >= 0.5).sort((a, b) => b.volume - a.volume);
+  const primaryName = (enclosedShown[0] ?? top3[0])?.name ?? null;
+  const rows = top3.map(p => ({
+    name: p.name, volume: r0(p.volume), enclosure: r2(p.enclosure), depth: r1(p.depth),
+    hydrophobicity: r2(p.hydrophobicity), surfVol: r2(p.surfVol), primary: p.name === primaryName,
+  }));
+  return { rows, total: raw.length };
+}
+
+// ── cache (DoGSite3 is deterministic per structure) ──
+const cache = new Map<string, PocketStructure>();
+const cacheKey = (engine: string, s: StructureRef) => `${engine}::${s.kind}:${s.id}`;
+
+// ── main entry ──
+export async function getPocketStructure(gene: string, uniprotIn?: string | null): Promise<PocketStructure> {
+  const base: PocketStructure = {
+    gene, uniprot: uniprotIn ?? null, engine: DOGSITE3_ENABLED ? 'DoGSite3 v1.2.0 (local)' : 'DoGSite3 (proteins.plus)',
+    structure: { kind: 'none', id: null, label: '', method: null, resolution: null, plddt: null, url: null },
+    pockets: [], totalPockets: 0, note: '',
+  };
   try {
     const uniprot = uniprotIn || await geneToUniprot(gene);
-    if (!uniprot) return { ...base, error: `Could not resolve ${gene} to a UniProt accession` };
-    base.uniprot = uniprot; base.source = `AlphaFold ${uniprot}`;
+    if (!uniprot) {
+      base.structure.label = 'No structure available — could not resolve to a UniProt entry';
+      base.note = `No structure available — pocket analysis not possible for ${gene}.`;
+      return base;
+    }
+    base.uniprot = uniprot;
 
-    // 1) upload the AlphaFold model by UniProt code
-    const up = await jpost('/molecule_handler/upload/', { uniprot_code: uniprot, use_cache: true });
-    const upJob = await pollJob(`/molecule_handler/upload/jobs/${up.job_id}/`);
-    const proteinId = upJob.output_protein;
-    if (!proteinId) return { ...base, error: 'upload produced no protein' };
+    const structure = await resolveStructure(uniprot);
+    base.structure = structure;
 
-    // 2) submit DoGSiteScorer, 3) poll, 4) fetch descriptors
-    const ds = await jpost('/dogsite/', { protein_id: String(proteinId), calc_subpockets: true, ligand_bias: false });
-    const dsJob = await pollJob(`/dogsite/jobs/${ds.job_id}/`);
-    const info = await jget(`/dogsite/info/${dsJob.dogsite_info}/`);
-    const list: any[] = Array.isArray(info.info) ? info.info : [];
+    // explicit no-structure case — never render as a zero/blank score
+    if (structure.kind === 'none') {
+      base.note = `No experimental or AlphaFold structure available for ${gene} (${uniprot}) — pocket analysis not possible.`;
+      return base;
+    }
 
-    // top-level pockets only (name "P_n"; subpockets are "P_n_m")
-    const pockets: Pocket[] = list
-      .filter(p => p && typeof p.name === 'string' && (p.name.match(/_/g) || []).length === 1 && p.volume != null)
-      .map(p => {
-        const drugEst = drugEstimate(p);
-        return { name: p.name, drugEst, volume: Math.round(num(p.volume)), enclosure: Math.round(num(p.enclosure) * 100) / 100, hydrophobicity: Math.round(num(p.hydrophobicity) * 100) / 100, depth: Math.round(num(p.depth) * 10) / 10, druggable: drugEst >= 0.5 };
-      })
-      .sort((a, b) => b.drugEst - a.drugEst);
+    const key = cacheKey(base.engine, structure);
+    const hit = cache.get(key);
+    if (hit) return { ...hit, gene, uniprot };
 
-    base.pockets = pockets;
-    base.bestDrug = pockets.length ? pockets[0].drugEst : 0;
-    base.nDruggable = pockets.filter(p => p.druggable).length;
-    base.note = `${pockets.length} pockets · ${base.nDruggable} druggable · DoGSiteScorer pockets; INTERIM descriptor-based estimate (DoGSite's real drugScore is available via the v1 API — switch pending; treat scores as provisional)`;
+    const raw = DOGSITE3_ENABLED ? await pocketsViaLocalBinary(structure) : await pocketsViaProteinsPlus(structure);
+    const { rows, total } = shapePockets(raw);
+    base.pockets = rows;
+    base.totalPockets = total;
+    base.note = total === 0
+      ? `No pockets detected on the ${structure.kind === 'experimental' ? 'experimental' : 'AlphaFold'} structure.`
+      : `${total} pocket${total === 1 ? '' : 's'} detected · showing top ${rows.length} by volume · DoGSite3 descriptors (descriptive only — not a druggability score).`;
+
+    cache.set(key, { ...base });
     return base;
   } catch (e: any) {
     return { ...base, error: String(e?.message || e).slice(0, 200) };
