@@ -80,7 +80,8 @@ export const NORM = {
 } as const;
 
 // weighted-arithmetic weights (design §4)
-export const WEIGHTS: Record<keyof typeof NORM, number> = {
+export type ScoreWeights = Record<keyof typeof NORM, number>;
+export const WEIGHTS: ScoreWeights = {
   genetic: 1.0, mutation: 0.8, dysreg: 1.0, dependency: 1.0, tractability: 1.0, tissue: 0.5,
 };
 
@@ -129,7 +130,11 @@ function eligibility(g: FunnelGene, cfg: EligibilityConfig): { ok: boolean; reas
 // axes that have data, minus bounded risk deductions. Mechanism router: tumor-suppressors
 // are routed to two-sided dysregulation logic (already two-sided in NORM.dysreg); the
 // oncogene/TSG tag is honored when present but never gates.
-function scoreGene(g: FunnelGene): ScoredGene {
+// `weights` defaults to the module WEIGHTS; the benchmark harness passes an override
+// so it can ablate/fit weights against THE REAL engine (a weight of 0 excludes that axis
+// from both numerator and denominator — the correct hold-out semantic). Weights never
+// affect eligibility, only the Stage-2 score, so ranking sweeps stay pure.
+function scoreGene(g: FunnelGene, weights: ScoreWeights = WEIGHTS): ScoredGene {
   const axisScores: Record<string, number | null> = {};
   let wsum = 0, acc = 0, present = 0;
   const scoredKeys = Object.keys(NORM) as (keyof typeof NORM)[];
@@ -137,7 +142,8 @@ function scoreGene(g: FunnelGene): ScoredGene {
     const s = NORM[k](g);
     axisScores[k] = s;
     if (s == null) continue;
-    const w = WEIGHTS[k];
+    const w = weights[k];
+    if (w === 0) continue; // weight 0 = axis held out (ablation) — exclude from score AND completeness
     wsum += w; acc += w * s; present++;
   }
   const base = wsum > 0 ? acc / wsum : null;
@@ -155,7 +161,11 @@ function scoreGene(g: FunnelGene): ScoredGene {
   return { gene: g, eligible: true, reasons: [], axisScores, base, penalties, score, completeness, flags };
 }
 
-export function runFunnel(genes: FunnelGene[], cfg: EligibilityConfig = DEFAULT_ELIGIBILITY): FunnelResult {
+export function runFunnel(
+  genes: FunnelGene[],
+  cfg: EligibilityConfig = DEFAULT_ELIGIBILITY,
+  weights: ScoreWeights = WEIGHTS,
+): FunnelResult {
   const total = genes.length;
   let afterNexus = 0, afterTractability = 0;
   const eligible: ScoredGene[] = [];
@@ -164,7 +174,7 @@ export function runFunnel(genes: FunnelGene[], cfg: EligibilityConfig = DEFAULT_
     if (e.passNexus) afterNexus++;
     if (e.passNexus && e.passTract) afterTractability++;
     if (!e.ok) continue;
-    const s = scoreGene(g);
+    const s = scoreGene(g, weights);
     s.reasons = e.reasons;
     eligible.push(s);
   }
