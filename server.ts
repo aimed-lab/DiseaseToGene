@@ -4,9 +4,12 @@ import path from "path";
 import fs from "fs";
 import { createClient } from "@supabase/supabase-js";
 import { createHash } from "crypto";
-import { fetchCohortMutations, fetchDruggability, fetchClinical, fetchLiterature, fetchPubmedLiterature, resolveCbioStudy } from "./evidenceProviders";
-import { getPocketStructure } from "./dogsiteService";
-import * as ordsSvc from "./ordsService"; // pure fetch client → safe to bundle for Vercel
+import { fetchCohortMutations, fetchDruggability, fetchClinical, fetchLiterature, fetchPubmedLiterature, resolveCbioStudy } from "./evidenceProviders.js";
+import { getPocketStructure } from "./dogsiteService.js";
+import * as ordsSvc from "./ordsService.js"; // pure fetch client → safe to bundle for Vercel
+// NOTE: relative imports carry an explicit .js extension (Node-ESM requirement). On Vercel
+// the server ships as unbundled ESM, so extensionless specifiers fail with ERR_MODULE_NOT_FOUND.
+// .js resolves to the .ts source under tsx / esbuild / tsc alike.
 
 // ── Supabase admin client (service role — server-side only, never sent to browser) ──
 const supabaseAdmin = (() => {
@@ -647,7 +650,7 @@ function setupRoutes() {
     const key = cacheKey('clinical', `${gene}::${disease}`);
     const cached = await readApiCache(key); if (cached) return res.json(cached.body);
     try {
-      const { fetchClinical } = await import('./evidenceProviders');
+      const { fetchClinical } = await import('./evidenceProviders.js');
       const data = await fetchClinical(gene, disease);
       await writeApiCache(key, { status: 200, body: { gene, data }, contentType: 'application/json' });
       res.json({ gene, data });
@@ -660,7 +663,7 @@ function setupRoutes() {
     const key = cacheKey('literature', `${gene}::${disease}::both`);
     const cached = await readApiCache(key); if (cached) return res.json(cached.body);
     try {
-      const { fetchLiterature, fetchPubmedLiterature } = await import('./evidenceProviders');
+      const { fetchLiterature, fetchPubmedLiterature } = await import('./evidenceProviders.js');
       const [pubmed, epmc] = await Promise.all([fetchPubmedLiterature(gene, disease), fetchLiterature(gene, disease)]);
       const body = { gene, pubmed, epmc };
       await writeApiCache(key, { status: 200, body, contentType: 'application/json' });
