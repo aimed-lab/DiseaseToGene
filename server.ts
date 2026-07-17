@@ -6,6 +6,7 @@ import { createClient } from "@supabase/supabase-js";
 import { createHash } from "crypto";
 import { fetchCohortMutations, fetchDruggability, fetchClinical, fetchLiterature, fetchPubmedLiterature, resolveCbioStudy } from "./evidenceProviders";
 import { getPocketStructure } from "./dogsiteService";
+import * as ordsSvc from "./ordsService"; // pure fetch client → safe to bundle for Vercel
 
 // ── Supabase admin client (service role — server-side only, never sent to browser) ──
 const supabaseAdmin = (() => {
@@ -170,6 +171,19 @@ async function oracleSvc(): Promise<any> {
   _oracleSvc = await import(spec);
   return _oracleSvc;
 }
+
+// ── Read layer switch: on Vercel (no SQL*Net to Oracle) reads go through ORDS over
+// HTTPS; internally they use node-oracledb. WRITES always use oracleSvc (ORDS is
+// read-only), so harvest/save/delete stay on the internal path. Same function
+// signatures + return shapes, so the endpoints below don't care which is used. ──
+const ordsReadEnabled = (): boolean =>
+  process.env.USE_ORDS === '1' && !!process.env.ORDS_BASE_URL;
+async function readSvc(): Promise<any> {
+  // ordsService is statically imported (above) so it bundles into the Vercel function.
+  // oracleService stays a DYNAMIC import to keep the native oracledb driver out of the bundle.
+  return ordsReadEnabled() ? ordsSvc : oracleSvc();
+}
+const readStoreEnabled = (): boolean => ordsReadEnabled() || oracleStoreEnabled();
 
 // ── Module-level Express app — exported for Vercel serverless entry point ──────
 export const app = express();
@@ -377,9 +391,9 @@ function setupRoutes() {
 
   // List snapshots (metadata only)
   app.get("/api/snapshots", requireUser, async (req, res) => {
-    if (!oracleStoreEnabled()) return res.status(503).json({ error: "Oracle store disabled" });
+    if (!readStoreEnabled()) return res.status(503).json({ error: "Oracle store disabled" });
     try {
-      const svc = await oracleSvc();
+      const svc = await readSvc();
       res.json(await svc.listSnapshots(req.query.diseaseId as string | undefined));
     } catch (e: any) {
       res.status(502).json({ error: e.message });
@@ -388,9 +402,9 @@ function setupRoutes() {
 
   // Load one full snapshot (with targets)
   app.get("/api/snapshots/:id", requireUser, async (req, res) => {
-    if (!oracleStoreEnabled()) return res.status(503).json({ error: "Oracle store disabled" });
+    if (!readStoreEnabled()) return res.status(503).json({ error: "Oracle store disabled" });
     try {
-      const svc = await oracleSvc();
+      const svc = await readSvc();
       const snap = await svc.getSnapshot(Number(req.params.id));
       if (!snap) return res.status(404).json({ error: "Snapshot not found" });
       res.json(snap);
@@ -413,9 +427,9 @@ function setupRoutes() {
 
   // Per-gene scores for a snapshot (Rankings dashboard)
   app.get("/api/snapshots/:id/scores", requireUser, async (req, res) => {
-    if (!oracleStoreEnabled()) return res.status(503).json({ error: "Oracle store disabled" });
+    if (!readStoreEnabled()) return res.status(503).json({ error: "Oracle store disabled" });
     try {
-      const svc = await oracleSvc();
+      const svc = await readSvc();
       res.json(await svc.listRankingScores(Number(req.params.id)));
     } catch (e: any) {
       res.status(502).json({ error: e.message });
@@ -424,9 +438,9 @@ function setupRoutes() {
 
   // Evidence rows for a snapshot (Gene × Source matrix)
   app.get("/api/snapshots/:id/evidence", requireUser, async (req, res) => {
-    if (!oracleStoreEnabled()) return res.status(503).json({ error: "Oracle store disabled" });
+    if (!readStoreEnabled()) return res.status(503).json({ error: "Oracle store disabled" });
     try {
-      const svc = await oracleSvc();
+      const svc = await readSvc();
       res.json(await svc.snapshotEvidence(Number(req.params.id)));
     } catch (e: any) {
       res.status(502).json({ error: e.message });
@@ -447,9 +461,9 @@ function setupRoutes() {
 
   // Gene symbols that have stored evidence (for the EVIDENCE badge)
   app.get("/api/evidence/genes", requireUser, async (req, res) => {
-    if (!oracleStoreEnabled()) return res.status(503).json({ error: "Oracle store disabled" });
+    if (!readStoreEnabled()) return res.status(503).json({ error: "Oracle store disabled" });
     try {
-      const svc = await oracleSvc();
+      const svc = await readSvc();
       res.json(await svc.evidenceGeneSymbols(req.query.diseaseId as string | undefined));
     } catch (e: any) {
       res.status(502).json({ error: e.message });
@@ -458,9 +472,9 @@ function setupRoutes() {
 
   // Evidence rows for one gene (for the Stored Evidence panel)
   app.get("/api/evidence", requireUser, async (req, res) => {
-    if (!oracleStoreEnabled()) return res.status(503).json({ error: "Oracle store disabled" });
+    if (!readStoreEnabled()) return res.status(503).json({ error: "Oracle store disabled" });
     try {
-      const svc = await oracleSvc();
+      const svc = await readSvc();
       res.json(await svc.evidenceForGene(req.query.gene as string));
     } catch (e: any) {
       res.status(502).json({ error: e.message });
