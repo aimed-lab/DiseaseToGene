@@ -26,6 +26,7 @@ type GeneFeature = {
   drugLabel: string | null;
   axis: Record<string, number | null>;   // normalized 0–1 per axis (ranking)
   raw: Record<string, number | null>;     // raw value per filter field (filtering, real units)
+  source?: string;                         // provenance: 'snapshot' | 'manual' | 'CSV: …' | 'paper: …'
 };
 
 const safeParse = (s: any) => { try { return typeof s === 'string' ? JSON.parse(s) : s; } catch { return null; } };
@@ -63,11 +64,44 @@ export const FunnelView: React.FC<Props> = ({ theme = 'light' }) => {
   const [resultsOpen, setResultsOpen] = useState(false);
   const [drawerGene, setDrawerGene] = useState<string | null>(null);
   const [infoTier, setInfoTier] = useState<string | null>(null);   // ⓘ tier explainer sidebar
+  // Extra candidate genes added on top of the snapshot (generation from other sources).
+  const [addedGenes, setAddedGenes] = useState<{ symbol: string; source: string }[]>([]);
+  const [addOpen, setAddOpen] = useState(false);        // "add candidates" panel toggle
+  const [addText, setAddText] = useState('');           // manual / paper paste box
+  const [addSource, setAddSource] = useState('manual'); // which source tab
 
   const resetGates = () => {
     setThresholds(Object.fromEntries(HEADLINE_AXES.map(a => [a.key, a.filter.default ?? 0])));
     setCats({}); setHardOn(Object.fromEntries(HEADLINE_AXES.map(a => [a.key, false]))); setRequirePresent({});
   };
+
+  // ── candidate generation: add genes from other sources (provenance tracked) ──
+  const mergeGenes = (symbols: string[], source: string) => {
+    const syms = symbols.map(s => (s || '').trim().toUpperCase()).filter(Boolean);
+    if (!syms.length) return;
+    setAddedGenes(prev => {
+      const have = new Set(prev.map(g => g.symbol.toUpperCase()));
+      return [...prev, ...syms.filter(s => !have.has(s)).map(symbol => ({ symbol, source }))];
+    });
+  };
+  const addFromText = () => {
+    // manual paste or gene list copied from a paper — split on any separator
+    const src = addSource === 'paper' ? 'paper' : 'manual';
+    mergeGenes(addText.split(/[\s,;]+/), src);
+    setAddText('');
+  };
+  const addFromCsv = async (file: File | undefined) => {
+    if (!file) return;
+    const text = await file.text();
+    const syms: string[] = [];
+    for (const line of text.split(/\r?\n/)) {
+      const cell = (line.split(/[,\t;]/)[0] || '').trim();
+      if (!cell || /^(gene|symbol|gene_symbol|name)$/i.test(cell)) continue; // skip header
+      if (/^[A-Za-z0-9.\-]{2,20}$/.test(cell)) syms.push(cell);
+    }
+    mergeGenes(syms, `CSV: ${file.name}`);
+  };
+  const clearAdded = () => setAddedGenes([]);
 
   useEffect(() => {
     let active = true;
@@ -117,6 +151,7 @@ export const FunnelView: React.FC<Props> = ({ theme = 'light' }) => {
             tissue: num(r.tau_tissue),
           },
           raw: { genetic, frequency, log2fc, chronos, loeuf, trial_count, velocity },
+          source: 'snapshot',
         };
       });
       setFeatures(feats); setLoading(false);
@@ -128,11 +163,29 @@ export const FunnelView: React.FC<Props> = ({ theme = 'light' }) => {
   const rawOf = (field: string | undefined, f: GeneFeature) => (field ? f.raw[field] ?? null : null);
   const categoryOf = (key: string, f: GeneFeature) => (key === 'druggability' ? f.drugLabel : null);
 
+  // Extra candidates (paper / CSV / manual) as feature rows with NO stored evidence yet —
+  // they enter the universe (nothing is lost) and rank low until enriched. Deduped against
+  // the snapshot and each other (case-insensitive).
+  const addedFeatures = useMemo<GeneFeature[]>(() => {
+    const have = new Set(features.map(f => f.gene_symbol.toUpperCase()));
+    const seen = new Set<string>();
+    const out: GeneFeature[] = [];
+    for (const { symbol, source } of addedGenes) {
+      const sym = (symbol || '').trim().toUpperCase();
+      if (!sym || have.has(sym) || seen.has(sym)) continue;
+      seen.add(sym);
+      out.push({ gene_symbol: sym, rank: null, getScore: null, drugLabel: null, axis: {}, raw: {}, source });
+    }
+    return out;
+  }, [features, addedGenes]);
+  // The funnel universe = snapshot genes + added candidates.
+  const universe = useMemo(() => [...features, ...addedFeatures], [features, addedFeatures]);
+
   const available = useMemo(() => {
     const a: Record<string, boolean> = {};
-    for (const ax of AXES) a[ax.key] = features.some(f => valueOf(ax.key, f) != null);
+    for (const ax of AXES) a[ax.key] = universe.some(f => valueOf(ax.key, f) != null);
     return a;
-  }, [features]);
+  }, [universe]);
 
   const passesGate = (ax: AxisDef, f: GeneFeature): boolean => {
     if (!hardOn[ax.key] || !available[ax.key]) return true;
@@ -149,18 +202,18 @@ export const FunnelView: React.FC<Props> = ({ theme = 'light' }) => {
     return ax.filter.op === '<=' ? v <= th : v >= th;
   };
 
-  // ── TWO-STAGE engine (funnelEngine.ts, per Disease2Target_App_Design.md) ──────
-  // Stage 1 eligibility (permissive OR-nexus + optional tractability) removes only
-  // out-of-scope genes; Stage 2 ranks the rest by a weighted-ARITHMETIC composite of
-  // externally-normalized axes minus bounded risk penalties. This replaces the old
-  // strict hard-gate cascade + within-survivor harmonic composite, which — verified
-  // on 12 canonical PDAC genes — collapsed to zero and deleted KRAS at the LOEUF gate.
+  // ── Permissive funnel (funnelEngine.ts for scoring) ──────────────────────────
+  // No candidate is dropped by default: every gene is scored by the weighted-ARITHMETIC
+  // composite (externally-normalized axes minus bounded risk penalties). Narrowing happens
+  // ONLY through the per-tier gates the user enables, applied as a progressive cascade in
+  // registry tier order — so the funnel is transparent (each drop is attributable to a gate
+  // the user turned on) and reversible (open the gates to reach any gene).
   const result = useMemo(() => {
-    const total = features.length;
-    const genes: FunnelGene[] = features.map(f => ({
+    const total = universe.length;
+    const genes: FunnelGene[] = universe.map(f => ({
       gene_symbol: f.gene_symbol,
-      otOverall: f.getScore,               // OT overall — ELIGIBILITY nexus only (admits OT-linked genes like SRC)
-      geneticAssoc: f.raw.genetic ?? null,  // OT genetic_association datatype — the genetic SCORE axis (G1), no double-count
+      otOverall: f.getScore,
+      geneticAssoc: f.raw.genetic ?? null,  // OT genetic_association datatype — genetic SCORE axis (G1)
       frequency: f.raw.frequency ?? null,
       log2fc: f.raw.log2fc ?? null,
       chronos: f.raw.chronos ?? null,
@@ -170,32 +223,32 @@ export const FunnelView: React.FC<Props> = ({ theme = 'light' }) => {
       velocity: f.raw.velocity ?? null,
       tissueTau: f.axis.tissue ?? null,
     }));
-    // Eligibility config follows the funnel's own gate controls where the user has
-    // enabled them, otherwise the design defaults. The genetic/mutation/dependency
-    // controls feed the OR-nexus; the druggability toggle turns on the tractability gate.
-    const cfg: EligibilityConfig = {
-      nexus: true,
-      otMin: hardOn['genetic'] ? (thresholds['genetic'] ?? DEFAULT_ELIGIBILITY.otMin) : DEFAULT_ELIGIBILITY.otMin,
-      mutMin: hardOn['mutation'] ? (thresholds['mutation'] ?? DEFAULT_ELIGIBILITY.mutMin) : DEFAULT_ELIGIBILITY.mutMin,
-      depMax: hardOn['dependency'] ? (thresholds['dependency'] ?? DEFAULT_ELIGIBILITY.depMax) : DEFAULT_ELIGIBILITY.depMax,
-      tractability: !!hardOn['druggability'],
-    };
+    // PERMISSIVE by design — score/rank EVERY gene, drop NONE (nexus off). The old
+    // OR-nexus pre-filter (which silently cut 7,332 → 1,498 before any gate) is gone:
+    // the funnel now narrows ONLY through the per-tier gates the user turns on, so no
+    // candidate is ever lost by default and a user can open the gates to reach any gene.
+    const cfg: EligibilityConfig = { nexus: false, otMin: 0, mutMin: 0, depMax: 1, tractability: false };
     const eng = runFunnel(genes, cfg);
-    const byGene = new Map(features.map(f => [f.gene_symbol, f] as const));
-    const shortlist = eng.ranked
-      .filter(s => byGene.has(s.gene.gene_symbol))
-      .map(s => ({ f: byGene.get(s.gene.gene_symbol)!, composite: s.score, completeness: s.completeness, axisScores: s.axisScores }));
-    // tierCounts drive the narrowing-flow bars: the OR-nexus axes show the post-nexus
-    // survivor count, druggability shows post-tractability, and the score-only axes
-    // show the eligible set (they rank, they do not narrow).
+    const byGene = new Map(universe.map(f => [f.gene_symbol, f] as const));
+
+    // Progressive per-tier gate cascade (registry tier order): a tier narrows the running
+    // survivor set only when ITS gate is enabled; an open gate passes everything through —
+    // so tier counts drop at gates the user opened and stay flat where gates are off.
+    const ordered = [...HEADLINE_AXES].sort((a, b) => a.tier - b.tier);
     const tierCounts: Record<string, number> = {};
-    for (const ax of HEADLINE_AXES) {
-      tierCounts[ax.key] = (ax.key === 'genetic' || ax.key === 'mutation' || ax.key === 'dependency')
-        ? eng.stage1.afterNexus
-        : ax.key === 'druggability' ? eng.stage1.afterTractability : eng.eligibleCount;
+    let survivors = universe;
+    for (const ax of ordered) {
+      survivors = survivors.filter(f => passesGate(ax, f));
+      tierCounts[ax.key] = survivors.length;
     }
+    const survivingSet = new Set(survivors.map(f => f.gene_symbol));
+
+    // Shortlist = genes passing every active gate, ranked by the composite score.
+    const shortlist = eng.ranked
+      .filter(s => survivingSet.has(s.gene.gene_symbol) && byGene.has(s.gene.gene_symbol))
+      .map(s => ({ f: byGene.get(s.gene.gene_symbol)!, composite: s.score, completeness: s.completeness, axisScores: s.axisScores }));
     return { total, tierCounts, shortlist };
-  }, [features, thresholds, cats, hardOn, requirePresent, available]);
+  }, [universe, thresholds, cats, hardOn, requirePresent, available]);
 
   // ── theme tokens (match the design language) ────────────────────────────────
   const t = isDark
@@ -298,12 +351,24 @@ export const FunnelView: React.FC<Props> = ({ theme = 'light' }) => {
                 style={{ flex: '0 0 auto', width: 16, height: 16, borderRadius: '50%', border: `1px solid ${infoTier === ax.key ? ax.color : t.line}`, background: infoTier === ax.key ? ax.color : 'transparent', color: infoTier === ax.key ? '#fff' : t.faint, fontFamily: 'Georgia, "Times New Roman", serif', fontStyle: 'italic', fontWeight: 700, fontSize: 10, lineHeight: 1, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>i</button>
               <span style={{ fontFamily: mono, fontSize: 10.5, color: t.faint, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}>{ruleText}</span>
             </div>
-            <div style={{ position: 'relative', height: 26, width: has ? `${wPct(count)}%` : '13%', borderRadius: 7, background: has ? (on ? grad : hexA(t.accent, 0.22)) : 'transparent', border: has ? 'none' : `1px dashed ${t.line}`, display: 'flex', alignItems: 'center', transition: 'width .28s cubic-bezier(.3,.7,.3,1)' }}>
-              <span style={{ marginLeft: 6, padding: '2px 8px', borderRadius: 5, background: has ? 'rgba(0,0,0,.24)' : 'transparent', fontFamily: mono, fontSize: 11.5, fontWeight: 600, color: has ? '#fff' : t.faint }}>{fmtN(count)}</span>
+            {/* progress-track: the full-width channel is always drawn; the FILL is the
+                surviving fraction — SOLID when the gate is active, SOFT when it's open, so
+                the bar never looks empty and an active gate's fill visibly steps down. */}
+            <div style={{ position: 'relative', height: 24, width: '100%', borderRadius: 7, background: hexA(t.faint, 0.13), overflow: 'hidden', display: 'flex', alignItems: 'center' }}>
+              {has && (
+                <div style={{ height: '100%', width: `${wPct(count)}%`, borderRadius: 7, background: on ? grad : hexA(ax.color, 0.30), display: 'flex', alignItems: 'center', transition: 'width .28s cubic-bezier(.3,.7,.3,1)' }}>
+                  {/* count shown ONLY on an active gate — open gates don't repeat the number */}
+                  {on && <span style={{ marginLeft: 8, padding: '2px 8px', borderRadius: 5, background: 'rgba(0,0,0,.24)', fontFamily: mono, fontSize: 11.5, fontWeight: 600, color: '#fff' }}>{fmtN(count)}</span>}
+                </div>
+              )}
             </div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 10 }}>
-            <span style={{ fontSize: 11.5, color: t.faint, whiteSpace: 'nowrap' }}>{fmtN(prev)} in → <span style={{ fontWeight: 700, color: drop > 0 ? '#e0567a' : t.faint }}>−{drop}%</span></span>
+            <span style={{ fontSize: 11.5, color: t.faint, whiteSpace: 'nowrap' }}>
+              {!has ? <span style={{ opacity: .7 }}>no data</span>
+                : on ? <>{fmtN(prev)} → {fmtN(count)} <span style={{ fontWeight: 700, color: drop > 0 ? '#e0567a' : t.faint }}>−{drop}%</span></>
+                : <span style={{ opacity: .8 }}>gate open</span>}
+            </span>
             {has && <span style={{ fontSize: 10, color: t.faint, transition: 'transform .18s', transform: `rotate(${isOpen ? 90 : 0}deg)` }}>▸</span>}
           </div>
         </div>
@@ -435,8 +500,48 @@ export const FunnelView: React.FC<Props> = ({ theme = 'light' }) => {
             </div>
           ))}
         </div>
+        <button onClick={() => setAddOpen(o => !o)} title="Add candidate genes from a paper, CSV, or manual entry"
+          style={{ display: 'flex', alignItems: 'center', gap: 6, background: addOpen ? t.accent : t.panel2, border: `1px solid ${addOpen ? t.accent : t.line}`, color: addOpen ? '#fff' : t.tx, font: 'inherit', fontSize: 12.5, fontWeight: 500, padding: '7px 12px', borderRadius: 8, cursor: 'pointer' }}>+ Add candidates{addedFeatures.length ? ` · ${addedFeatures.length}` : ''}</button>
         <button onClick={exportCsv} disabled={!result.shortlist.length} style={{ display: 'flex', alignItems: 'center', gap: 6, background: t.panel2, border: `1px solid ${t.line}`, color: t.tx, font: 'inherit', fontSize: 12.5, fontWeight: 500, padding: '7px 12px', borderRadius: 8, cursor: result.shortlist.length ? 'pointer' : 'not-allowed', opacity: result.shortlist.length ? 1 : .5 }}>↓ Export CSV</button>
       </header>
+
+      {/* ── ADD CANDIDATES panel (generation from other sources; provenance tracked) ── */}
+      {addOpen && (
+        <div style={{ padding: '12px 16px', borderBottom: `1px solid ${t.line}`, background: t.panel, display: 'flex', flexDirection: 'column', gap: 10, flex: '0 0 auto' }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 12, fontWeight: 700, color: t.tx }}>Add candidate genes</span>
+            <span style={{ fontSize: 10.5, color: t.faint }}>merged into the universe with provenance — nothing is lost; added genes rank low until their evidence is harvested</span>
+          </div>
+          <div style={{ display: 'flex', gap: 6 }}>
+            {['manual', 'paper', 'csv'].map(s => (
+              <button key={s} onClick={() => setAddSource(s)} style={{ fontSize: 11, fontWeight: 600, padding: '5px 12px', borderRadius: 7, cursor: 'pointer',
+                border: `1px solid ${addSource === s ? t.accent : t.line}`, background: addSource === s ? hexA(t.accent, .14) : t.panel2, color: addSource === s ? t.accent : t.dim }}>{s === 'csv' ? 'CSV file' : s === 'paper' ? 'From paper' : 'Manual'}</button>
+            ))}
+          </div>
+          {addSource === 'csv' ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: t.accent, color: '#fff', font: 'inherit', fontSize: 12, fontWeight: 700, padding: '8px 14px', borderRadius: 8, cursor: 'pointer' }}>
+                ↑ Choose CSV file
+                <input type="file" accept=".csv,.tsv,.txt" onChange={e => { addFromCsv(e.target.files?.[0]); e.currentTarget.value = ''; }} style={{ display: 'none' }} />
+              </label>
+              <span style={{ fontSize: 11, color: t.faint }}>first column = gene symbol; a header row is auto-skipped</span>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+              <textarea value={addText} onChange={e => setAddText(e.target.value)} rows={2}
+                placeholder={addSource === 'paper' ? 'Paste gene symbols from the paper — KRAS, SRC, GATA6 …' : 'Type or paste gene symbols — KRAS SRC GATA6 …'}
+                style={{ flex: 1, minWidth: 240, background: t.panel2, border: `1px solid ${t.line}`, color: t.tx, font: 'inherit', fontSize: 12, padding: '8px 10px', borderRadius: 8, resize: 'vertical' }} />
+              <button onClick={addFromText} style={{ background: t.accent, border: 'none', color: '#fff', font: 'inherit', fontSize: 12, fontWeight: 700, padding: '9px 16px', borderRadius: 8, cursor: 'pointer' }}>Add</button>
+            </div>
+          )}
+          {addedFeatures.length > 0 && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 11, color: t.faint }}>
+              <span><b style={{ color: t.tx }}>{addedFeatures.length}</b> added: {addedFeatures.slice(0, 12).map(f => f.gene_symbol).join(', ')}{addedFeatures.length > 12 ? ' …' : ''}</span>
+              <button onClick={clearAdded} style={{ marginLeft: 'auto', background: 'transparent', border: `1px solid ${t.line}`, color: t.dim, font: 'inherit', fontSize: 11, fontWeight: 600, padding: '4px 10px', borderRadius: 7, cursor: 'pointer' }}>Clear all</button>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ── BODY ── */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, background: t.bg }}>
@@ -465,13 +570,17 @@ export const FunnelView: React.FC<Props> = ({ theme = 'light' }) => {
                   <div style={{ minWidth: 0 }}>
                     <div style={{ display: 'flex', alignItems: 'baseline', gap: 9, marginBottom: 6 }}>
                       <span style={{ fontSize: 13, fontWeight: 700, color: t.tx }}>Gene universe</span>
-                      <span style={{ fontFamily: mono, fontSize: 10.5, color: t.faint }}>full Open Targets set — no early triage</span>
+                      <span style={{ fontFamily: mono, fontSize: 10.5, color: t.faint }}>full candidate set — no genes dropped</span>
                     </div>
-                    <div style={{ position: 'relative', height: 26, width: '100%', borderRadius: 7, background: isDark ? '#39424f' : '#c9d0db', display: 'flex', alignItems: 'center' }}>
-                      <span style={{ marginLeft: 6, padding: '2px 8px', borderRadius: 5, background: 'rgba(0,0,0,.22)', fontFamily: mono, fontSize: 11.5, fontWeight: 600, color: '#fff' }}>{fmtN(result.total)}</span>
+                    <div style={{ position: 'relative', height: 24, width: '100%', borderRadius: 7, background: isDark ? '#39424f' : '#c9d0db', display: 'flex', alignItems: 'center' }}>
+                      <span style={{ marginLeft: 8, padding: '2px 8px', borderRadius: 5, background: 'rgba(0,0,0,.22)', fontFamily: mono, fontSize: 11.5, fontWeight: 600, color: '#fff' }}>{fmtN(result.total)}</span>
                     </div>
                   </div>
-                  <div style={{ textAlign: 'right', fontSize: 11.5, color: t.faint }}>{fmtN(result.total)} in → <span style={{ fontWeight: 700 }}>−0%</span></div>
+                  <div style={{ textAlign: 'right', fontSize: 11.5, color: t.faint, whiteSpace: 'nowrap' }}>
+                    {addedFeatures.length
+                      ? <>{fmtN(features.length)} snapshot <span style={{ color: t.accent, fontWeight: 700 }}>+{fmtN(addedFeatures.length)} added</span></>
+                      : 'starting set'}
+                  </div>
                 </div>
 
                 {flowRows.map(r => <FlowRow key={r.ax.key} ax={r.ax} prev={r.prev} count={r.count} />)}
@@ -509,7 +618,7 @@ export const FunnelView: React.FC<Props> = ({ theme = 'light' }) => {
                   <span style={{ fontSize: 16, fontWeight: 700, color: t.tx }}>Shortlist</span>
                   <span style={{ fontFamily: mono, fontSize: 13, fontWeight: 600, color: t.accent }}>{fmtN(result.shortlist.length)} targets</span>
                 </div>
-                <div style={{ fontSize: 11.5, color: t.faint, marginTop: 3 }}>Two-stage: eligible genes ranked by weighted-arithmetic composite (constraint = risk penalty, not a gate) · click a row for full evidence + pocket-level druggability (DoGSiteScorer protein tier)</div>
+                <div style={{ fontSize: 11.5, color: t.faint, marginTop: 3 }}>Permissive by default — every gene is ranked by the weighted-arithmetic composite (constraint = risk penalty); gates only narrow when you turn them on · click a row for full evidence + pocket structure</div>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 13, fontSize: 10.5, color: t.faint }}>
@@ -535,7 +644,7 @@ export const FunnelView: React.FC<Props> = ({ theme = 'light' }) => {
                   <div style={{ padding: '9px 10px', fontSize: 10, fontWeight: 700, letterSpacing: '.04em', textTransform: 'uppercase', color: t.faint, textAlign: 'right', borderLeft: `1px solid ${t.line2}` }}>Composite</div>
                 </div>
 
-                {result.shortlist.length === 0 && <div style={{ padding: '48px 20px', textAlign: 'center', color: t.faint, fontSize: 13 }}>No genes are eligible — every gene lacks a disease link (OT / mutation / dependency). Loosen the nexus thresholds.</div>}
+                {result.shortlist.length === 0 && <div style={{ padding: '48px 20px', textAlign: 'center', color: t.faint, fontSize: 13 }}>No genes pass the active gates — loosen or turn off a gate to widen the shortlist.</div>}
 
                 {result.shortlist.slice(0, 300).map((s, idx) => {
                   const compPct = Math.round((s.composite ?? 0) * 100);
@@ -543,7 +652,12 @@ export const FunnelView: React.FC<Props> = ({ theme = 'light' }) => {
                     <div key={s.f.gene_symbol} onClick={() => setDrawerGene(s.f.gene_symbol)} style={{ display: 'grid', gridTemplateColumns: `44px minmax(116px,150px) repeat(${HEADLINE_AXES.length},minmax(38px,1fr)) 56px 96px`, alignItems: 'center', borderTop: `1px solid ${t.line2}`, cursor: 'pointer', background: idx % 2 ? (isDark ? 'rgba(255,255,255,.015)' : 'rgba(0,0,0,.012)') : 'transparent' }}>
                       <div style={{ padding: '11px 10px', fontFamily: mono, fontSize: 13, fontWeight: 600, color: idx < 3 ? t.accent : t.dim }}>{idx + 1}</div>
                       <div style={{ padding: '11px 10px', minWidth: 0 }}>
-                        <div style={{ fontSize: 13, fontWeight: 700, color: t.tx }}>{s.f.gene_symbol}</div>
+                        <div style={{ fontSize: 13, fontWeight: 700, color: t.tx, display: 'flex', alignItems: 'center', gap: 6 }}>
+                          {s.f.gene_symbol}
+                          {s.f.source && s.f.source !== 'snapshot' && (
+                            <span title={`Added from: ${s.f.source}`} style={{ fontSize: 8.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: t.accent, background: t.accentWeak, borderRadius: 4, padding: '1px 5px' }}>{s.f.source.split(':')[0]}</span>
+                          )}
+                        </div>
                         <div style={{ fontSize: 10.5, color: t.faint }}>{s.completeness >= 0.999 ? 'complete evidence' : `${Math.round(s.completeness * 100)}% evidence`}</div>
                       </div>
                       {orderedHeadline.map(ax => {
