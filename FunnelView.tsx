@@ -159,7 +159,8 @@ export const FunnelView: React.FC<Props> = ({ theme = 'light' }) => {
     const total = features.length;
     const genes: FunnelGene[] = features.map(f => ({
       gene_symbol: f.gene_symbol,
-      otOverall: f.getScore,               // OT overall/indirect association (not the always-0 genetic datatype)
+      otOverall: f.getScore,               // OT overall — ELIGIBILITY nexus only (admits OT-linked genes like SRC)
+      geneticAssoc: f.raw.genetic ?? null,  // OT genetic_association datatype — the genetic SCORE axis (G1), no double-count
       frequency: f.raw.frequency ?? null,
       log2fc: f.raw.log2fc ?? null,
       chronos: f.raw.chronos ?? null,

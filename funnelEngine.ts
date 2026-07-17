@@ -26,8 +26,14 @@
 
 export interface FunnelGene {
   gene_symbol: string;
-  otOverall: number | null;   // OT overall/indirect association (funnel's getScore)
-  frequency: number | null;   // somatic mutation fraction 0..1 (cBioPortal)
+  otOverall: number | null;   // OT overall/indirect association — used for the ELIGIBILITY nexus ONLY
+                              // (a permissive "any disease link" arm). NOT used in the score, because
+                              // OT-overall is a blend of somatic-mutation + literature + … and would
+                              // double-count the somatic axis (verified ρ≈0.84 with mutation).
+  geneticAssoc: number | null; // OT genetic_association DATATYPE — the TRUE germline/genetic signal
+                              // (G1). ≈null for pure somatic cancer drivers (honest); non-zero for
+                              // germline-risk genes (BRCA2, ATM, CDKN2A germline). Used in the SCORE.
+  frequency: number | null;   // somatic mutation fraction 0..1 (cBioPortal) — the single somatic axis (G2)
   log2fc: number | null;      // tumor-vs-normal log2 fold-change
   chronos: number | null;     // DepMap Chronos gene effect (more negative = needed)
   loeuf: number | null;       // gnomAD v4 LOEUF (low = constrained)
@@ -55,7 +61,11 @@ export const DEFAULT_ELIGIBILITY: EligibilityConfig = {
 // ── external normalization (design §4) — fixed functions, NOT survivor-relative ──
 const clip01 = (x: number) => Math.max(0, Math.min(1, x));
 export const NORM = {
-  genetic:    (g: FunnelGene) => (g.otOverall == null ? null : clip01(g.otOverall)),
+  // G1 — germline/genetic association (OT genetic_association DATATYPE), NOT OT overall.
+  // Scoring on OT-overall double-counts the somatic axis; reading the datatype component
+  // fixes that and makes "genetic" mean genetics. null (excluded) for pure somatic drivers,
+  // so it never dilutes their score — it only rewards genes with real genetic support.
+  genetic:    (g: FunnelGene) => (g.geneticAssoc == null ? null : clip01(g.geneticAssoc)),
   mutation:   (g: FunnelGene) => (g.frequency == null ? null : g.frequency / (g.frequency + 0.05)), // 0.5 at 5%
   dysreg:     (g: FunnelGene) => (g.log2fc == null ? null : clip01(Math.abs(g.log2fc) / 3)),        // two-sided
   dependency: (g: FunnelGene) => (g.chronos == null ? null : clip01(-g.chronos)),
