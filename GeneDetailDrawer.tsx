@@ -5,6 +5,7 @@ import DependencyPanel from './DependencyPanel';
 import MutationPanel from './MutationPanel';
 import DruggabilityPanel from './DruggabilityPanel';
 import PocketStructurePanel from './PocketStructurePanel';
+import ModalityPanel from './ModalityPanel';
 import ClinicalPanel from './ClinicalPanel';
 import LiteraturePanel from './LiteraturePanel';
 import EvidenceCardsPanel from './EvidenceCardsPanel';
@@ -47,6 +48,7 @@ export const GeneDetailDrawer: React.FC<Props> = ({ geneSymbol, diseaseName, the
             Live evidence is fetched for this gene now — expression, dependency &amp; gnomAD constraint read the reference tables; mutation, druggability, clinical &amp; literature fetch from cBioPortal / ChEMBL / ClinicalTrials.gov / Europe PMC.
           </div>
           <DruggabilityPanel geneSymbol={geneSymbol} currentDisease={diseaseName} theme={theme} />
+          <ModalityPanel geneSymbol={geneSymbol} currentDisease={diseaseName} theme={theme} />
           <PocketStructurePanel geneSymbol={geneSymbol} currentDisease={diseaseName} theme={theme} />
           <MutationPanel geneSymbol={geneSymbol} currentDisease={diseaseName} theme={theme} />
           <ExpressionPanel geneSymbol={geneSymbol} currentDisease={diseaseName} theme={theme} />
