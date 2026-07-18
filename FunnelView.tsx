@@ -29,6 +29,12 @@ type GeneFeature = {
   source?: string;                         // provenance: 'snapshot' | 'manual' | 'CSV: …' | 'paper: …'
 };
 
+// Live per-tier evidence for an added gene (from /api/enrich-genes).
+type EnrichedFeature = {
+  gene_symbol: string; getScore: number | null; drugLabel: string | null;
+  raw: { genetic: number | null; frequency: number | null; log2fc: number | null; chronos: number | null; loeuf: number | null; trial_count: number | null; velocity: number | null };
+};
+
 const safeParse = (s: any) => { try { return typeof s === 'string' ? JSON.parse(s) : s; } catch { return null; } };
 const num = (v: any) => (v == null || isNaN(Number(v)) ? null : Number(v));
 const csvCell = (v: any) => { const s = String(v ?? ''); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
@@ -69,6 +75,9 @@ export const FunnelView: React.FC<Props> = ({ theme = 'light' }) => {
   const [addOpen, setAddOpen] = useState(false);        // "add candidates" panel toggle
   const [addText, setAddText] = useState('');           // manual / paper paste box
   const [addSource, setAddSource] = useState('manual'); // which source tab
+  // On-demand evidence for added genes (fetched live per tier — they're not in Oracle).
+  const [enriched, setEnriched] = useState<Record<string, EnrichedFeature>>({});
+  const [enriching, setEnriching] = useState(0);
 
   const resetGates = () => {
     setThresholds(Object.fromEntries(HEADLINE_AXES.map(a => [a.key, a.filter.default ?? 0])));
@@ -111,7 +120,7 @@ export const FunnelView: React.FC<Props> = ({ theme = 'light' }) => {
 
   useEffect(() => {
     if (!selectedId) { setFeatures([]); return; }
-    let active = true; setLoading(true);
+    let active = true; setLoading(true); setEnriched({});  // enrichment is disease-specific — clear on snapshot change
     const snap = snapshots.find(s => String(s.id) === selectedId);
     setDiseaseName(snap?.disease_name || '');
     Promise.all([fetchSnapshotScores(selectedId), fetchSnapshotEvidence(selectedId)]).then(([scores, evidence]) => {
@@ -174,10 +183,40 @@ export const FunnelView: React.FC<Props> = ({ theme = 'light' }) => {
       const sym = (symbol || '').trim().toUpperCase();
       if (!sym || have.has(sym) || seen.has(sym)) continue;
       seen.add(sym);
-      out.push({ gene_symbol: sym, rank: null, getScore: null, drugLabel: null, axis: {}, raw: {}, source });
+      const en = enriched[sym];
+      const raw = en
+        ? { genetic: en.raw.genetic, frequency: en.raw.frequency, log2fc: en.raw.log2fc, chronos: en.raw.chronos, loeuf: en.raw.loeuf, trial_count: en.raw.trial_count, velocity: en.raw.velocity }
+        : {};
+      const axis = en
+        ? { genetic: en.raw.genetic, mutation: en.raw.frequency, dysregulation: en.raw.log2fc, dependency: en.raw.chronos != null ? -en.raw.chronos : null, safety: en.raw.loeuf, clinical: en.raw.trial_count, literature: en.raw.velocity }
+        : {};
+      out.push({ gene_symbol: sym, rank: null, getScore: en?.getScore ?? null, drugLabel: en?.drugLabel ?? null, axis, raw, source });
     }
     return out;
-  }, [features, addedGenes]);
+  }, [features, addedGenes, enriched]);
+
+  // Enrich newly-added genes on demand (live per-tier evidence — they aren't in Oracle).
+  useEffect(() => {
+    const snap = snapshots.find(s => String(s.id) === selectedId);
+    const dName = snap?.disease_name || '';
+    const dId = (snap as any)?.disease_id || '';
+    if (!dName) return;
+    const have = new Set(features.map(f => f.gene_symbol.toUpperCase()));
+    const need = [...new Set(addedGenes.map(g => (g.symbol || '').trim().toUpperCase()).filter(Boolean))]
+      .filter(s => !have.has(s) && !(s in enriched));
+    if (!need.length) return;
+    let active = true;
+    setEnriching(n => n + need.length);
+    (async () => {
+      try {
+        const res = await fetch('/api/enrich-genes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ genes: need, diseaseId: dId, diseaseName: dName }) });
+        const arr = await res.json();
+        if (active && Array.isArray(arr)) setEnriched(prev => { const next = { ...prev }; for (const e of arr) if (e?.gene_symbol) next[e.gene_symbol] = e; return next; });
+      } catch { /* leave un-enriched — gene still appears, ranks low */ }
+      finally { if (active) setEnriching(n => Math.max(0, n - need.length)); }
+    })();
+    return () => { active = false; };
+  }, [addedGenes, selectedId, snapshots, features]);
   // The funnel universe = snapshot genes + added candidates.
   const universe = useMemo(() => [...features, ...addedFeatures], [features, addedFeatures]);
 
@@ -510,7 +549,7 @@ export const FunnelView: React.FC<Props> = ({ theme = 'light' }) => {
         <div style={{ padding: '12px 16px', borderBottom: `1px solid ${t.line}`, background: t.panel, display: 'flex', flexDirection: 'column', gap: 10, flex: '0 0 auto' }}>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
             <span style={{ fontSize: 12, fontWeight: 700, color: t.tx }}>Add candidate genes</span>
-            <span style={{ fontSize: 10.5, color: t.faint }}>merged into the universe with provenance — nothing is lost; added genes rank low until their evidence is harvested</span>
+            <span style={{ fontSize: 10.5, color: t.faint }}>merged into the universe with provenance — nothing is lost; each added gene is <b>enriched live</b> (per-tier evidence fetched on demand) so it ranks like any other</span>
           </div>
           <div style={{ display: 'flex', gap: 6 }}>
             {['manual', 'paper', 'csv'].map(s => (
@@ -536,7 +575,7 @@ export const FunnelView: React.FC<Props> = ({ theme = 'light' }) => {
           )}
           {addedFeatures.length > 0 && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 11, color: t.faint }}>
-              <span><b style={{ color: t.tx }}>{addedFeatures.length}</b> added: {addedFeatures.slice(0, 12).map(f => f.gene_symbol).join(', ')}{addedFeatures.length > 12 ? ' …' : ''}</span>
+              <span><b style={{ color: t.tx }}>{addedFeatures.length}</b> added{enriching > 0 ? <span style={{ color: t.accent }}> · enriching {enriching}…</span> : ''}: {addedFeatures.slice(0, 12).map(f => f.gene_symbol).join(', ')}{addedFeatures.length > 12 ? ' …' : ''}</span>
               <button onClick={clearAdded} style={{ marginLeft: 'auto', background: 'transparent', border: `1px solid ${t.line}`, color: t.dim, font: 'inherit', fontSize: 11, fontWeight: 600, padding: '4px 10px', borderRadius: 7, cursor: 'pointer' }}>Clear all</button>
             </div>
           )}

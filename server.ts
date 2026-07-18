@@ -7,6 +7,7 @@ import { createHash } from "crypto";
 import { fetchCohortMutations, fetchDruggability, fetchClinical, fetchLiterature, fetchPubmedLiterature, resolveCbioStudy } from "./evidenceProviders.js";
 import { getPocketStructure } from "./dogsiteService.js";
 import { getModalityProfile } from "./modalityService.js";
+import { enrichGene, enrichGenes } from "./enrichService.js";
 import * as ordsSvc from "./ordsService.js"; // pure fetch client → safe to bundle for Vercel
 // NOTE: relative imports carry an explicit .js extension (Node-ESM requirement). On Vercel
 // the server ships as unbundled ESM, so extensionless specifiers fail with ERR_MODULE_NOT_FOUND.
@@ -533,6 +534,28 @@ function setupRoutes() {
     if (!gene) return res.status(400).json({ error: "Missing gene param" });
     try {
       res.json(await getModalityProfile(gene));
+    } catch (e: any) {
+      res.status(502).json({ error: String(e?.message || e).slice(0, 200) });
+    }
+  });
+
+  // On-demand per-tier evidence for a gene NOT in a snapshot (paper/CSV/manual candidate).
+  // Fetches each funnel tier live from the same public sources the harvest uses, so an
+  // added gene ranks in the funnel immediately. Public-API only (works on Vercel).
+  app.get("/api/enrich-gene", async (req, res) => {
+    const gene = String(req.query.gene || '').trim();
+    if (!gene) return res.status(400).json({ error: "Missing gene param" });
+    try {
+      res.json(await enrichGene(gene, String(req.query.diseaseId || ''), String(req.query.diseaseName || '')));
+    } catch (e: any) {
+      res.status(502).json({ error: String(e?.message || e).slice(0, 200) });
+    }
+  });
+  app.post("/api/enrich-genes", express.json({ limit: "1mb" }), async (req, res) => {
+    const { genes, diseaseId, diseaseName } = req.body || {};
+    if (!Array.isArray(genes) || !genes.length) return res.status(400).json({ error: "Missing genes[]" });
+    try {
+      res.json(await enrichGenes(genes.slice(0, 100).map(String), String(diseaseId || ''), String(diseaseName || '')));
     } catch (e: any) {
       res.status(502).json({ error: String(e?.message || e).slice(0, 200) });
     }
