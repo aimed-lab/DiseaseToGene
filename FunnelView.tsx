@@ -123,11 +123,20 @@ export const FunnelView: React.FC<Props> = ({ theme = 'light' }) => {
   });
   const addFromPaperPdf = async (file: File | undefined) => {
     if (!file) return;
+    // Serverless request bodies are capped (~4.5 MB on Vercel); a base64 PDF is ~1.37× the
+    // file. Keep under ~3.5 MB, else it returns an HTML error page, not JSON.
+    if (file.size > 3.5 * 1024 * 1024) { setExtractMsg(`PDF is ${(file.size / 1048576).toFixed(1)} MB — over the 3.5 MB upload limit. Paste the gene list (or the key section) below, or use a smaller PDF.`); return; }
     setExtracting(true); setExtractMsg(null);
     try {
       const pdfBase64 = await fileToBase64(file);
       const snap = snapshots.find(s => String(s.id) === selectedId);
       const res = await fetch('/api/paper/extract-genes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pdfBase64, disease: snap?.disease_name || '' }) });
+      const ct = res.headers.get('content-type') || '';
+      if (!ct.includes('application/json')) {
+        throw new Error(res.status === 413
+          ? 'PDF too large for the server — paste the gene list instead.'
+          : `Extraction service not reachable (HTTP ${res.status}) — the new deploy may still be building; try again shortly, or paste the gene list.`);
+      }
       const j = await res.json();
       if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
       if (Array.isArray(j.genes) && j.genes.length) { mergeGenes(j.genes, `paper: ${file.name}`); setExtractMsg(`Extracted ${j.genes.length} gene${j.genes.length === 1 ? '' : 's'} from ${file.name}`); }
