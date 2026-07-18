@@ -9,6 +9,35 @@ import React, { useState } from 'react';
 
 interface Props { geneSymbol: string; currentDisease?: string; theme?: 'dark' | 'light'; }
 
+// Plain-English explanations for the Open Targets tractability buckets (hover tooltips),
+// so the specific evidence terms don't have to be memorised.
+const BUCKET_INFO: Record<string, string> = {
+  // clinical precedence (small molecule / antibody / other)
+  'Approved Drug': 'This target already has an approved drug in this modality — the strongest clinical precedent.',
+  'Advanced Clinical': 'A drug in this modality is in advanced clinical trials (Phase 2/3).',
+  'Phase 1 Clinical': 'A drug in this modality has reached Phase 1.',
+  // small molecule — is there a pocket a drug-like molecule can bind?
+  'Structure with Ligand': 'An experimental 3D structure exists with a small molecule bound — proof it has a pocket that can hold a drug-like molecule.',
+  'High-Quality Ligand': 'The bound molecule is genuinely drug-like (good size/properties), not just a fragment or buffer.',
+  'High-Quality Pocket': 'A predicted pocket of druggable quality (size, shape, chemistry) from the structure.',
+  'Med-Quality Pocket': 'A predicted pocket of medium druggable quality.',
+  'Druggable Family': 'Belongs to a gene family historically drugged by small molecules (e.g. kinases, GPCRs) — class-level precedent.',
+  // antibody — is it reachable from outside the cell? (antibodies act on surface/secreted proteins)
+  'UniProt loc high conf': 'UniProt places the protein at the cell membrane / secreted (high confidence) — reachable by an antibody, which acts outside the cell.',
+  'UniProt loc med conf': 'UniProt suggests a membrane / secreted location (medium confidence).',
+  'GO CC high conf': 'Gene Ontology "Cellular Component" (high confidence) places it at the membrane / extracellular.',
+  'GO CC med conf': 'Gene Ontology "Cellular Component" (medium confidence) suggests a membrane / extracellular location.',
+  'UniProt SigP or TMHMM': 'Has a signal peptide (secreted) or predicted transmembrane helices (sits in the membrane) — i.e. surface-exposed.',
+  'Human Protein Atlas loc': 'Human Protein Atlas imaging supports a membrane / secreted location.',
+  // PROTAC / degrader — can we tag it for destruction? needs a chemical handle + degradation machinery
+  'Literature': 'Literature evidence relevant to targeted protein degradation (PROTAC / degrader).',
+  'UniProt Ubiquitination': 'UniProt annotates ubiquitination sites — the cell already tags it for the disposal pathway a PROTAC hijacks.',
+  'Database Ubiquitination': 'Databases record ubiquitination of this protein — amenable to PROTAC-induced degradation.',
+  'Half-life Data': 'Protein half-life data is available (relevant to how a degrader would act).',
+  'Small Molecule Binder': 'A known small-molecule binder exists — the chemical "handle" a PROTAC is built from.',
+};
+const bucketTip = (label: string) => BUCKET_INFO[label] || 'Open Targets tractability assessment bucket.';
+
 interface FactRow { modality: string; family: string; drugCount: number; topStage: string; topStageRank: number; approved: boolean; }
 interface PredRow { modality: string; code: string; labels: string[]; }
 interface Result {
@@ -109,7 +138,14 @@ export const ModalityPanel: React.FC<Props> = ({ geneSymbol, theme = 'light' }) 
                 {data.prediction.buckets.map(b => (
                   <div key={b.code} style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
                     <span style={{ fontSize: 12, fontWeight: 700, color: c.ink, minWidth: 92 }}>{b.modality}</span>
-                    <span style={{ fontSize: 10.5, color: c.muted }}>{b.labels.join(' · ')}</span>
+                    <span style={{ fontSize: 10.5, color: c.muted }}>
+                      {b.labels.map((lab, i) => (
+                        <React.Fragment key={lab}>
+                          {i > 0 && ' · '}
+                          <span title={bucketTip(lab)} style={{ cursor: 'help', borderBottom: `1px dotted ${c.muted}` }}>{lab}</span>
+                        </React.Fragment>
+                      ))}
+                    </span>
                   </div>
                 ))}
               </div>
