@@ -561,6 +561,33 @@ function setupRoutes() {
     }
   });
 
+  // Paper → genes: Gemini reads an uploaded PDF (natively) or pasted text and returns the
+  // human gene SYMBOLS the paper discusses as disease-relevant. These flow into the funnel's
+  // "add candidates" → on-demand enrichment. Needs GEMINI_API_KEY on the server.
+  app.post("/api/paper/extract-genes", express.json({ limit: "25mb" }), async (req, res) => {
+    const { pdfBase64, text, disease } = req.body || {};
+    if (!pdfBase64 && !text) return res.status(400).json({ error: "Provide pdfBase64 or text" });
+    const prompt =
+      `Extract the official human gene SYMBOLS (HGNC) this biomedical paper` +
+      (disease ? ` about ${disease}` : '') +
+      ` discusses as disease-relevant — genes it studies, reports mutated / differentially expressed / ` +
+      `dependent, or proposes as drug targets. Exclude generic terms, cell lines, drug names, assays, and ` +
+      `non-gene acronyms. Use the approved symbol (e.g. ERBB2 not HER2). Respond as JSON: {"genes":["KRAS","TP53"]}.`;
+    const parts: any[] = [{ text: prompt }];
+    if (pdfBase64) parts.push({ inlineData: { mimeType: 'application/pdf', data: String(pdfBase64) } });
+    else parts.push({ text: `\n\nPAPER TEXT:\n${String(text).slice(0, 120000)}` });
+    try {
+      const out = await geminiGenerate([{ role: 'user', parts }], GEMINI_MODEL, 'application/json');
+      let parsed: any; try { parsed = JSON.parse(out); } catch { parsed = null; }
+      const raw: any[] = Array.isArray(parsed?.genes) ? parsed.genes : [];
+      const genes = [...new Set(raw.map(g => String(g).trim().toUpperCase())
+        .filter(g => /^[A-Z][A-Z0-9\-]{0,14}$/.test(g)))];   // basic HGNC-symbol shape
+      res.json({ genes, count: genes.length });
+    } catch (e: any) {
+      res.status(502).json({ error: String(e?.message || e).slice(0, 300) });
+    }
+  });
+
   app.get("/api/proxy", async (req, res) => {
     const target = req.query.url as string;
     if (!target) return res.status(400).json({ error: "Missing url param" });

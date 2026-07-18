@@ -112,6 +112,30 @@ export const FunnelView: React.FC<Props> = ({ theme = 'light' }) => {
   };
   const clearAdded = () => setAddedGenes([]);
 
+  // Paper PDF → Gemini extracts gene symbols → merged as candidates (then enriched live).
+  const [extracting, setExtracting] = useState(false);
+  const [extractMsg, setExtractMsg] = useState<string | null>(null);
+  const fileToBase64 = (file: File): Promise<string> => new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result).split(',')[1] || '');
+    r.onerror = () => reject(new Error('Could not read file'));
+    r.readAsDataURL(file);
+  });
+  const addFromPaperPdf = async (file: File | undefined) => {
+    if (!file) return;
+    setExtracting(true); setExtractMsg(null);
+    try {
+      const pdfBase64 = await fileToBase64(file);
+      const snap = snapshots.find(s => String(s.id) === selectedId);
+      const res = await fetch('/api/paper/extract-genes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pdfBase64, disease: snap?.disease_name || '' }) });
+      const j = await res.json();
+      if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
+      if (Array.isArray(j.genes) && j.genes.length) { mergeGenes(j.genes, `paper: ${file.name}`); setExtractMsg(`Extracted ${j.genes.length} gene${j.genes.length === 1 ? '' : 's'} from ${file.name}`); }
+      else setExtractMsg('No genes found in the PDF.');
+    } catch (e: any) { setExtractMsg('Extraction failed: ' + (e?.message || 'error')); }
+    finally { setExtracting(false); }
+  };
+
   useEffect(() => {
     let active = true;
     fetchSnapshots().then(s => { if (!active) return; setSnapshots(s); if (s.length) setSelectedId(String(s[0].id)); setLoading(false); });
@@ -566,11 +590,23 @@ export const FunnelView: React.FC<Props> = ({ theme = 'light' }) => {
               <span style={{ fontSize: 11, color: t.faint }}>first column = gene symbol; a header row is auto-skipped</span>
             </div>
           ) : (
-            <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
-              <textarea value={addText} onChange={e => setAddText(e.target.value)} rows={2}
-                placeholder={addSource === 'paper' ? 'Paste gene symbols from the paper — KRAS, SRC, GATA6 …' : 'Type or paste gene symbols — KRAS SRC GATA6 …'}
-                style={{ flex: 1, minWidth: 240, background: t.panel2, border: `1px solid ${t.line}`, color: t.tx, font: 'inherit', fontSize: 12, padding: '8px 10px', borderRadius: 8, resize: 'vertical' }} />
-              <button onClick={addFromText} style={{ background: t.accent, border: 'none', color: '#fff', font: 'inherit', fontSize: 12, fontWeight: 700, padding: '9px 16px', borderRadius: 8, cursor: 'pointer' }}>Add</button>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {addSource === 'paper' && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                  <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: extracting ? t.line : t.accent, color: '#fff', font: 'inherit', fontSize: 12, fontWeight: 700, padding: '8px 14px', borderRadius: 8, cursor: extracting ? 'default' : 'pointer', opacity: extracting ? 0.7 : 1 }}>
+                    {extracting ? 'Extracting genes…' : '↑ Upload paper PDF'}
+                    <input type="file" accept="application/pdf,.pdf" disabled={extracting} onChange={e => { addFromPaperPdf(e.target.files?.[0]); e.currentTarget.value = ''; }} style={{ display: 'none' }} />
+                  </label>
+                  <span style={{ fontSize: 11, color: t.faint }}>Gemini reads the PDF and pulls out gene symbols · or paste them below</span>
+                </div>
+              )}
+              {extractMsg && <div style={{ fontSize: 11, color: /fail|No genes/.test(extractMsg) ? '#e0567a' : t.accent }}>{extractMsg}</div>}
+              <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                <textarea value={addText} onChange={e => setAddText(e.target.value)} rows={2}
+                  placeholder={addSource === 'paper' ? 'Paste gene symbols from the paper — KRAS, SRC, GATA6 …' : 'Type or paste gene symbols — KRAS SRC GATA6 …'}
+                  style={{ flex: 1, minWidth: 240, background: t.panel2, border: `1px solid ${t.line}`, color: t.tx, font: 'inherit', fontSize: 12, padding: '8px 10px', borderRadius: 8, resize: 'vertical' }} />
+                <button onClick={addFromText} style={{ background: t.accent, border: 'none', color: '#fff', font: 'inherit', fontSize: 12, fontWeight: 700, padding: '9px 16px', borderRadius: 8, cursor: 'pointer' }}>Add</button>
+              </div>
             </div>
           )}
           {addedFeatures.length > 0 && (
