@@ -97,10 +97,21 @@ export async function saveSnapshot(s: SnapshotInput): Promise<{ id: number; vers
     );
     const snapshotId: number = (ins.outBinds as any).id[0];
 
-    // Per-gene score rows (loop — robust for a few hundred genes)
-    for (let i = 0; i < s.targets.length; i++) {
-      const t = s.targets[i];
-      await conn.execute(
+    // Per-gene score rows — ONE bulk insert (executeMany) instead of thousands of
+    // separate round-trips. A 7k-gene snapshot then saves in ~1s as a single atomic
+    // statement, so a large harvest can no longer be lost to a mid-loop VPN blip.
+    if (s.targets.length) {
+      const rankBinds = s.targets.map((t: any, i: number) => ({
+        snapshot_id: snapshotId, disease_id: s.disease_id, disease_name: String(s.disease_name ?? '').slice(0, 500),
+        gene_symbol: String(t.symbol ?? '').slice(0, 64), gene_name: t.name != null ? String(t.name).slice(0, 400) : null,
+        rank_position: i + 1,
+        overall_score: num(t.overallScore), get_score: num(t.getScore), genetic_score: num(t.geneticScore),
+        expression_score: num(t.expressionScore ?? t.combinedExpression), target_score: num(t.targetScore),
+        literature_score: num(t.literatureScore), tau_tissue: num(t.tauTissue), tau_single_cell: num(t.tauSingleCell),
+        bimodality_max: num(t.bimodalityMax), bimodality_tissue: t.bimodalityTissue != null ? String(t.bimodalityTissue).slice(0, 200) : null,
+        pubtator_score: num(t.pubTatorScore),
+      }));
+      await conn.executeMany(
         `INSERT INTO ${T('ranking_scores')}
            (snapshot_id, disease_id, disease_name, gene_symbol, gene_name, rank_position,
             overall_score, get_score, genetic_score, expression_score, target_score, literature_score,
@@ -108,15 +119,18 @@ export async function saveSnapshot(s: SnapshotInput): Promise<{ id: number; vers
          VALUES (:snapshot_id,:disease_id,:disease_name,:gene_symbol,:gene_name,:rank_position,
             :overall_score,:get_score,:genetic_score,:expression_score,:target_score,:literature_score,
             :tau_tissue,:tau_single_cell,:bimodality_max,:bimodality_tissue,:pubtator_score, SYSTIMESTAMP)`,
+        rankBinds,
         {
-          snapshot_id: snapshotId, disease_id: s.disease_id, disease_name: s.disease_name,
-          gene_symbol: String(t.symbol ?? '').slice(0, 64), gene_name: (t.name ?? null) && String(t.name).slice(0, 400),
-          rank_position: i + 1,
-          overall_score: num(t.overallScore), get_score: num(t.getScore), genetic_score: num(t.geneticScore),
-          expression_score: num(t.expressionScore ?? t.combinedExpression), target_score: num(t.targetScore),
-          literature_score: num(t.literatureScore), tau_tissue: num(t.tauTissue), tau_single_cell: num(t.tauSingleCell),
-          bimodality_max: num(t.bimodalityMax), bimodality_tissue: (t.bimodalityTissue ?? null) && String(t.bimodalityTissue).slice(0, 200),
-          pubtator_score: num(t.pubTatorScore),
+          autoCommit: false,
+          bindDefs: {
+            snapshot_id: { type: oracledb.NUMBER }, disease_id: { type: oracledb.STRING, maxSize: 200 },
+            disease_name: { type: oracledb.STRING, maxSize: 500 }, gene_symbol: { type: oracledb.STRING, maxSize: 64 },
+            gene_name: { type: oracledb.STRING, maxSize: 400 }, rank_position: { type: oracledb.NUMBER },
+            overall_score: { type: oracledb.NUMBER }, get_score: { type: oracledb.NUMBER }, genetic_score: { type: oracledb.NUMBER },
+            expression_score: { type: oracledb.NUMBER }, target_score: { type: oracledb.NUMBER }, literature_score: { type: oracledb.NUMBER },
+            tau_tissue: { type: oracledb.NUMBER }, tau_single_cell: { type: oracledb.NUMBER }, bimodality_max: { type: oracledb.NUMBER },
+            bimodality_tissue: { type: oracledb.STRING, maxSize: 200 }, pubtator_score: { type: oracledb.NUMBER },
+          },
         }
       );
     }
