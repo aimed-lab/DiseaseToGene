@@ -223,9 +223,14 @@ async function status(snapshotId: number) {
 (async () => {
   const [cmd, a, b] = process.argv.slice(2).filter(x => x !== '--dry');
   try {
+    const snapId = (v: string | undefined): number => {
+      const n = Number(v);
+      if (!Number.isInteger(n) || n <= 0) throw new Error(`snapshot id must be a number — you passed "${v}". Run \`harvest\` first (without --dry); it prints "Saved snapshot #NN". Use that number here.`);
+      return n;
+    };
     if (cmd === 'harvest') { if (!a) throw new Error('usage: harvest "<disease>" [geneCount]'); await harvest(a, Number(b) || 7500); }
-    else if (cmd === 'enrich') { if (!a || !b) throw new Error('usage: enrich <snapshotId> <axis|all>'); await enrich(Number(a), b); }
-    else if (cmd === 'status') { if (!a) throw new Error('usage: status <snapshotId>'); await status(Number(a)); }
+    else if (cmd === 'enrich') { if (!a || !b) throw new Error('usage: enrich <snapshotId> <axis|all>'); await enrich(snapId(a), b); }
+    else if (cmd === 'status') { if (!a) throw new Error('usage: status <snapshotId>'); await status(snapId(a)); }
     else { console.log('Commands:\n  harvest "<disease>" [geneCount]\n  enrich <snapshotId> <axis|all>   (axes: ' + AXES.join(', ') + ')\n  status <snapshotId>\n  add --dry to any command to skip the Oracle write'); }
   } catch (e: any) { console.error('ERROR:', e?.message || e); process.exit(1); }
   process.exit(0);
