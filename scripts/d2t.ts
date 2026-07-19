@@ -121,8 +121,10 @@ async function harvest(query: string, geneCount: number) {
   log(`Fetched ${targets.length} genes from Open Targets.`);
   if (DRY) { log(`--dry: would save snapshot for ${dis.name} with ${targets.length} genes (top: ${targets.slice(0, 8).map(t => t.symbol).join(', ')})`); return; }
   const svc = await oracle();
+  log(`Saving ${targets.length} genes to Oracle (row-by-row — this takes ~1–3 min, please wait, do NOT run the next command yet)…`);
   const res = await svc.saveSnapshot({ disease_id: dis.id, disease_name: dis.name, label: 'CLI harvest', gene_count: targets.length, targets, provenance: { source: 'Open Targets associatedTargets', via: 'scripts/d2t.ts' }, created_by: 'cli' });
-  log(`✔ Saved snapshot #${res.id} (v${res.version}) — ${targets.length} genes. Now enrich it: scripts/d2t.ts enrich ${res.id} all`);
+  log(`✔✔✔ SAVED snapshot #${res.id} (v${res.version}) — ${targets.length} genes.`);
+  log(`     Next: npx tsx --env-file=.env scripts/d2t.ts enrich ${res.id} mutation   (use the number ${res.id})`);
 }
 
 // ════════════════════════════ ENRICH ════════════════════════════
@@ -204,6 +206,15 @@ async function enrich(snapshotId: number, axisArg: string) {
   log('Done.');
 }
 
+// ════════════════════════════ LIST ════════════════════════════
+async function list() {
+  const svc = await oracle();
+  const snaps = await svc.listSnapshots();
+  log(`Snapshots (newest first) — use the # as the snapshot id:`);
+  for (const s of (snaps as any[]).slice(0, 15))
+    console.log(`  #${String(s.id).padEnd(5)} v${s.version}  ${String(s.disease_name).padEnd(34)} ${String(s.gene_count).padStart(5)} genes  ${s.created_at}`);
+}
+
 // ════════════════════════════ STATUS ════════════════════════════
 async function status(snapshotId: number) {
   const svc = await oracle();
@@ -231,7 +242,8 @@ async function status(snapshotId: number) {
     if (cmd === 'harvest') { if (!a) throw new Error('usage: harvest "<disease>" [geneCount]'); await harvest(a, Number(b) || 7500); }
     else if (cmd === 'enrich') { if (!a || !b) throw new Error('usage: enrich <snapshotId> <axis|all>'); await enrich(snapId(a), b); }
     else if (cmd === 'status') { if (!a) throw new Error('usage: status <snapshotId>'); await status(snapId(a)); }
-    else { console.log('Commands:\n  harvest "<disease>" [geneCount]\n  enrich <snapshotId> <axis|all>   (axes: ' + AXES.join(', ') + ')\n  status <snapshotId>\n  add --dry to any command to skip the Oracle write'); }
+    else if (cmd === 'list') { await list(); }
+    else { console.log('Commands:\n  list                             show all snapshots + their ids\n  harvest "<disease>" [geneCount]  create a snapshot\n  enrich <snapshotId> <axis|all>   (axes: ' + AXES.join(', ') + ')\n  status <snapshotId>              per-axis coverage\n  add --dry to any command to skip the Oracle write'); }
   } catch (e: any) { console.error('ERROR:', e?.message || e); process.exit(1); }
   process.exit(0);
 })();
