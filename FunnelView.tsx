@@ -165,7 +165,11 @@ export const FunnelView: React.FC<Props> = ({ theme = 'light' }) => {
       }
       const feats: GeneFeature[] = (scores as any[]).map(r => {
         const g = r.gene_symbol;
-        const mut = ev[g]?.mutation, drug = ev[g]?.druggability, clin = ev[g]?.clinical, lit = ev[g]?.literature;
+        const mut = ev[g]?.mutation, drug = ev[g]?.druggability, clin = ev[g]?.clinical;
+        // Literature: prefer PubMed (gene-specific, precise), fall back to Europe PMC
+        // (full-text, far broader coverage) — PubMed alone is often rate-limited to a
+        // sparse set, so this lifts the tier's coverage from a few hundred to ~all genes.
+        const lit = ev[g]?.literature ?? ev[g]?.literature_epmc;
         const dys = ev[g]?.expression_tvn, dep = ev[g]?.dependency, saf = ev[g]?.safety;
         // Raw values pulled straight from the stored value_json contract — the
         // SAME fields the gene drawer panels display, so funnel == drawer.
