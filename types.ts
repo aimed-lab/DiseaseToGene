@@ -41,10 +41,19 @@ export interface DrillDownData {
   recent_signals?: number;
   signal_velocity?: string;
   top_papers?: { title: string; id: string }[];
+  // ── ClinicalTrials.gov registry text search (browse detail: NCT ids, status, sponsors).
+  // NOTE: CT.gov has no gene field, so these counts are FREE-TEXT matches and can be wrong
+  // for word-like symbols (REN matched "cur-REN-t" → 234 fake pancreatic hits). Use the
+  // ot_* fields below as the authoritative, gene-attributed signal.
   trial_count?: number;
   max_phase?: string;
   active_trial_present?: boolean;
   interventional_count?: number;
+  // ── Open Targets target→drug→trial graph (authoritative, disease-scoped + gene-attributed).
+  // Same signal the funnel's clinical axis uses, so drill-down == funnel.
+  ot_drugs_in_disease_trials?: number;
+  ot_max_disease_phase?: number;
+  ot_drug_names?: string[];
   phase_breakdown?: Record<string, number>;
   top_conditions?: { name: string; count: number }[];
   top_drugs?: { name: string; count: number }[];

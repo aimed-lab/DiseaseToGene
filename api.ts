@@ -544,6 +544,25 @@ export const api = {
         logDev('ClinicalTrials fetch failed:', err);
       }
 
+      // Open Targets target->drug->trial graph — the AUTHORITATIVE clinical signal.
+      // CT.gov above has no gene field (free-text matching; renin scored 234 for pancreatic),
+      // so we also pull the curated, gene-attributed, disease-scoped number here. This is the
+      // SAME signal the funnel's clinical axis stores, so the drill-down agrees with the funnel.
+      try {
+        const otRes = await fetch(`/api/clinical?gene=${encodeURIComponent(symbol)}&disease=${encodeURIComponent(clinicalDiseaseName)}`);
+        if (otRes.ok) {
+          const otJson = await otRes.json();
+          const d = otJson?.data;
+          if (d) {
+            drillDown.ot_drugs_in_disease_trials = d.n_drugs_in_disease_trials ?? d.trial_count ?? 0;
+            drillDown.ot_max_disease_phase = d.max_disease_trial_phase ?? d.max_phase ?? 0;
+            drillDown.ot_drug_names = Array.isArray(d.drug_names) ? d.drug_names : [];
+          }
+        }
+      } catch (err) {
+        logDev('Open Targets clinical fetch failed:', err);
+      }
+
       // Europe PMC
       try {
         const currentYear = new Date().getFullYear();

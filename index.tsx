@@ -721,40 +721,95 @@ const UsefulnessControls = ({
 // Navigation Components
 // =============================================================================
 
-const TabNavigation = ({ 
-  viewMode, 
-  onViewModeChange, 
-  theme 
-}: { 
-  viewMode: ViewMode; 
-  onViewModeChange: (mode: ViewMode) => void; 
-  theme: Theme 
-}) => (
-  <nav className="hidden lg:flex flex-1 items-center justify-start gap-1 min-w-0 px-6">
-    {[ 
-      {id:'list',i:List,l:'Targets'},
-      {id:'funnel',i:Filter,l:'Funnel'},
-      {id:'rankings',i:Layers,l:'Rankings'},
-      {id:'pubtator',i:BookOpen,l:'Literature'},
-      {id:'paper',i:FileText,l:'Papers'},
-      {id:'enrichment',i:BarChart3,l:'Enrichment'},
-      {id:'raw',i:Database,l:'Cohorts'},
-      {id:'jobs',i:Cpu,l:'Jobs'}
-    ].map(t => {
-      const active = viewMode === t.id;
-      return (
-        <button 
-          key={t.id}
-          onClick={() => onViewModeChange(t.id as ViewMode)} 
-          className={`h-9 px-3 xl:px-4 rounded-md text-[11px] font-semibold transition-all flex items-center gap-2 whitespace-nowrap ${active ? (theme === 'dark' ? 'bg-slate-800 text-white' : 'bg-slate-950 text-white') : (theme === 'dark' ? 'text-slate-300 hover:text-white hover:bg-slate-800' : 'text-slate-900 hover:text-slate-950 hover:bg-slate-100')}`}
+// Literature, Papers and Cohorts are all reference/research content — collapsed into one
+// "Research ▾" dropdown so the top bar stays short (Targets · Funnel · Rankings · Research ·
+// Enrichment · Jobs). Each item is still one click away; the underlying ViewMode ids are
+// unchanged, so the views themselves need no edits.
+const RESEARCH_GROUP = [
+  { id: 'pubtator', i: BookOpen, l: 'Literature' },
+  { id: 'paper',    i: FileText, l: 'Papers'     },
+  { id: 'raw',      i: Database, l: 'Cohorts'    },
+];
+
+const TabNavigation = ({
+  viewMode,
+  onViewModeChange,
+  theme
+}: {
+  viewMode: ViewMode;
+  onViewModeChange: (mode: ViewMode) => void;
+  theme: Theme
+}) => {
+  const isDark = theme === 'dark';
+  const [researchOpen, setResearchOpen] = useState(false);
+  const researchRef = useRef<HTMLDivElement>(null);
+  // Close the Research menu on outside-click / Escape.
+  useEffect(() => {
+    if (!researchOpen) return;
+    const onDoc = (e: MouseEvent) => { if (researchRef.current && !researchRef.current.contains(e.target as Node)) setResearchOpen(false); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setResearchOpen(false); };
+    document.addEventListener('mousedown', onDoc);
+    document.addEventListener('keydown', onKey);
+    return () => { document.removeEventListener('mousedown', onDoc); document.removeEventListener('keydown', onKey); };
+  }, [researchOpen]);
+
+  const researchActive = RESEARCH_GROUP.some(r => r.id === viewMode);
+  const btnCls = (active: boolean) => `h-9 px-3 xl:px-4 rounded-md text-[11px] font-semibold transition-all flex items-center gap-2 whitespace-nowrap ${active ? (isDark ? 'bg-slate-800 text-white' : 'bg-slate-950 text-white') : (isDark ? 'text-slate-300 hover:text-white hover:bg-slate-800' : 'text-slate-900 hover:text-slate-950 hover:bg-slate-100')}`;
+  const iconCls = (active: boolean) => `w-3.5 h-3.5 ${active ? 'text-white' : (isDark ? 'text-slate-400' : 'text-slate-700')}`;
+
+  const primary  = [ {id:'list',i:List,l:'Targets'}, {id:'funnel',i:Filter,l:'Funnel'}, {id:'rankings',i:Layers,l:'Rankings'} ];
+  const trailing = [ {id:'enrichment',i:BarChart3,l:'Enrichment'}, {id:'jobs',i:Cpu,l:'Jobs'} ];
+  const flatBtn = (t: { id: string; i: any; l: string }) => {
+    const active = viewMode === t.id;
+    return (
+      <button key={t.id} onClick={() => onViewModeChange(t.id as ViewMode)} className={btnCls(active)}>
+        <t.i className={iconCls(active)} />
+        {t.l}
+      </button>
+    );
+  };
+
+  return (
+    <nav className="hidden lg:flex flex-1 items-center justify-start gap-1 min-w-0 px-6">
+      {primary.map(flatBtn)}
+
+      {/* Research ▾ — Literature · Papers · Cohorts */}
+      <div ref={researchRef} className="relative">
+        <button
+          onClick={() => setResearchOpen(o => !o)}
+          aria-haspopup="menu"
+          aria-expanded={researchOpen}
+          className={btnCls(researchActive)}
         >
-          <t.i className={`w-3.5 h-3.5 ${active ? 'text-white' : (theme === 'dark' ? 'text-slate-400' : 'text-slate-700')}`} />
-          {t.l}
+          <FlaskConical className={iconCls(researchActive)} />
+          Research
+          <ChevronDown className={`w-3 h-3 transition-transform ${researchOpen ? 'rotate-180' : ''} ${researchActive ? 'text-white' : (isDark ? 'text-slate-400' : 'text-slate-500')}`} />
         </button>
-      );
-    })}
-  </nav>
-);
+        {researchOpen && (
+          <div role="menu" className={`absolute left-0 top-full mt-1 z-50 min-w-[180px] rounded-lg border py-1 shadow-xl ${isDark ? 'bg-slate-900 border-slate-700' : 'bg-white border-slate-200'}`}>
+            {RESEARCH_GROUP.map(r => {
+              const active = viewMode === r.id;
+              return (
+                <button
+                  key={r.id}
+                  role="menuitem"
+                  onClick={() => { onViewModeChange(r.id as ViewMode); setResearchOpen(false); }}
+                  className={`w-full flex items-center gap-2.5 px-3 py-2 text-[11px] font-semibold text-left transition-colors ${active ? (isDark ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-950') : (isDark ? 'text-slate-300 hover:bg-slate-800 hover:text-white' : 'text-slate-700 hover:bg-slate-50 hover:text-slate-950')}`}
+                >
+                  <r.i className={`w-3.5 h-3.5 ${active ? (isDark ? 'text-white' : 'text-slate-950') : (isDark ? 'text-slate-400' : 'text-slate-500')}`} />
+                  {r.l}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {trailing.map(flatBtn)}
+      {/* New Dashboard tab slots in here, on the same line. */}
+    </nav>
+  );
+};
 
 // =============================================================================
 // Cohort Filter Sidebar
@@ -2886,7 +2941,7 @@ const TargetDetailView = ({
               <h3 className="text-2xl font-black text-emerald-600 dark:text-emerald-400 tracking-tighter flex items-center gap-2">
                 <Activity className="w-6 h-6" /> Clinical Trial Intelligence: {target.symbol}
               </h3>
-              <p className="text-[10px] font-bold uppercase text-neutral-400 tracking-widest">Deep insights from ClinicalTrials.gov and AI synthesis</p>
+              <p className="text-[10px] font-bold uppercase text-neutral-400 tracking-widest">Open Targets trial graph + ClinicalTrials.gov registry and AI synthesis</p>
             </div>
           </div>
         </div>
@@ -2894,10 +2949,42 @@ const TargetDetailView = ({
           <div className="max-w-4xl mx-auto space-y-10">
             {target.drillDown ? (
               <>
+                {/* AUTHORITATIVE — Open Targets: curated gene→drug→trial attribution, scoped to
+                    this disease. Same signal the funnel's clinical axis uses, so the two agree. */}
+                <div className={`p-6 rounded-2xl border-2 ${theme === 'dark' ? 'bg-emerald-950/20 border-emerald-800' : 'bg-emerald-50/60 border-emerald-300'}`}>
+                  <div className="flex items-center gap-2 mb-3">
+                    <span className="text-[10px] font-black uppercase text-emerald-700 dark:text-emerald-400 tracking-widest">Open Targets · gene-attributed, disease-scoped</span>
+                    <InfoDot isDark={theme === 'dark'} text="Drugs known to hit this target that have at least one registered trial in THIS disease, and the highest phase those disease trials reached. Curated target-to-drug attribution - not text matching. Phase is per-trial and per-disease, so a drug approved for another indication does not count as approved here. 0 means no clinical precedent yet: a neutral novelty signal, not a negative." />
+                  </div>
+                  <div className="flex flex-wrap items-end gap-10">
+                    <div>
+                      <span className="text-[10px] font-bold text-neutral-500 uppercase block mb-1">Drugs in disease trials</span>
+                      <span className="text-3xl font-black text-emerald-600">{target.drillDown.ot_drugs_in_disease_trials ?? 0}</span>
+                    </div>
+                    <div>
+                      <span className="text-[10px] font-bold text-neutral-500 uppercase block mb-1">Max phase in disease</span>
+                      <span className="text-3xl font-black text-emerald-600">{target.drillDown.ot_max_disease_phase ? `Phase ${target.drillDown.ot_max_disease_phase}` : '—'}</span>
+                    </div>
+                  </div>
+                  {(target.drillDown.ot_drug_names?.length ?? 0) > 0 && (
+                    <p className="mt-3 text-[11px] text-neutral-600 dark:text-neutral-400 leading-relaxed">
+                      <span className="font-bold uppercase text-[9px] tracking-widest text-neutral-500">Drugs · </span>
+                      {target.drillDown.ot_drug_names!.slice(0, 10).join(', ')}
+                      {(target.drillDown.ot_drug_names!.length > 10) ? ` +${target.drillDown.ot_drug_names!.length - 10} more` : ''}
+                    </p>
+                  )}
+                  {(target.drillDown.ot_drugs_in_disease_trials ?? 0) === 0 && (
+                    <p className="mt-3 text-[11px] italic text-neutral-500">No drug targeting {target.symbol} is in a registered trial for this disease — no clinical precedent yet (a neutral novelty signal, not a negative).</p>
+                  )}
+                </div>
+
+                {/* SECONDARY — raw registry text search. Useful for browsing NCT records, but
+                    CT.gov has no gene field, so these counts are free-text matches (REN → 234). */}
+                <p className="text-[10px] font-bold uppercase text-neutral-400 tracking-widest -mb-4">ClinicalTrials.gov registry text search — free-text matches, not gene-attributed</p>
                 <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
                   <div className={`p-6 rounded-2xl border ${theme === 'dark' ? 'bg-[#171717] border-neutral-800' : 'bg-white border-neutral-200 shadow-sm'}`}>
-                    <span className="text-[10px] font-bold text-neutral-400 uppercase block mb-1">Total Trials</span>
-                    <span className="text-3xl font-black text-emerald-600">{target.drillDown.trial_count || 0}</span>
+                    <span className="text-[10px] font-bold text-neutral-400 uppercase block mb-1">Text-match Trials</span>
+                    <span className="text-3xl font-black text-neutral-500">{target.drillDown.trial_count || 0}</span>
                   </div>
                   <div className={`p-6 rounded-2xl border ${theme === 'dark' ? 'bg-[#171717] border-neutral-800' : 'bg-white border-neutral-200 shadow-sm'}`}>
                     <span className="text-[10px] font-bold text-neutral-400 uppercase block mb-1">Max Phase</span>
@@ -3139,16 +3226,23 @@ const TargetDetailView = ({
                   <div className="flex items-center gap-2">
                     <div className="p-1.5 rounded-lg bg-emerald-50 dark:bg-emerald-900/20"><Activity className="w-4 h-4 text-emerald-500" /></div>
                     <h4 className="text-[11px] font-bold uppercase text-neutral-500 tracking-wider">Clinical Trials</h4>
-                    <InfoDot isDark={theme === 'dark'} text="ClinicalTrials.gov API v2 — interventional trials for this gene + disease. Shows trial count, highest phase reached, and whether any trial is active. Click for the full trial breakdown." />
+                    <InfoDot isDark={theme === 'dark'} text="Headline = Open Targets target-to-drug-to-trial graph: drugs known to hit this gene that have a registered trial in THIS disease, and the highest phase those disease trials reached (curated gene attribution; same signal the funnel uses). Below it, the ClinicalTrials.gov registry text search is shown for browsing NCT records - those counts are free-text matches and are NOT gene-attributed." />
                   </div>
                   <div className="text-[9px] font-bold text-emerald-600 uppercase tracking-tighter">Click for Details</div>
                 </div>
                 <div className="space-y-3">
-                  <div className="flex justify-between items-end"><span className="text-[10px] font-bold text-neutral-400 uppercase">Total Trials</span><span className="text-xl font-black text-emerald-600">{target.drillDown.trial_count || 0}</span></div>
-                  <div className="flex justify-between items-end"><span className="text-[10px] font-bold text-neutral-400 uppercase">Max Phase</span><span className="text-lg font-bold text-emerald-500">{target.drillDown.max_phase || 'N/A'}</span></div>
-                  <div className="flex justify-between items-end"><span className="text-[10px] font-bold text-neutral-400 uppercase">Interventional</span><span className="text-[11px] font-mono font-bold text-emerald-600">{target.drillDown.interventional_count || 0}</span></div>
-                  <div className="pt-2 border-t border-neutral-100 dark:border-neutral-800 flex items-center gap-2">
-                    <span className="text-[9px] font-bold text-neutral-400 uppercase">Source: ClinicalTrials.gov</span>
+                  {/* Authoritative: gene-attributed + disease-scoped (matches the funnel axis) */}
+                  <div className="flex justify-between items-end"><span className="text-[10px] font-bold text-neutral-400 uppercase">Drugs in disease trials</span><span className="text-xl font-black text-emerald-600">{target.drillDown.ot_drugs_in_disease_trials ?? 0}</span></div>
+                  <div className="flex justify-between items-end"><span className="text-[10px] font-bold text-neutral-400 uppercase">Max phase in disease</span><span className="text-lg font-bold text-emerald-500">{target.drillDown.ot_max_disease_phase ? `Phase ${target.drillDown.ot_max_disease_phase}` : '—'}</span></div>
+                  <div className="pt-1 flex items-center gap-2">
+                    <span className="text-[9px] font-bold text-neutral-400 uppercase">Source: Open Targets</span>
+                  </div>
+                  {/* Secondary: raw registry text search — useful for browsing, NOT gene-attributed */}
+                  <div className="pt-2 border-t border-neutral-100 dark:border-neutral-800 space-y-1.5">
+                    <span className="text-[9px] font-bold text-neutral-400 uppercase">ClinicalTrials.gov registry search (text match, not gene-attributed)</span>
+                    <div className="flex justify-between items-end"><span className="text-[10px] font-bold text-neutral-400 uppercase">Text-match trials</span><span className="text-[11px] font-mono font-bold text-neutral-500">{target.drillDown.trial_count || 0}</span></div>
+                    <div className="flex justify-between items-end"><span className="text-[10px] font-bold text-neutral-400 uppercase">Max phase (registry)</span><span className="text-[11px] font-mono font-bold text-neutral-500">{target.drillDown.max_phase || 'N/A'}</span></div>
+                    <div className="flex justify-between items-end"><span className="text-[10px] font-bold text-neutral-400 uppercase">Interventional</span><span className="text-[11px] font-mono font-bold text-neutral-500">{target.drillDown.interventional_count || 0}</span></div>
                   </div>
                 </div>
               </div>
@@ -5434,7 +5528,9 @@ CRITICAL RULES:
 
   return (
     <div className={`h-screen flex flex-col transition-colors duration-200 ai-native-bg ${theme === 'dark' ? 'bg-[#070b12] text-slate-200' : 'bg-[#eef3f8] text-slate-950'}`}>
-      <header className={`px-4 md:px-6 py-2.5 flex items-center justify-between gap-3 border-b backdrop-blur-xl ${theme === 'dark' ? 'bg-[#070b12]/90 border-slate-800/80' : 'bg-white/95 border-slate-200'}`}>
+      {/* relative z-30 gives the header its own stacking context ABOVE <main>, so the
+          Research ▾ dropdown overlays the breadcrumb bar instead of being painted under it. */}
+      <header className={`relative z-30 px-4 md:px-6 py-2.5 flex items-center justify-between gap-3 border-b backdrop-blur-xl ${theme === 'dark' ? 'bg-[#070b12]/90 border-slate-800/80' : 'bg-white/95 border-slate-200'}`}>
         <div className="flex items-center gap-3 min-w-0 shrink-0">
           <div className="h-9 w-9 rounded-xl bg-slate-950 dark:bg-blue-600 text-white flex items-center justify-center shadow-lg shadow-blue-600/15">
             <FlaskConical className="w-5 h-5" />

@@ -37,6 +37,9 @@ type EnrichedFeature = {
 
 const safeParse = (s: any) => { try { return typeof s === 'string' ? JSON.parse(s) : s; } catch { return null; } };
 const num = (v: any) => (v == null || isNaN(Number(v)) ? null : Number(v));
+// Literature denominator guard — velocity = recent/total is quantised noise below this many
+// papers (2 papers can only give 0, 0.5 or 1). Keep in sync with scripts/d2t.ts.
+const MIN_LIT_PAPERS = 5;
 const csvCell = (v: any) => { const s = String(v ?? ''); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
 const fmtN = (n: number) => n.toLocaleString('en-US');
 
@@ -166,10 +169,15 @@ export const FunnelView: React.FC<Props> = ({ theme = 'light' }) => {
       const feats: GeneFeature[] = (scores as any[]).map(r => {
         const g = r.gene_symbol;
         const mut = ev[g]?.mutation, drug = ev[g]?.druggability, clin = ev[g]?.clinical;
-        // Literature: prefer PubMed (gene-specific, precise), fall back to Europe PMC
-        // (full-text, far broader coverage) — PubMed alone is often rate-limited to a
-        // sparse set, so this lifts the tier's coverage from a few hundred to ~all genes.
-        const lit = ev[g]?.literature ?? ev[g]?.literature_epmc;
+        // Literature: Europe PMC is the SINGLE scoring source (one consistent corpus, ~95%
+        // coverage). PubMed is kept as a precise annotation but never scored — it is
+        // rate-limited to a small arbitrary subset and returns ~20x fewer papers, so its
+        // velocity sits on a tiny denominator. Scoring a mix made genes incomparable: for the
+        // SAME gene the two velocities differed by ~0.28 on a 0-1 axis.
+        // Denominator guard: under MIN_LIT_PAPERS the recent/total ratio is quantised noise.
+        const lit = ev[g]?.literature_epmc;
+        const litPapers = lit ? num(lit.paper_count) : null;
+        const litUsable = !!lit && (litPapers == null || litPapers >= MIN_LIT_PAPERS);
         const dys = ev[g]?.expression_tvn, dep = ev[g]?.dependency, saf = ev[g]?.safety;
         // Raw values pulled straight from the stored value_json contract — the
         // SAME fields the gene drawer panels display, so funnel == drawer.
@@ -179,7 +187,7 @@ export const FunnelView: React.FC<Props> = ({ theme = 'light' }) => {
         const chronos = dep ? num(dep.mean) : null;
         const loeuf = saf ? num(saf.loeuf) : null;
         const trial_count = clin ? num(clin.trial_count) : null;
-        const velocity = lit ? num(lit.velocity) : null;
+        const velocity = litUsable ? num(lit!.velocity) : null;
         return {
           gene_symbol: g,
           rank: num(r.rank),
@@ -193,7 +201,7 @@ export const FunnelView: React.FC<Props> = ({ theme = 'light' }) => {
             druggability: drug ? num(drug.axis ?? drug.score) : num(r.target_score),
             safety: saf ? num(saf.axis ?? saf.pli) : null,
             clinical: clin ? num(clin.axis ?? clin.trial_count) : null,
-            literature: lit ? num(lit.axis ?? velocity) : null,
+            literature: litUsable ? num(lit!.axis ?? velocity) : null,
             tissue: num(r.tau_tissue),
           },
           raw: { genetic, frequency, log2fc, chronos, loeuf, trial_count, velocity },
