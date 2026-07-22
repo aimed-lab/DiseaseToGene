@@ -4,7 +4,7 @@ import path from "path";
 import fs from "fs";
 import { createClient } from "@supabase/supabase-js";
 import { createHash } from "crypto";
-import { fetchCohortMutations, fetchDruggability, fetchClinical, fetchLiterature, fetchPubmedLiterature, resolveCbioStudy } from "./evidenceProviders.js";
+import { fetchCohortMutations, fetchDruggability, fetchClinical, fetchLiterature, fetchPubmedLiterature, resolveCbioStudy, resolveDiseaseScope } from "./evidenceProviders.js";
 import { getPocketStructure } from "./dogsiteService.js";
 import { getModalityProfile } from "./modalityService.js";
 import { enrichGene, enrichGenes } from "./enrichService.js";
@@ -712,11 +712,19 @@ function setupRoutes() {
     const gene = String(req.query.gene || '').toUpperCase().trim();
     const disease = String(req.query.disease || '').trim();
     if (!gene || !disease) return res.status(400).json({ error: "gene and disease required" });
-    const key = cacheKey('clinical', `${gene}::${disease}`);
+    // Namespace is versioned so a scoping change invalidates stale entries:
+    //   _ot  — axis moved from ClinicalTrials.gov free-text to the Open Targets trial graph (#3)
+    //   _ot2 — disease scope fixed: resolve name->ontology id + multi-token hints (a single
+    //          first-word hint made "exocrine pancreatic carcinoma" miss trials tagged
+    //          "pancreatic adenocarcinoma", silently undercounting SRC 5 -> 4).
+    const key = cacheKey('clinical_ot2', `${gene}::${disease}`);
     const cached = await readApiCache(key); if (cached) return res.json(cached.body);
     try {
-      const { fetchClinical } = await import('./evidenceProviders.js');
-      const data = await fetchClinical(gene, disease);
+      const { fetchClinical, resolveDiseaseScope } = await import('./evidenceProviders.js');
+      // #3: clinical is now disease-SCOPED via the OT trial graph — resolve the ontology
+      // scope first (diseaseId optional; the name hint alone still scopes correctly).
+      const scope = await resolveDiseaseScope(String(req.query.diseaseId || ''), disease);
+      const data = await fetchClinical(gene, scope);
       await writeApiCache(key, { status: 200, body: { gene, data }, contentType: 'application/json' });
       res.json({ gene, data });
     } catch (e: any) { res.status(502).json({ error: e?.message || 'clinical fetch failed' }); }
@@ -783,6 +791,9 @@ function setupRoutes() {
 
   // ── Evidence providers (the 3 cheap axes) — write the value_json contract ──────
   const clamp01 = (n: number) => Math.max(0, Math.min(1, n));
+  // Literature denominator guard: velocity = recent/total, so below this many papers the ratio
+  // is quantised noise (2 papers -> only 0, 0.5 or 1 possible). Null the axis instead.
+  const MIN_LIT_PAPERS = 5;
   const toNum = (v: any): number | null => (Number.isFinite(Number(v)) ? Number(v) : null);
 
   // server-side gnomAD constraint (safety axis). Reads the preloaded v4.0
@@ -846,11 +857,15 @@ function setupRoutes() {
         for (const g of genes) {
           const d = ex.genes[g]; if (!d) continue;
           const log2fc = toNum(d.log2fc);
-          const axis = log2fc != null ? clamp01(Math.abs(log2fc) / 4) : null;
           const up = (log2fc ?? 0) >= 0;
+          // #4/#5: direction from log2FC sign; flag near-zero-normal (pseudocount floor -9.966) as
+          // low-confidence and cap the stored magnitude (axis saturates at |log2FC|>=4 regardless).
+          const normalFloored = toNum(d.normal_median) != null && toNum(d.normal_median)! <= -9.9;
+          const cappedLog2fc = log2fc != null ? Math.max(-10, Math.min(10, log2fc)) : null;
+          const axis = cappedLog2fc != null ? clamp01(Math.abs(cappedLog2fc) / 4) : null;
           rows.push({ gene_symbol: g, evidence_type: 'expression_tvn', source: ex.meta?.source || 'UCSC Xena Toil (TCGA-PAAD vs GTEx)',
-            value_text: `${up ? 'up' : 'down'} log2FC ${log2fc}`,
-            value_json: { axis, direction: 'pro', display: `${up ? 'up' : 'down'} log2FC ${log2fc} (p ${d.p})`, log2fc, p: d.p, tumor_median: d.tumor_median, normal_median: d.normal_median } });
+            value_text: `${up ? 'up' : 'down'} log2FC ${log2fc}${normalFloored ? ' (low-confidence: normal floor)' : ''}`,
+            value_json: { axis, direction: up ? 'pro' : 'con', display: `${up ? 'up' : 'down'} log2FC ${log2fc} (p ${d.p})${normalFloored ? ' · low-confidence' : ''}`, log2fc, log2fc_capped: cappedLog2fc, low_confidence: normalFloored, p: d.p, tumor_median: d.tumor_median, normal_median: d.normal_median } });
           n++;
         }
         jobLog(job, `Expression axis: ${n} genes`); persistJobs();
@@ -879,10 +894,12 @@ function setupRoutes() {
       const got = await Promise.all(genes.slice(i, i + CONC).map(async g => ({ g, c: await gnomadConstraint(g) })));
       for (const { g, c } of got) {
         if (!c || (c.pli == null && c.loeuf == null)) continue;
-        const concern = c.loeuf != null ? clamp01(1 - c.loeuf / 1.5) : (c.pli != null ? clamp01(c.pli) : 0);
+        // #7: gnomAD LOEUF (oe_lof_upper) is bounded ~[0,2]; drop artifacts above (e.g. SSX1=4.93).
+        const loeuf = c.loeuf != null && c.loeuf <= 3 ? c.loeuf : null;
+        const concern = loeuf != null ? clamp01(1 - loeuf / 1.5) : (c.pli != null ? clamp01(c.pli) : 0);
         rows.push({ gene_symbol: g, evidence_type: 'safety', source: 'gnomAD v4',
-          value_text: `pLI ${c.pli} · LOEUF ${c.loeuf}`,
-          value_json: { axis: concern, direction: 'con', display: `pLI ${c.pli != null ? c.pli.toFixed(2) : '—'} · LOEUF ${c.loeuf != null ? c.loeuf.toFixed(2) : '—'}`, pli: c.pli, loeuf: c.loeuf } });
+          value_text: `pLI ${c.pli} · LOEUF ${loeuf}`,
+          value_json: { axis: concern, direction: 'con', display: `pLI ${c.pli != null ? c.pli.toFixed(2) : '—'} · LOEUF ${loeuf != null ? loeuf.toFixed(2) : '—'}`, pli: c.pli, loeuf } });
         safeN++;
       }
       if (i % (CONC * 10) === 0) { jobLog(job, `Safety axis: ${safeN}/${genes.length}…`); persistJobs(); }
@@ -915,19 +932,20 @@ function setupRoutes() {
     }
     await flush('mutation');
 
-    // druggability — ChEMBL, per gene (no bulk endpoint), small concurrency.
+    // druggability — Open Targets (drugs by modality + tractability), per gene, small concurrency.
     let drugN = 0; const DCONC = 5;
     for (let i = 0; want('druggability') && i < genes.length; i += DCONC) {
       if (isCancelled()) { jobLog(job, 'Cancelled during druggability'); persistJobs(); break; }
       const got = await Promise.all(genes.slice(i, i + DCONC).map(async g => ({ g, d: await fetchDruggability(g).catch(() => null) })));
       for (const { g, d } of got) {
-        if (!d) continue;
-        rows.push({ gene_symbol: g, evidence_type: 'druggability', source: 'ChEMBL',
-          value_text: `${d.label}${d.best_ic50_nm != null ? ` · IC50 ${d.best_ic50_nm} nM` : ''}`,
+        if (!d) continue;   // null = not-fetched → skip (3-state; never write a fabricated no-drug)
+        rows.push({ gene_symbol: g, evidence_type: 'druggability', source: 'Open Targets (drugAndClinicalCandidates + tractability)',
+          value_text: `${d.label}${d.total_compounds ? ` · ${d.total_compounds} drugs` : ''}${d.tractable_modalities ? ` · ${d.tractable_modalities} tractable` : ''}`,
           value_json: { axis: clamp01(d.score), direction: 'pro', label: d.label,
-            display: `${d.label}${d.best_ic50_nm != null ? ` · IC50 ${d.best_ic50_nm.toFixed(1)} nM` : ''}`,
-            score: d.score, best_ic50_nm: d.best_ic50_nm, total_compounds: d.total_compounds,
-            target_max_phase: d.target_max_phase, target_drug_count: d.target_drug_count } });
+            display: `${d.label}${d.total_compounds ? ` · ${d.total_compounds} developed drug${d.total_compounds === 1 ? '' : 's'}` : ''}${d.tractable_modalities ? ` · ${d.tractable_modalities} tractable modalit${d.tractable_modalities === 1 ? 'y' : 'ies'}` : ''}`,
+            score: d.score, total_compounds: d.total_compounds, target_max_phase: d.target_max_phase,
+            proven_modalities: d.proven_modalities, tractable_modalities: d.tractable_modalities,
+            ensembl_id: d.target_chembl_id, best_ic50_nm: d.best_ic50_nm } });
         drugN++;
       }
       if (i % (DCONC * 20) === 0) { jobLog(job, `Druggability axis: ${drugN}/${genes.length}…`); persistJobs(); }
@@ -935,18 +953,24 @@ function setupRoutes() {
     jobLog(job, `Druggability axis: ${drugN} genes`); persistJobs();
     await flush('druggability');
 
-    // clinical — ClinicalTrials.gov, per gene (disease-scoped), small concurrency.
+    // clinical — #3: OT target→drug→trial graph, disease-scoped + gene-attributed
+    // (replaces CT.gov free-text, which had no gene field and matched substrings).
     let clinN = 0; const CCONC = 5;
-    for (let i = 0; want('clinical') && i < genes.length; i += CCONC) {
+    const clinScope = want('clinical') ? await resolveDiseaseScope(diseaseId, diseaseName) : null;
+    if (clinScope) jobLog(job, `Clinical axis: disease scope = ${clinScope.ids.size} ontology ids`);
+    for (let i = 0; want('clinical') && clinScope && i < genes.length; i += CCONC) {
       if (isCancelled()) { jobLog(job, 'Cancelled during clinical'); persistJobs(); break; }
-      const got = await Promise.all(genes.slice(i, i + CCONC).map(async g => ({ g, c: await fetchClinical(g, diseaseName).catch(() => null) })));
+      const got = await Promise.all(genes.slice(i, i + CCONC).map(async g => ({ g, c: await fetchClinical(g, clinScope).catch(() => null) })));
       for (const { g, c } of got) {
-        if (!c || c.trial_count === 0) continue;     // only store genes with real trial activity
-        rows.push({ gene_symbol: g, evidence_type: 'clinical', source: 'ClinicalTrials.gov',
-          value_text: `${c.trial_count} trials${c.max_phase ? ` · Phase ${c.max_phase}` : ''}`,
-          value_json: { axis: clamp01(c.trial_count / 30), direction: 'pro',
-            display: `${c.trial_count} trials${c.max_phase ? ` · max Phase ${c.max_phase}` : ''}`,
-            trial_count: c.trial_count, max_phase: c.max_phase } });
+        if (!c || c.n_drugs_in_disease_trials === 0) continue;   // no clinical precedent — neutral, not stored
+        const phaseTxt = c.max_disease_trial_phase ? ` · max Phase ${c.max_disease_trial_phase}` : '';
+        rows.push({ gene_symbol: g, evidence_type: 'clinical', source: 'Open Targets (target drug trials, disease-scoped)',
+          value_text: `${c.n_drugs_in_disease_trials} drug${c.n_drugs_in_disease_trials === 1 ? '' : 's'} in trials${phaseTxt}`,
+          value_json: { axis: c.axis, direction: 'pro',
+            display: `${c.n_drugs_in_disease_trials} drug${c.n_drugs_in_disease_trials === 1 ? '' : 's'} in ${diseaseName} trials${phaseTxt}`,
+            trial_count: c.trial_count, max_phase: c.max_phase,
+            n_drugs_in_disease_trials: c.n_drugs_in_disease_trials, max_disease_trial_phase: c.max_disease_trial_phase,
+            drug_names: c.drug_names } });
         clinN++;
       }
       if (i % (CCONC * 20) === 0) { jobLog(job, `Clinical axis: ${clinN}/${genes.length}…`); persistJobs(); }
@@ -955,9 +979,11 @@ function setupRoutes() {
     await flush('clinical');
 
     // literature — BOTH sources per gene (disease-scoped), small concurrency.
-    //   'literature'      = PubMed [Gene Name] (gene-specific, the funnel axis)
-    //   'literature_epmc' = Europe PMC full-text (broader, supplementary)
-    // Both stored as raw rows so a case study can use either.
+    //   'literature_epmc' = Europe PMC full-text — THE SINGLE SCORING SOURCE (one corpus)
+    //   'literature'      = PubMed [Gene Name]  — ANNOTATION ONLY (axis null)
+    // PubMed is more precise per paper but rate-limited and ~20x smaller, so its velocity sits
+    // on a tiny denominator. Scoring a mix of the two made genes incomparable (same gene: ~0.28
+    // velocity gap). Both are still stored so a case study can cite either.
     let litN = 0, epmcN = 0; const LCONC = 5;
     for (let i = 0; want('literature') && i < genes.length; i += LCONC) {
       if (isCancelled()) { jobLog(job, 'Cancelled during literature'); persistJobs(); break; }
@@ -969,17 +995,18 @@ function setupRoutes() {
       for (const { g, pm, ep } of got) {
         if (pm && pm.paper_count > 0) {
           rows.push({ gene_symbol: g, evidence_type: 'literature', source: 'PubMed',
-            value_text: `${pm.paper_count} papers${pm.recent_count ? ` · ${pm.recent_count} recent` : ''}`,
-            value_json: { axis: clamp01(pm.velocity), direction: 'pro',
-              display: `${pm.paper_count} papers · ${Math.round(pm.velocity * 100)}% in last 3y`,
+            value_text: `${pm.paper_count} papers${pm.recent_count ? ` · ${pm.recent_count} recent` : ''} (annotation)`,
+            value_json: { axis: null, role: 'annotation', direction: 'pro',
+              display: `${pm.paper_count} papers · ${Math.round(pm.velocity * 100)}% in last 3y (annotation, not scored)`,
               paper_count: pm.paper_count, recent_count: pm.recent_count, velocity: pm.velocity } });
           litN++;
         }
         if (ep && ep.paper_count > 0) {
+          const thin = ep.paper_count < MIN_LIT_PAPERS;   // denominator guard — see constant
           rows.push({ gene_symbol: g, evidence_type: 'literature_epmc', source: 'Europe PMC',
-            value_text: `${ep.paper_count} papers${ep.recent_count ? ` · ${ep.recent_count} recent` : ''}`,
-            value_json: { axis: clamp01(ep.velocity), direction: 'pro',
-              display: `${ep.paper_count} papers · ${Math.round(ep.velocity * 100)}% in last 3y`,
+            value_text: `${ep.paper_count} papers${ep.recent_count ? ` · ${ep.recent_count} recent` : ''}${thin ? ' (low-confidence: few papers)' : ''}`,
+            value_json: { axis: thin ? null : clamp01(ep.velocity), role: 'scoring', low_confidence: thin, direction: 'pro',
+              display: `${ep.paper_count} papers · ${Math.round(ep.velocity * 100)}% in last 3y${thin ? ' · low-confidence' : ''}`,
               paper_count: ep.paper_count, recent_count: ep.recent_count, velocity: ep.velocity } });
           epmcN++;
         }

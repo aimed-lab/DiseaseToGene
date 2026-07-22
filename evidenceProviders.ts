@@ -11,6 +11,8 @@
 // Keep any string destined for Oracle value_text/value_json ASCII/Latin-1 safe
 // (the DB charset mangles arrows etc.); "·" is fine, arrows are not.
 
+import { getModalityProfile, geneToEnsembl } from './modalityService.ts';
+
 // ─── small helpers ────────────────────────────────────────────────────────────
 const num = (v: any): number | null => (Number.isFinite(Number(v)) ? Number(v) : null);
 const clamp01 = (n: number) => Math.max(0, Math.min(1, n));
@@ -95,93 +97,189 @@ export async function fetchCohortMutations(disease: string): Promise<Map<string,
   return out;
 }
 
-// ─── Druggability axis — ChEMBL (per gene) ────────────────────────────────────
-// Mirrors chemblService.ts: resolve target -> best IC50 + total compounds + the
-// target-level max trial phase (from /mechanism), which drives the label.
-
-const CHEMBL_BASE = 'https://www.ebi.ac.uk/chembl/api/data';
+// ─── Druggability axis — Open Targets (per gene) ──────────────────────────────
+// Uses modalityService.getModalityProfile: developed drugs by modality (FACT) plus
+// per-modality tractability (PREDICTION), from OT drugAndClinicalCandidates +
+// tractability. Replaces the old multi-call ChEMBL REST path, whose every timeout /
+// unresolved-target / caught error was silently written as "No Drug Data Found" —
+// the root cause of ~336 false negatives incl. EGFR/BRAF/CDK4/AKT1 (bug #1).
+//
+// THREE-STATE by contract — the fix for #1:
+//   • lookup FAILED or target unresolved  → return null  → caller writes NO row
+//     (a missing axis, NOT a fabricated "no drug"). Re-run fills it in — idempotent.
+//   • lookup ok, developed drugs found    → label by developed-drug maturity (stage)
+//   • lookup ok, genuinely no drugs       → "No Drug Data Found" (tractability still noted,
+//     so a novel-but-tractable target like PHGDH scores > 0 and is never deleted)
 
 export interface DruggabilityStat {
   label: 'Clinically Validated' | 'In Clinical Development' | 'Preclinical Only' | 'No Drug Data Found';
   score: number;                 // 0..1
-  best_ic50_nm: number | null;
-  total_compounds: number;
-  target_max_phase: number;
-  target_drug_count: number;
-  target_chembl_id: string | null;
-}
-
-async function chemblTargetId(symbol: string): Promise<string | null> {
-  try {
-    const d = await getJson(`${CHEMBL_BASE}/target/search?q=${encodeURIComponent(symbol)}&organism=Homo+sapiens&format=json`);
-    const targets: any[] = d?.targets || [];
-    if (!targets.length) return null;
-    const exact = targets.find(t => t.target_components?.some((c: any) => c.target_component_synonyms?.some((s: any) => s.syn_type === 'GENE_SYMBOL' && s.component_synonym?.toUpperCase() === symbol.toUpperCase())));
-    return (exact || targets[0])?.target_chembl_id || null;
-  } catch { return null; }
-}
-
-async function chemblCompounds(targetId: string): Promise<{ best: number | null; total: number }> {
-  try {
-    const d = await getJson(`${CHEMBL_BASE}/activity?target_chembl_id=${targetId}&standard_type=IC50&format=json&limit=25`);
-    const acts: any[] = d?.activities || [];
-    const total = d?.page_meta?.total_count || acts.length;
-    const valid = acts.map(a => num(a.standard_value)).filter((v): v is number => v != null && v > 0).sort((a, b) => a - b);
-    return { best: valid[0] ?? null, total };
-  } catch { return { best: null, total: 0 }; }
-}
-
-async function chemblTargetMaxPhase(targetId: string): Promise<{ maxPhase: number; drugCount: number }> {
-  try {
-    const d = await getJson(`${CHEMBL_BASE}/mechanism?target_chembl_id=${targetId}&format=json&limit=100`);
-    const mechs: any[] = d?.mechanisms || [];
-    let maxPhase = 0;
-    for (const m of mechs) { const p = num(m.max_phase) ?? 0; if (p > maxPhase) maxPhase = p; }
-    return { maxPhase, drugCount: mechs.length };
-  } catch { return { maxPhase: 0, drugCount: 0 }; }
-}
-
-function druggabilityLabel(targetMaxPhase: number, totalCompounds: number, bestIc50: number | null): { label: DruggabilityStat['label']; score: number } {
-  const potent = bestIc50 != null && bestIc50 < 100;
-  if (targetMaxPhase >= 4) return { label: 'Clinically Validated', score: 1.0 };
-  if (targetMaxPhase >= 1) return { label: 'In Clinical Development', score: 0.85 };
-  if (totalCompounds > 0 && potent) return { label: 'Preclinical Only', score: 0.65 };
-  if (totalCompounds > 0) return { label: 'Preclinical Only', score: 0.5 };
-  return { label: 'No Drug Data Found', score: 0.0 };
+  best_ic50_nm: number | null;   // OT path does not return IC50 → null (kept for shape compat)
+  total_compounds: number;       // developed drugs (OT drugAndClinicalCandidates count)
+  target_max_phase: number;      // 0..4 max developed-drug clinical stage (−1 → 0)
+  target_drug_count: number;     // # proven (developed-drug) modalities
+  target_chembl_id: string | null; // repurposed: the OT Ensembl id (provenance handle)
+  tractable_modalities: number;  // # modalities assessed tractable — the novel-target-safe signal
+  proven_modalities: number;     // # distinct developed-drug modalities
 }
 
 export async function fetchDruggability(symbol: string): Promise<DruggabilityStat | null> {
-  const targetId = await chemblTargetId(symbol);
-  if (!targetId) return { label: 'No Drug Data Found', score: 0, best_ic50_nm: null, total_compounds: 0, target_max_phase: 0, target_drug_count: 0, target_chembl_id: null };
-  const [compounds, status] = await Promise.all([chemblCompounds(targetId), chemblTargetMaxPhase(targetId)]);
-  const { label, score } = druggabilityLabel(status.maxPhase, compounds.total, compounds.best);
-  return { label, score, best_ic50_nm: compounds.best, total_compounds: compounds.total, target_max_phase: status.maxPhase, target_drug_count: status.drugCount, target_chembl_id: targetId };
+  const p = await getModalityProfile(symbol);
+  // NOT-FETCHED / unresolved → null. Never fabricate "No Drug Data Found" from a failed lookup.
+  if (p.error) return null;
+  const rank = p.fact.bestStageRank;            // −1 when no developed drug
+  const drugs = p.fact.totalDrugs;
+  const tractable = p.prediction.tractableModalities;
+  let label: DruggabilityStat['label'], score: number;
+  if (rank >= 4)          { label = 'Clinically Validated';    score = 1.0; }
+  else if (rank >= 1)     { label = 'In Clinical Development'; score = 0.85; }
+  else if (drugs > 0)     { label = 'Preclinical Only';        score = 0.5; }  // preclinical developed drugs
+  else if (tractable > 0) { label = 'Preclinical Only';        score = 0.3; }  // novel, but a tractable handle
+  else                    { label = 'No Drug Data Found';      score = 0.0; }  // genuinely none
+  return {
+    label, score, best_ic50_nm: null,
+    total_compounds: drugs,
+    target_max_phase: rank >= 0 ? rank : 0,
+    target_drug_count: p.fact.provenModalities,
+    target_chembl_id: p.ensemblId,
+    tractable_modalities: tractable,
+    proven_modalities: p.fact.provenModalities,
+  };
 }
 
-// ─── Clinical axis — ClinicalTrials.gov v2 (per gene, disease-scoped) ─────────
-// "Is there trial activity / room?" — trials in this disease that mention the
-// gene/target, plus the highest phase reached. Per-gene query (no bulk join from
-// trial intervention back to gene target exists), cached upstream.
+// ─── Clinical axis — Open Targets target→drug→trial graph (disease-scoped) ────
+// REPLACES the ClinicalTrials.gov free-text search. CT.gov has NO gene field (it stores
+// disease + intervention, not target), so any gene lookup was substring matching: REN hit
+// "cur-REN-t" / "recur-REN-t" / "-REN-al" and scored renin 234 trials for PDAC. Gene→trial
+// attribution exists only in a curated source — Open Targets.
+//
+// The question this answers: "does a drug that hits THIS target have a trial in THIS
+// disease, and how far has that trial got?"
+//
+// ⚠ NEVER read the row-level `drug.maximumClinicalStage` — that is the drug's GLOBAL max
+// stage across ALL diseases. Dasatinib/bosutinib are APPROVED (for CML) but only Phase 2
+// in pancreatic; using the global stage would falsely credit SRC with an approved PDAC
+// drug. Phase MUST come from `clinicalReports.trialPhase` filtered to the disease.
 
-const CT_BASE = 'https://clinicaltrials.gov/api/v2/studies';
-const PHASE_NUM: Record<string, number> = { EARLY_PHASE1: 0.5, PHASE1: 1, PHASE2: 2, PHASE3: 3, PHASE4: 4 };
+const OT_GQL = 'https://api.platform.opentargets.org/api/v4/graphql';
 
-export interface ClinicalStat { trial_count: number; max_phase: number; }
+// Exact strings OT returns (no spaces — not "Phase III").
+const TRIAL_PHASE_NUM: Record<string, number> = {
+  PHASE4: 4, PHASE3: 3, 'PHASE2/PHASE3': 2.5, PHASE2: 2, 'PHASE1/PHASE2': 1.5, PHASE1: 1, EARLY_PHASE1: 0.5,
+};
 
-export async function fetchClinical(symbol: string, disease: string): Promise<ClinicalStat | null> {
+async function otGql(query: string, variables: Record<string, unknown>): Promise<any> {
+  const r = await fetch(OT_GQL, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query, variables }) });
+  if (!r.ok) throw new Error(`OT ${r.status}`);
+  const j = await r.json();
+  if (j.errors) throw new Error('OT: ' + String(j.errors?.[0]?.message || 'query error').slice(0, 160));
+  return j.data;
+}
+
+// The disease + all its descendant ontology ids, resolved ONCE per enrich run so the
+// per-gene trial filter is a cheap id-set test. `nameHints` is the safety net for trial
+// indications tagged to a RELATED node (parent/sibling) that isn't in `ids`.
+//
+// Two defects this guards against, both found live:
+//  • Callers that pass no diseaseId (the /api/clinical route from the drill-down panels)
+//    would otherwise have an EMPTY id set and fall back to name matching alone — so we
+//    resolve the name to an ontology id here when no id is supplied.
+//  • A single first-word hint silently undercounts: viewing "exocrine pancreatic carcinoma"
+//    gave hint "exocrin", which missed BOSUTINIB whose only trial is tagged "pancreatic
+//    adenocarcinoma" — a real Phase-1 PDAC trial, dropped. We therefore keep a hint per
+//    SIGNIFICANT token and drop generic oncology words that would match any cancer.
+export interface DiseaseScope { ids: Set<string>; nameHints: string[] }
+
+// Words too generic to scope on — "carcinoma" alone would match breast carcinoma etc.
+const GENERIC_DISEASE_WORDS = new Set([
+  'cancer', 'carcinoma', 'adenocarcinoma', 'neoplasm', 'neoplasia', 'tumor', 'tumour',
+  'malignant', 'malignancy', 'disease', 'disorder', 'syndrome', 'the', 'of', 'and',
+]);
+
+function diseaseNameHints(diseaseName: string): string[] {
+  const toks = (diseaseName || '').toLowerCase().replace(/[^a-z ]/g, ' ').split(/\s+/).filter(Boolean);
+  const hints = toks
+    .filter(t => t.length >= 4 && !GENERIC_DISEASE_WORDS.has(t))
+    .map(t => t.slice(0, 7));                    // prefix tolerates pancreatic/pancreas
+  return [...new Set(hints)];
+}
+
+export async function resolveDiseaseScope(diseaseId: string, diseaseName: string): Promise<DiseaseScope> {
+  const ids = new Set<string>();
+  let id = (diseaseId || '').trim();
+  // No id supplied (drill-down panels) → resolve the name so descendants still work.
+  if (!id && diseaseName) {
+    try {
+      const s = await otGql(`query($q:String!){ search(queryString:$q, entityNames:["disease"], page:{index:0,size:1}){ hits{ id } } }`, { q: diseaseName });
+      id = s?.search?.hits?.[0]?.id || '';
+    } catch { /* name hints still apply */ }
+  }
+  if (id) {
+    ids.add(id);
+    try {
+      const d = await otGql(`query($id:String!){ disease(efoId:$id){ id name descendants } }`, { id });
+      const dis = d?.disease;
+      if (dis?.id) ids.add(dis.id);
+      for (const x of (dis?.descendants || [])) if (x) ids.add(String(x));
+    } catch { /* fall back to id + name hints */ }
+  }
+  return { ids, nameHints: diseaseNameHints(diseaseName) };
+}
+
+export interface ClinicalStat {
+  trial_count: number;               // = n_drugs_in_disease_trials (kept for shape compat)
+  max_phase: number;                 // = max_disease_trial_phase (kept for shape compat)
+  n_drugs_in_disease_trials: number;
+  max_disease_trial_phase: number;
+  drug_names: string[];
+  axis: number;                      // 0..1 — maturity-dominant, breadth only breaks ties
+}
+
+// Axis: maturity dominates (a Phase-3 PDAC drug beats five Phase-1s). Phase4→1.00,
+// Phase3→0.75, Phase2→0.50, Phase1→0.25, none→0. Small capped breadth bonus as tie-break.
+function clinicalAxis(maxPhase: number, nDrugs: number): number {
+  if (maxPhase <= 0) return 0;
+  const base = clamp01(maxPhase / 4);
+  const breadth = Math.min(0.10, 0.02 * Math.log1p(nDrugs));
+  return clamp01(base + breadth);
+}
+
+export async function fetchClinical(symbol: string, scope: DiseaseScope): Promise<ClinicalStat | null> {
   try {
-    const url = `${CT_BASE}?query.cond=${encodeURIComponent(disease)}&query.term=${encodeURIComponent(symbol)}` +
-      `&pageSize=50&countTotal=true&fields=protocolSection.designModule.phases`;
-    const d = await getJson(url);
-    const trial_count = num(d?.totalCount) ?? 0;
-    let max_phase = 0;
-    for (const st of (d?.studies || [])) {
-      for (const p of (st?.protocolSection?.designModule?.phases || [])) {
-        const v = PHASE_NUM[p] ?? 0; if (v > max_phase) max_phase = v;
+    const ensemblId = await geneToEnsembl(symbol);
+    if (!ensemblId) return null;                  // unresolved → not-fetched (3-state), never a fake 0
+    const d = await otGql(
+      `query($e:String!){ target(ensemblId:$e){ drugAndClinicalCandidates{ rows{
+         drug{ name }
+         clinicalReports{ trialPhase diseases{ disease{ id name } } }
+       } } } }`, { e: ensemblId });
+    const rows: any[] = d?.target?.drugAndClinicalCandidates?.rows ?? [];
+    const drugs = new Set<string>();
+    let maxPhase = 0;
+    for (const r of rows) {
+      let inThisDisease = false, bestForDrug = 0;
+      for (const cr of (r?.clinicalReports ?? [])) {
+        const hit = (cr?.diseases ?? []).some((x: any) => {
+          const id = x?.disease?.id, nm = String(x?.disease?.name ?? '').toLowerCase();
+          return (id && scope.ids.has(String(id))) || scope.nameHints.some(h => nm.includes(h));
+        });
+        if (!hit) continue;                        // trial is for a different disease — ignore
+        inThisDisease = true;
+        const p = TRIAL_PHASE_NUM[String(cr?.trialPhase ?? '')] ?? 0;
+        if (p > bestForDrug) bestForDrug = p;
       }
+      if (!inThisDisease) continue;
+      if (r?.drug?.name) drugs.add(String(r.drug.name));
+      if (bestForDrug > maxPhase) maxPhase = bestForDrug;
     }
-    return { trial_count, max_phase };
-  } catch { return null; }
+    const nDrugs = drugs.size;
+    return {
+      trial_count: nDrugs, max_phase: maxPhase,
+      n_drugs_in_disease_trials: nDrugs, max_disease_trial_phase: maxPhase,
+      drug_names: [...drugs].slice(0, 25),
+      axis: clinicalAxis(maxPhase, nDrugs),
+    };
+  } catch { return null; }                         // fetch failed → not-fetched (3-state)
 }
 
 // ─── Literature axis — two complementary sources (per gene, disease-scoped) ───

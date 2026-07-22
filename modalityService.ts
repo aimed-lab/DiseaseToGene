@@ -93,7 +93,7 @@ async function otFetch(query: string, variables: any): Promise<any> {
   return j.data;
 }
 
-async function geneToEnsembl(gene: string): Promise<string | null> {
+export async function geneToEnsembl(gene: string): Promise<string | null> {
   const d = await otFetch(`query($q:String!){ search(queryString:$q, entityNames:["target"]){ hits{ id name } } }`, { q: gene });
   const hits: any[] = d?.search?.hits || [];
   return (hits.find(h => h.name?.toUpperCase() === gene.toUpperCase()) || hits[0])?.id || null;

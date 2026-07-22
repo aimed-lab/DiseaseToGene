@@ -18,7 +18,7 @@ import { promises as fsp } from 'node:fs';
 import * as path from 'node:path';
 import {
   fetchCohortMutations, fetchDruggability, fetchClinical, fetchLiterature,
-  resolveCbioStudy, type MutationStat,
+  resolveCbioStudy, resolveDiseaseScope, type MutationStat,
 } from './evidenceProviders.js';
 
 const OT = 'https://api.platform.opentargets.org/api/v4/graphql';
@@ -87,17 +87,18 @@ export async function enrichGene(gene: string, diseaseId: string, diseaseName: s
   const cbio = resolveCbioStudy(diseaseName);            // matches paad / gbm cohorts
   const pancreatic = /pancrea|paad|pdac/i.test(diseaseName);
 
-  const [ens, exprRef, depRef, gnomRef] = await Promise.all([
+  const [ens, exprRef, depRef, gnomRef, clinScope] = await Promise.all([
     geneToEnsembl(g),
     pancreatic ? loadRef('expression_paad.json') : Promise.resolve(null),
     pancreatic ? loadRef('depmap_pancreatic.json') : Promise.resolve(null),
     loadRef('gnomad_constraint.json'),
+    resolveDiseaseScope(diseaseId, diseaseName),   // #3: disease-scoped clinical
   ]);
   const [genetic, cohortMap, drug, clin, lit] = await Promise.all([
     ens ? otGenetic(ens, diseaseId) : Promise.resolve({ overall: null, genetic: null }),
     cbio ? cohort(diseaseName) : Promise.resolve(null),
     fetchDruggability(g).catch(() => null),
-    fetchClinical(g, diseaseName).catch(() => null),
+    fetchClinical(g, clinScope).catch(() => null),
     fetchLiterature(g, diseaseName).catch(() => null),
   ]);
 
