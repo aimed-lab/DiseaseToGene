@@ -38,5 +38,8 @@ gnomad_raw/
 # Runtime job state (the reference tables data/*.json ARE committed)
 data/jobs.json
 
+# Snapshot CSV dumps — regenerate with scripts/export_snapshot_csv.ts <id>
+exports/
+
 # Office lock files
 ~$*
