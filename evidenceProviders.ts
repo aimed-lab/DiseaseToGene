@@ -17,10 +17,30 @@ import { getModalityProfile, geneToEnsembl } from './modalityService.ts';
 const num = (v: any): number | null => (Number.isFinite(Number(v)) ? Number(v) : null);
 const clamp01 = (n: number) => Math.max(0, Math.min(1, n));
 
-async function getJson(url: string, init?: RequestInit): Promise<any> {
-  const r = await fetch(url, init);
-  if (!r.ok) throw new Error(`${r.status} ${url.slice(0, 80)}`);
-  return r.json();
+// Retries TRANSIENT upstream failures (5xx, 429, network errors) with backoff. A single
+// cBioPortal 502 once killed a whole harvest run; a bulk cohort fetch is one request that
+// the entire mutation axis depends on, so it is worth retrying rather than losing the axis.
+// 4xx other than 429 is NOT retried — that is a bad request, not a blip.
+async function getJson(url: string, init?: RequestInit, tries = 3): Promise<any> {
+  let lastErr: unknown = null;
+  for (let attempt = 1; attempt <= tries; attempt++) {
+    try {
+      const r = await fetch(url, init);
+      if (!r.ok) {
+        const retryable = r.status >= 500 || r.status === 429;
+        if (!retryable || attempt === tries) throw new Error(`${r.status} ${url.slice(0, 80)}`);
+        await new Promise(res => setTimeout(res, 2000 * attempt));
+        continue;
+      }
+      return await r.json();
+    } catch (e) {
+      lastErr = e;
+      // a thrown non-retryable status is already final
+      if (attempt === tries || /^(4\d\d) /.test(String((e as Error)?.message)) && !/^429 /.test(String((e as Error)?.message))) throw e;
+      await new Promise(res => setTimeout(res, 2000 * attempt));
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
 }
 
 // ─── Mutation axis — cBioPortal, BULK cohort pull ─────────────────────────────

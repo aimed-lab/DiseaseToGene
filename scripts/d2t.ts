@@ -311,19 +311,43 @@ async function enrich(snapshotId: number, axisArg: string) {
   const { genes, diseaseId, diseaseName } = await loadGenes(snapshotId);
   log(`Snapshot #${snapshotId} · ${diseaseName} · ${genes.length} genes`);
   const list = axisArg === 'all' ? [...AXES] : [axisArg];
+  const done: string[] = [], failed: string[] = [];
   for (const axis of list) {
     log(`── axis: ${axis} ──`);
-    const rows = await buildAxis(axis, genes, diseaseName, diseaseId);
+    // BUILD is wrapped: an upstream outage (cBioPortal returned a 502 mid-run once) must cost
+    // only THIS axis, never the rest of the run. Each axis is independent and idempotent, so
+    // the right behaviour is to record the failure, carry on, and report what to re-run.
+    let rows: any[];
+    try {
+      rows = await buildAxis(axis, genes, diseaseName, diseaseId);
+    } catch (e: any) {
+      const msg = String(e?.message || e).slice(0, 200);
+      log(`✖ ${axis}: BUILD failed — ${msg}`);
+      log(`   (upstream error, nothing written. Re-run just this axis: enrich ${snapshotId} ${axis})`);
+      failed.push(axis);
+      continue;
+    }
     log(`${axis}: built ${rows.length} rows`);
     if (!rows.length) { log(`${axis}: nothing to store`); continue; }
     if (DRY) { log(`--dry: would save ${rows.length} ${axis} rows (sample: ${JSON.stringify(rows[0]?.value_json).slice(0, 140)}…)`); continue; }
     const svc = await oracle();
+    let saved = false;
     for (let attempt = 1; attempt <= 3; attempt++) {
-      try { const res = await svc.saveAxisEvidence(snapshotId, diseaseId, rows, 'cli', false); log(`✔ ${axis}: saved ${res.count} rows to Oracle`); break; }
+      try { const res = await svc.saveAxisEvidence(snapshotId, diseaseId, rows, 'cli', false); log(`✔ ${axis}: saved ${res.count} rows to Oracle`); saved = true; break; }
       catch (e: any) { const msg = String(e?.message || e).slice(0, 140); if (attempt < 3) { log(`save ${axis} failed (${attempt}/3): ${msg} — retrying in ${8 * attempt}s`); await sleep(8000 * attempt); } else { log(`✖ ${axis}: NOT saved after 3 tries: ${msg} — re-run this axis`); } }
     }
+    (saved ? done : failed).push(axis);
   }
-  log('Done.');
+  log('── summary ──');
+  log(`saved: ${done.join(', ') || 'none'}`);
+  if (failed.length) {
+    log(`FAILED: ${failed.join(', ')}`);
+    log(`Re-run the failed axes (each is idempotent — a re-run replaces, never duplicates):`);
+    for (const a of failed) log(`  npx tsx --env-file=.env scripts/d2t.ts enrich ${snapshotId} ${a}`);
+    process.exitCode = 1;
+  } else {
+    log(`All requested axes stored. Next: npx tsx --env-file=.env scripts/d2t.ts dossier ${snapshotId}`);
+  }
 }
 
 // ════════════════════════════ LIST ════════════════════════════
