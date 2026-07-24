@@ -121,6 +121,10 @@ export interface DruggabilityStat {
   target_chembl_id: string | null; // repurposed: the OT Ensembl id (provenance handle)
   tractable_modalities: number;  // # modalities assessed tractable — the novel-target-safe signal
   proven_modalities: number;     // # distinct developed-drug modalities
+  // ── detail: "which drugs / which modality", not just how many ──
+  drugs: { name: string; modality: string | null; family: string | null; stage: string; approved: boolean }[];
+  modalities: { modality: string; family: string; drugCount: number; topStage: string; approved: boolean }[];
+  tractability: { modality: string; code: string; labels: string[] }[];  // WHY it is tractable
 }
 
 export async function fetchDruggability(symbol: string): Promise<DruggabilityStat | null> {
@@ -144,6 +148,9 @@ export async function fetchDruggability(symbol: string): Promise<DruggabilitySta
     target_chembl_id: p.ensemblId,
     tractable_modalities: tractable,
     proven_modalities: p.fact.provenModalities,
+    drugs: p.fact.drugs.map(d => ({ name: d.name, modality: d.modality, family: d.family, stage: d.stage, approved: d.approved })),
+    modalities: p.fact.developed.map(m => ({ modality: m.modality, family: m.family, drugCount: m.drugCount, topStage: m.topStage, approved: m.approved })),
+    tractability: p.prediction.buckets.map(b => ({ modality: b.modality, code: b.code, labels: b.labels })),
   };
 }
 
@@ -233,6 +240,17 @@ export interface ClinicalStat {
   max_disease_trial_phase: number;
   drug_names: string[];
   axis: number;                      // 0..1 — maturity-dominant, breadth only breaks ties
+  n_disease_trials: number;          // distinct trial records in this disease
+  trials_by_phase: { phase1: number; phase2: number; phase3: number; phase4: number };
+  // ── per-trial detail. `why_stopped` is the point: a target whose trials stopped for
+  // TOXICITY is a different proposition from one stopped for business reasons, and
+  // nothing else in the pipeline records failure reasons.
+  trials: {
+    id: string | null; url: string | null; phase: number; status: string | null;
+    title: string | null; year: number | null; drug: string | null;
+    why_stopped: string | null; stop_reasons: string[];
+  }[];
+  n_stopped_trials: number;
 }
 
 // Axis: maturity dominates (a Phase-3 PDAC drug beats five Phase-1s). Phase4→1.00,
@@ -251,11 +269,20 @@ export async function fetchClinical(symbol: string, scope: DiseaseScope): Promis
     const d = await otGql(
       `query($e:String!){ target(ensemblId:$e){ drugAndClinicalCandidates{ rows{
          drug{ name }
-         clinicalReports{ trialPhase diseases{ disease{ id name } } }
+         clinicalReports{
+           id url trialPhase trialOverallStatus trialOfficialTitle year
+           trialWhyStopped trialStopReasonCategories
+           diseases{ disease{ id name } }
+         }
        } } } }`, { e: ensemblId });
     const rows: any[] = d?.target?.drugAndClinicalCandidates?.rows ?? [];
     const drugs = new Set<string>();
-    let maxPhase = 0;
+    const trials: ClinicalStat['trials'] = [];
+    const seenTrial = new Set<string>();
+    let maxPhase = 0, nTrials = 0, nStopped = 0;
+    // Phase histogram over the DISEASE trials. Combined phases round down to the phase
+    // actually reached (PHASE1/PHASE2 -> Phase 1) so a bucket never overstates maturity.
+    const byPhase = { phase1: 0, phase2: 0, phase3: 0, phase4: 0 };
     for (const r of rows) {
       let inThisDisease = false, bestForDrug = 0;
       for (const cr of (r?.clinicalReports ?? [])) {
@@ -265,8 +292,30 @@ export async function fetchClinical(symbol: string, scope: DiseaseScope): Promis
         });
         if (!hit) continue;                        // trial is for a different disease — ignore
         inThisDisease = true;
+        nTrials++;
         const p = TRIAL_PHASE_NUM[String(cr?.trialPhase ?? '')] ?? 0;
+        if (p >= 4) byPhase.phase4++;
+        else if (p >= 3) byPhase.phase3++;
+        else if (p >= 2) byPhase.phase2++;
+        else if (p >= 1) byPhase.phase1++;
         if (p > bestForDrug) bestForDrug = p;
+        const tid = cr?.id ? String(cr.id) : null;
+        const dedupeKey = tid || `${r?.drug?.name}|${cr?.trialOfficialTitle}`;
+        if (!seenTrial.has(dedupeKey)) {
+          seenTrial.add(dedupeKey);
+          const why = cr?.trialWhyStopped ? String(cr.trialWhyStopped) : null;
+          if (why) nStopped++;
+          trials.push({
+            id: tid, url: cr?.url ? String(cr.url) : null, phase: p,
+            status: cr?.trialOverallStatus ? String(cr.trialOverallStatus) : null,
+            title: cr?.trialOfficialTitle ? String(cr.trialOfficialTitle).slice(0, 300) : null,
+            // guard null explicitly: Number(null) is 0, which would store a fake year 0
+            year: cr?.year != null && Number.isFinite(Number(cr.year)) && Number(cr.year) > 1900 ? Number(cr.year) : null,
+            drug: r?.drug?.name ? String(r.drug.name) : null,
+            why_stopped: why ? why.slice(0, 400) : null,
+            stop_reasons: Array.isArray(cr?.trialStopReasonCategories) ? cr.trialStopReasonCategories.map(String) : [],
+          });
+        }
       }
       if (!inThisDisease) continue;
       if (r?.drug?.name) drugs.add(String(r.drug.name));
@@ -278,6 +327,10 @@ export async function fetchClinical(symbol: string, scope: DiseaseScope): Promis
       n_drugs_in_disease_trials: nDrugs, max_disease_trial_phase: maxPhase,
       drug_names: [...drugs].slice(0, 25),
       axis: clinicalAxis(maxPhase, nDrugs),
+      n_disease_trials: nTrials, trials_by_phase: byPhase,
+      // most-advanced first, so a stored cap keeps the trials that matter
+      trials: trials.sort((a, b) => b.phase - a.phase || (b.year ?? 0) - (a.year ?? 0)).slice(0, 60),
+      n_stopped_trials: nStopped,
     };
   } catch { return null; }                         // fetch failed → not-fetched (3-state)
 }
@@ -289,7 +342,14 @@ export async function fetchClinical(symbol: string, scope: DiseaseScope): Promis
 //   • Europe PMC — full-text, broader count
 // Queries mirror api.ts getDrillDownData EXACTLY so stored == webapp drill-down.
 
-export interface LiteratureStat { paper_count: number; recent_count: number; velocity: number; }
+export interface LiteraturePaper { title: string; id: string; source: string; journal: string | null; year: string | null }
+export interface LiteratureStat {
+  paper_count: number; recent_count: number; velocity: number;
+  // Top recent papers, so "2,628 publications" becomes readable, citable evidence rather
+  // than a bare count. Fetched only by fetchLiterature (Europe PMC), not the PubMed path.
+  top_papers?: LiteraturePaper[];
+  latest_year?: string | null;
+}
 
 // Same disease-name normalization the drill-down uses before querying literature.
 function cleanDiseaseName(d: string): string {
@@ -327,17 +387,58 @@ async function epmcHits(query: string): Promise<number> {
   const d = await getJson(`${EPMC_BASE}?query=${encodeURIComponent(query)}&format=json&resultType=idlist&pageSize=1`);
   return num(d?.hitCount) ?? 0;
 }
-export async function fetchLiterature(symbol: string, disease: string): Promise<LiteratureStat | null> {
+// Top papers, newest first — one extra Europe PMC call, cited-by ordering unavailable on
+// the free endpoint so we take the most recent, which is what "momentum" is about anyway.
+async function epmcTopPapers(query: string, n = 5): Promise<LiteraturePaper[]> {
+  const d = await getJson(`${EPMC_BASE}?query=${encodeURIComponent(query)}&format=json&resultType=lite&pageSize=${n}&sort=P_PDATE_D%20desc`);
+  const rows: any[] = d?.resultList?.result || [];
+  return rows.map(r => ({
+    title: String(r.title || '').replace(/<[^>]+>/g, '').slice(0, 300),
+    id: String(r.pmid || r.id || ''), source: String(r.source || 'MED'),
+    journal: r.journalTitle ? String(r.journalTitle) : null,
+    year: r.pubYear ? String(r.pubYear) : null,
+  })).filter(p => p.title);
+}
+
+export async function fetchLiterature(symbol: string, disease: string, withPapers = false): Promise<LiteratureStat | null> {
   try {
     const clean = cleanDiseaseName(disease);
     const yr = new Date().getFullYear();
     const base = `${symbol} AND "${clean}"`;
-    const [total, recent] = await Promise.all([
+    const [total, recent, papers] = await Promise.all([
       epmcHits(base),
       epmcHits(`${base} AND FIRST_PDATE:[${yr - 3}-01-01 TO ${yr}-12-31]`),
+      withPapers ? epmcTopPapers(base).catch(() => []) : Promise.resolve([] as LiteraturePaper[]),
     ]);
-    return { paper_count: total, recent_count: recent, velocity: total > 0 ? recent / total : 0 };
+    return {
+      paper_count: total, recent_count: recent, velocity: total > 0 ? recent / total : 0,
+      ...(withPapers ? { top_papers: papers, latest_year: papers[0]?.year ?? null } : {}),
+    };
   } catch { return null; }
+}
+
+// ─── Patent axis — Europe PMC patent index (SRC:PAT) ─────────────────────────
+// Europe PMC indexes EPO patent documents alongside literature, so the same free API
+// that powers the literature axis also gives a patent count — no new key or vendor.
+//
+// CONTEXT ONLY, never a pro-score (per the design review): a high patent count means
+// a crowded, commercially-worked area. That is useful context for a nomination, but
+// rewarding it would bias the funnel toward already-owned targets and penalise novel
+// ones (PHGDH: 6 patents vs EGFR: 2,046). Store it, show it, do not score it.
+export interface PatentStat {
+  gene_patents: number;          // patents mentioning the gene (any indication)
+  disease_patents: number;       // patents mentioning the gene AND the disease
+}
+
+export async function fetchPatents(symbol: string, disease: string): Promise<PatentStat | null> {
+  try {
+    const clean = cleanDiseaseName(disease);
+    const [gene, both] = await Promise.all([
+      epmcHits(`"${symbol}" AND SRC:PAT`),
+      clean ? epmcHits(`"${symbol}" AND "${clean}" AND SRC:PAT`) : Promise.resolve(0),
+    ]);
+    return { gene_patents: gene, disease_patents: both };
+  } catch { return null; }        // fetch failed → not-fetched (3-state), never a fake 0
 }
 
 export { clamp01 as _clamp01 };

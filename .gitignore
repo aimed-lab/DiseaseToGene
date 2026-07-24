@@ -34,6 +34,7 @@ dist-ssr
 xena_raw/
 depmap_raw/
 gnomad_raw/
+gtex_raw/
 
 # Runtime job state (the reference tables data/*.json ARE committed)
 data/jobs.json

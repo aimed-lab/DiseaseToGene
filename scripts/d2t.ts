@@ -14,8 +14,10 @@
  *   npx tsx --env-file=.env scripts/d2t.ts enrich <id> dependency
  *   npx tsx --env-file=.env scripts/d2t.ts enrich <id> safety
  *   npx tsx --env-file=.env scripts/d2t.ts enrich <id> mutation
- *   npx tsx --env-file=.env scripts/d2t.ts enrich <id> druggability
- *   npx tsx --env-file=.env scripts/d2t.ts enrich <id> clinical
+ *   npx tsx --env-file=.env scripts/d2t.ts enrich <id> annotation    # protein documentation (OT)
+ *   npx tsx --env-file=.env scripts/d2t.ts enrich <id> druggability  # + per-drug modality detail
+ *   npx tsx --env-file=.env scripts/d2t.ts enrich <id> clinical      # + per-trial records
+ *   npx tsx --env-file=.env scripts/d2t.ts enrich <id> patents       # commercial crowding (annotation)
  *   npx tsx --env-file=.env scripts/d2t.ts enrich <id> literature
  *   # …or all at once:  enrich <id> all
  *
@@ -33,12 +35,15 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import {
-  fetchCohortMutations, fetchDruggability, fetchClinical, fetchLiterature, fetchPubmedLiterature, resolveCbioStudy, resolveDiseaseScope,
+  fetchCohortMutations, fetchDruggability, fetchClinical, fetchLiterature, fetchPubmedLiterature, resolveCbioStudy, resolveDiseaseScope, fetchPatents,
 } from '../evidenceProviders.ts';
+import { fetchTargetProfile, isSurfaceOrSecreted } from '../targetProfileService.ts';
 
 const OT = 'https://api.platform.opentargets.org/api/v4/graphql';
 const DRY = process.argv.includes('--dry');
-const AXES = ['expression', 'dependency', 'safety', 'mutation', 'druggability', 'clinical', 'literature'] as const;
+// Order matters for `enrich <id> all`: cheap/local axes first so a failure late in the run
+// costs the least. `annotation` and `patents` are the axes added for the dashboard.
+const AXES = ['expression', 'dependency', 'safety', 'tissue', 'mutation', 'annotation', 'druggability', 'clinical', 'patents', 'literature'] as const;
 
 const log = (m: string) => console.log(`[${new Date().toISOString().slice(11, 19)}] ${m}`);
 const toNum = (v: any): number | null => (Number.isFinite(Number(v)) ? Number(v) : null);
@@ -75,17 +80,20 @@ async function otFetch(query: string, variables: any): Promise<any> {
 }
 
 // gnomAD constraint — local table first, API fallback (same as the server).
-async function gnomadConstraint(symbol: string): Promise<{ pli: number | null; loeuf: number | null } | null> {
+interface GnomadRec { pli: number | null; loeuf: number | null; oe_lof: number | null; lof_z: number | null; mis_z: number | null }
+async function gnomadConstraint(symbol: string): Promise<GnomadRec | null> {
   const tbl = loadRef('gnomad_constraint.json');
   const hit = tbl?.genes?.[symbol];
-  if (hit) return { pli: toNum(hit.pli), loeuf: toNum(hit.loeuf) };
+  // The local table (built from the gnomAD API) carries the fuller constraint picture —
+  // store all of it, not just pLI/LOEUF. Zero extra cost: we already have these values.
+  if (hit) return { pli: toNum(hit.pli), loeuf: toNum(hit.loeuf), oe_lof: toNum(hit.oe_lof), lof_z: toNum(hit.lof_z), mis_z: toNum(hit.mis_z) };
   try {
     const r = await fetch('https://gnomad.broadinstitute.org/api', {
       method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify({ query: 'query($s:String!){ gene(gene_symbol:$s, reference_genome:GRCh38){ gnomad_constraint{ pLI oe_lof_upper } } }', variables: { s: symbol } }),
+      body: JSON.stringify({ query: 'query($s:String!){ gene(gene_symbol:$s, reference_genome:GRCh38){ gnomad_constraint{ pLI oe_lof_upper oe_lof lof_z mis_z } } }', variables: { s: symbol } }),
     });
     const c = (await r.json())?.data?.gene?.gnomad_constraint;
-    return c ? { pli: toNum(c.pLI), loeuf: toNum(c.oe_lof_upper) } : null;
+    return c ? { pli: toNum(c.pLI), loeuf: toNum(c.oe_lof_upper), oe_lof: toNum(c.oe_lof), lof_z: toNum(c.lof_z), mis_z: toNum(c.mis_z) } : null;
   } catch { return null; }
 }
 
@@ -170,7 +178,7 @@ async function buildAxis(axis: string, genes: string[], diseaseName: string, dis
       const normalFloored = LOW_EXPR_FLOOR != null && toNum(d.normal_median) != null && toNum(d.normal_median)! <= LOW_EXPR_FLOOR;
       const cappedLog2fc = log2fc != null ? Math.max(-EXPR_LOG2FC_CAP, Math.min(EXPR_LOG2FC_CAP, log2fc)) : null;
       const axisCapped = cappedLog2fc != null ? clamp01(Math.abs(cappedLog2fc) / 4) : null;
-      rows.push({ gene_symbol: g, evidence_type: 'expression_tvn', source: ex.meta?.source || 'UCSC Xena Toil (TCGA-PAAD vs GTEx)', value_text: `${up ? 'up' : 'down'} log2FC ${log2fc}${normalFloored ? ' (low-confidence: normal floor)' : ''}`, value_json: { axis: axisCapped, direction: up ? 'pro' : 'con', display: `${up ? 'up' : 'down'} log2FC ${log2fc} (p ${d.p})${normalFloored ? ' · low-confidence' : ''}`, log2fc, log2fc_capped: cappedLog2fc, low_confidence: normalFloored, p: d.p, tumor_median: d.tumor_median, normal_median: d.normal_median } }); }
+      rows.push({ gene_symbol: g, evidence_type: 'expression_tvn', source: ex.meta?.source || 'UCSC Xena Toil (TCGA-PAAD vs GTEx)', value_text: `${up ? 'up' : 'down'} log2FC ${log2fc}${normalFloored ? ' (low-confidence: normal floor)' : ''}`, value_json: { axis: axisCapped, direction: up ? 'pro' : 'con', display: `${up ? 'up' : 'down'} log2FC ${log2fc} (p ${d.p})${normalFloored ? ' · low-confidence' : ''}`, log2fc, log2fc_capped: cappedLog2fc, low_confidence: normalFloored, p: d.p, tumor_median: d.tumor_median, normal_median: d.normal_median, n_tumor: toNum(d.n_tumor), n_normal: toNum(d.n_normal) } }); }
   } else if (axis === 'dependency') {
     if (!pancreatic) { log('dependency: disease not pancreatic — no reference; skipping'); return rows; }
     const dp = loadRef('depmap_pancreatic.json');
@@ -183,7 +191,7 @@ async function buildAxis(axis: string, genes: string[], diseaseName: string, dis
       // Drop the absurd value rather than store it (the axis would clamp it to 0 anyway).
       const loeuf = c.loeuf != null && c.loeuf <= 3 ? c.loeuf : null;
       const concern = loeuf != null ? clamp01(1 - loeuf / 1.5) : (c.pli != null ? clamp01(c.pli) : 0);
-      rows.push({ gene_symbol: g, evidence_type: 'safety', source: 'gnomAD v4', value_text: `pLI ${c.pli} · LOEUF ${loeuf}`, value_json: { axis: concern, direction: 'con', display: `pLI ${c.pli != null ? c.pli.toFixed(2) : '—'} · LOEUF ${loeuf != null ? loeuf.toFixed(2) : '—'}`, pli: c.pli, loeuf } });
+      rows.push({ gene_symbol: g, evidence_type: 'safety', source: 'gnomAD v4', value_text: `pLI ${c.pli} · LOEUF ${loeuf}`, value_json: { axis: concern, direction: 'con', display: `pLI ${c.pli != null ? c.pli.toFixed(2) : '—'} · LOEUF ${loeuf != null ? loeuf.toFixed(2) : '—'}`, pli: c.pli, loeuf, oe_lof: c.oe_lof, lof_z: c.lof_z, mis_z: c.mis_z } });
       if (++n % 500 === 0) log(`  safety ${n}/${genes.length}…`); });
   } else if (axis === 'mutation') {
     if (!resolveCbioStudy(diseaseName)) { log('mutation: no cBioPortal cohort for this disease; skipping'); return rows; }
@@ -195,7 +203,7 @@ async function buildAxis(axis: string, genes: string[], diseaseName: string, dis
   } else if (axis === 'druggability') {
     let n = 0;
     await pooled(genes, 5, async g => { const d = await fetchDruggability(g).catch(() => null); if (!d) return;  // null = not-fetched → skip (3-state)
-      rows.push({ gene_symbol: g, evidence_type: 'druggability', source: 'Open Targets (drugAndClinicalCandidates + tractability)', value_text: `${d.label}${d.total_compounds ? ` · ${d.total_compounds} drugs` : ''}${d.tractable_modalities ? ` · ${d.tractable_modalities} tractable` : ''}`, value_json: { axis: clamp01(d.score), direction: 'pro', label: d.label, display: `${d.label}${d.total_compounds ? ` · ${d.total_compounds} developed drug${d.total_compounds === 1 ? '' : 's'}` : ''}${d.tractable_modalities ? ` · ${d.tractable_modalities} tractable modalit${d.tractable_modalities === 1 ? 'y' : 'ies'}` : ''}`, score: d.score, total_compounds: d.total_compounds, target_max_phase: d.target_max_phase, proven_modalities: d.proven_modalities, tractable_modalities: d.tractable_modalities, ensembl_id: d.target_chembl_id, best_ic50_nm: d.best_ic50_nm } });
+      rows.push({ gene_symbol: g, evidence_type: 'druggability', source: 'Open Targets (drugAndClinicalCandidates + tractability)', value_text: `${d.label}${d.total_compounds ? ` · ${d.total_compounds} drugs` : ''}${d.tractable_modalities ? ` · ${d.tractable_modalities} tractable` : ''}`, value_json: { axis: clamp01(d.score), direction: 'pro', label: d.label, display: `${d.label}${d.total_compounds ? ` · ${d.total_compounds} developed drug${d.total_compounds === 1 ? '' : 's'}` : ''}${d.tractable_modalities ? ` · ${d.tractable_modalities} tractable modalit${d.tractable_modalities === 1 ? 'y' : 'ies'}` : ''}`, score: d.score, total_compounds: d.total_compounds, target_max_phase: d.target_max_phase, proven_modalities: d.proven_modalities, tractable_modalities: d.tractable_modalities, ensembl_id: d.target_chembl_id, best_ic50_nm: d.best_ic50_nm, drugs: d.drugs, modalities: d.modalities, tractability: d.tractability } });
       if (++n % 250 === 0) log(`  druggability ${n}/${genes.length}…`); });
   } else if (axis === 'clinical') {
     // #3: disease-scoped, gene-attributed via the OT target→drug→trial graph (not CT.gov text search).
@@ -204,12 +212,12 @@ async function buildAxis(axis: string, genes: string[], diseaseName: string, dis
     let n = 0;
     await pooled(genes, 5, async g => { const c = await fetchClinical(g, scope).catch(() => null); if (!c || c.n_drugs_in_disease_trials === 0) return;   // 0 = no clinical precedent (neutral, not stored)
       const phaseTxt = c.max_disease_trial_phase ? ` · max Phase ${c.max_disease_trial_phase}` : '';
-      rows.push({ gene_symbol: g, evidence_type: 'clinical', source: 'Open Targets (target drug trials, disease-scoped)', value_text: `${c.n_drugs_in_disease_trials} drug${c.n_drugs_in_disease_trials === 1 ? '' : 's'} in trials${phaseTxt}`, value_json: { axis: c.axis, direction: 'pro', display: `${c.n_drugs_in_disease_trials} drug${c.n_drugs_in_disease_trials === 1 ? '' : 's'} in ${diseaseName} trials${phaseTxt}`, trial_count: c.trial_count, max_phase: c.max_phase, n_drugs_in_disease_trials: c.n_drugs_in_disease_trials, max_disease_trial_phase: c.max_disease_trial_phase, drug_names: c.drug_names } });
+      rows.push({ gene_symbol: g, evidence_type: 'clinical', source: 'Open Targets (target drug trials, disease-scoped)', value_text: `${c.n_drugs_in_disease_trials} drug${c.n_drugs_in_disease_trials === 1 ? '' : 's'} in trials${phaseTxt}`, value_json: { axis: c.axis, direction: 'pro', display: `${c.n_drugs_in_disease_trials} drug${c.n_drugs_in_disease_trials === 1 ? '' : 's'} in ${diseaseName} trials${phaseTxt}`, trial_count: c.trial_count, max_phase: c.max_phase, n_drugs_in_disease_trials: c.n_drugs_in_disease_trials, max_disease_trial_phase: c.max_disease_trial_phase, drug_names: c.drug_names, n_disease_trials: c.n_disease_trials, trials_by_phase: c.trials_by_phase, trials: c.trials, n_stopped_trials: c.n_stopped_trials } });
       if (++n % 500 === 0) log(`  clinical ${n}/${genes.length}…`); });
   } else if (axis === 'literature') {
     let n = 0;
     await pooled(genes, 5, async g => {
-      const [pm, ep] = await Promise.all([fetchPubmedLiterature(g, diseaseName).catch(() => null), fetchLiterature(g, diseaseName).catch(() => null)]);
+      const [pm, ep] = await Promise.all([fetchPubmedLiterature(g, diseaseName).catch(() => null), fetchLiterature(g, diseaseName, true).catch(() => null)]);
       // PubMed = ANNOTATION ONLY (axis null, role 'annotation'). It is more precise per paper
       // ([Gene Name] tagging) but is rate-limited and returns ~20x fewer papers, so its velocity
       // sits on a tiny denominator (2 papers -> velocity can only be 0/0.5/1 = quantised noise).
@@ -221,9 +229,79 @@ async function buildAxis(axis: string, genes: string[], diseaseName: string, dis
       // and flag low_confidence rather than emit noise (same rule as the expression floor).
       if (ep && ep.paper_count > 0) {
         const thin = ep.paper_count < MIN_LIT_PAPERS;
-        rows.push({ gene_symbol: g, evidence_type: 'literature_epmc', source: 'Europe PMC', value_text: `${ep.paper_count} papers${ep.recent_count ? ` · ${ep.recent_count} recent` : ''}${thin ? ' (low-confidence: few papers)' : ''}`, value_json: { axis: thin ? null : clamp01(ep.velocity), role: 'scoring', low_confidence: thin, direction: 'pro', display: `${ep.paper_count} papers · ${Math.round(ep.velocity * 100)}% in last 3y${thin ? ' · low-confidence' : ''}`, paper_count: ep.paper_count, recent_count: ep.recent_count, velocity: ep.velocity } });
+        rows.push({ gene_symbol: g, evidence_type: 'literature_epmc', source: 'Europe PMC', value_text: `${ep.paper_count} papers${ep.recent_count ? ` · ${ep.recent_count} recent` : ''}${thin ? ' (low-confidence: few papers)' : ''}`, value_json: { axis: thin ? null : clamp01(ep.velocity), role: 'scoring', low_confidence: thin, direction: 'pro', display: `${ep.paper_count} papers · ${Math.round(ep.velocity * 100)}% in last 3y${thin ? ' · low-confidence' : ''}`, paper_count: ep.paper_count, recent_count: ep.recent_count, velocity: ep.velocity, top_papers: ep.top_papers ?? [], latest_year: ep.latest_year ?? null } });
       }
       if (++n % 500 === 0) log(`  literature ${n}/${genes.length}…`);
+    });
+  } else if (axis === 'tissue') {
+    // Tissue specificity (Yanai tau over GTEx). Local reference table -> no API calls.
+    // This axis had a column in RANKING_SCORES but was NEVER populated (0% of #84).
+    // Direction is 'con'-flavoured in meaning: LOW tau = expressed everywhere = drugging it
+    // hits every tissue, which is a safety concern. High tau = restricted = a better target.
+    const ts = loadRef('tissue_specificity.json');
+    if (!ts?.genes) { log('tissue: data/tissue_specificity.json missing — run scripts/build_tissue_specificity.mjs first'); return rows; }
+    for (const g of genes) {
+      const d = ts.genes[g]; if (!d) continue;
+      const tau = toNum(d.tau);
+      rows.push({
+        gene_symbol: g, evidence_type: 'tissue', source: ts.meta?.source || 'GTEx v8 (median TPM by tissue)',
+        value_text: `tau ${tau}${d.max_tissue ? ` · highest in ${d.max_tissue}` : ''}`,
+        value_json: {
+          axis: tau != null ? clamp01(tau) : null, direction: 'pro',
+          display: `tau ${tau} (${tau != null && tau >= 0.8 ? 'tissue-restricted' : tau != null && tau <= 0.3 ? 'ubiquitous — safety concern' : 'intermediate'})${d.max_tissue ? ` · highest in ${d.max_tissue}` : ''}`,
+          tau, max_tissue: d.max_tissue, max_tpm: toNum(d.max_tpm), n_tissues: toNum(d.n_tissues),
+        },
+      });
+    }
+    log(`  tissue: ${rows.length} genes from the GTEx tau table`);
+  } else if (axis === 'annotation') {
+    // Protein-level documentation (the UniProt-style layer): identity, function, class,
+    // localisation, pathways, paralogs, safety liabilities, common-essentiality, probes.
+    // ONE Open Targets call per gene covers all of it — see targetProfileService.
+    let n = 0;
+    await pooled(genes, 5, async g => {
+      const p = await fetchTargetProfile(g).catch(() => null);
+      if (!p) return;                                   // not-fetched → write nothing (3-state)
+      const surface = isSurfaceOrSecreted(p.subcellular_locations);
+      rows.push({
+        gene_symbol: g, evidence_type: 'annotation', source: 'Open Targets (target annotation)',
+        value_text: `${p.approved_name ?? g}${p.target_class ? ` · ${p.target_class}` : ''}${p.is_common_essential ? ' · common-essential' : ''}`,
+        value_json: {
+          // no `axis` — this is documentation, not a scored axis
+          axis: null, role: 'annotation', direction: 'pro',
+          display: `${p.target_class ?? 'unclassified'}${surface ? ' · surface/secreted' : ''}${p.n_safety_liabilities ? ` · ${p.n_safety_liabilities} safety liabilities` : ''}`,
+          approved_name: p.approved_name, biotype: p.biotype, uniprot_id: p.uniprot_id,
+          ensembl_id: p.ensembl_id, genomic_location: p.genomic_location,
+          target_class: p.target_class, target_classes: p.target_classes,
+          function_description: p.function_description,
+          subcellular_locations: p.subcellular_locations, surface_or_secreted: surface,
+          pathways: p.pathways, pathway_count: p.pathway_count, hallmarks: p.hallmarks,
+          safety_liabilities: p.safety_liabilities, n_safety_liabilities: p.n_safety_liabilities,
+          is_common_essential: p.is_common_essential,
+          n_chemical_probes: p.n_chemical_probes, n_high_quality_probes: p.n_high_quality_probes,
+          has_tep: p.has_tep, paralogs: p.paralogs, prioritisation: p.prioritisation,
+        },
+      });
+      if (++n % 500 === 0) log(`  annotation ${n}/${genes.length}…`);
+    });
+  } else if (axis === 'patents') {
+    // Commercial crowding. ANNOTATION ONLY — a high patent count means an already-owned
+    // area, so scoring on it would bias the funnel against novel targets.
+    let n = 0;
+    await pooled(genes, 5, async g => {
+      const p = await fetchPatents(g, diseaseName).catch(() => null);
+      if (!p) return;                                   // not-fetched → write nothing (3-state)
+      if (p.gene_patents === 0 && p.disease_patents === 0) return;   // genuinely none — nothing to store
+      rows.push({
+        gene_symbol: g, evidence_type: 'patents', source: 'Europe PMC (EPO patent index)',
+        value_text: `${p.gene_patents} patents${p.disease_patents ? ` · ${p.disease_patents} with disease` : ''}`,
+        value_json: {
+          axis: null, role: 'annotation', direction: 'pro',
+          display: `${p.gene_patents} patents name the gene${p.disease_patents ? `, ${p.disease_patents} also name ${diseaseName}` : ''}`,
+          gene_patents: p.gene_patents, disease_patents: p.disease_patents,
+        },
+      });
+      if (++n % 500 === 0) log(`  patents ${n}/${genes.length}…`);
     });
   } else throw new Error(`Unknown axis "${axis}" (valid: ${AXES.join(', ')}, all)`);
   return rows;
@@ -268,8 +346,52 @@ async function status(snapshotId: number) {
   for (const r of ev as any[]) (byType[r.evidence_type] ??= new Set()).add(r.gene_symbol);
   log(`Snapshot #${snapshotId} · ${snap.disease_name} · ${scores.length} genes in RANKING_SCORES`);
   log(`EVIDENCE rows: ${(ev as any[]).length}`);
-  for (const a of ['expression_tvn', 'dependency', 'safety', 'mutation', 'druggability', 'clinical', 'literature', 'literature_epmc'])
+  for (const a of ['expression_tvn', 'dependency', 'safety', 'tissue', 'mutation', 'annotation', 'druggability', 'clinical', 'patents', 'literature', 'literature_epmc'])
     log(`  ${a.padEnd(16)} ${byType[a]?.size ?? 0} genes`);
+}
+
+// ════════════════════════════ DOSSIER ════════════════════════════
+// Materialise the dashboard cards for a snapshot: read EVIDENCE + RANKING_SCORES, build
+// one wide GENE_DOSSIER row per gene (deterministic summary + headline scalars), write them.
+// Idempotent — re-running replaces the snapshot's rows. Run AFTER all axes are enriched.
+async function dossier(snapshotId: number) {
+  const svc = await oracle();
+  const { buildDossierRow, buildGeneDossier } = await import('../dossierService.ts');
+  const snap = await svc.getSnapshot(snapshotId);
+  if (!snap) throw new Error(`Snapshot #${snapshotId} not found`);
+  const scores = await svc.listRankingScores(snapshotId);
+  const ev = await svc.snapshotEvidence(snapshotId);
+  log(`Snapshot #${snapshotId} · ${snap.disease_name} · ${scores.length} score rows · ${(ev as any[]).length} evidence rows`);
+
+  // index evidence + dedupe scores by symbol (keep best rank)
+  const evByGene: Record<string, any[]> = {};
+  for (const e of ev as any[]) (evByGene[String(e.gene_symbol).toUpperCase()] ??= []).push(e);
+  const seen = new Set<string>();
+  const rows: any[] = [];
+  for (const r of scores as any[]) {
+    const g = String(r.gene_symbol).toUpperCase();
+    if (seen.has(g)) continue; seen.add(g);
+    const input = {
+      gene_symbol: r.gene_symbol, disease_id: snap.disease_id, disease_name: snap.disease_name,
+      snapshot_id: snapshotId, scoreRow: r, evidence: evByGene[g] || [], patents: null,
+    };
+    // the deterministic summary comes from the full dossier; the flat row reuses the same inputs
+    const full = buildGeneDossier(input);
+    rows.push(buildDossierRow(input, full.summary));
+    if (rows.length % 1000 === 0) log(`  built ${rows.length}…`);
+  }
+  log(`Built ${rows.length} dossier rows (from ${scores.length} score rows).`);
+  if (DRY) { log(`--dry: would write ${rows.length} rows. sample: ${JSON.stringify(rows[0]).slice(0, 200)}…`); return; }
+  // Chunked over VPN (row-by-row inserts of ~7k can time out in one transaction). Only the
+  // FIRST chunk clears the snapshot's old rows; the rest append.
+  for (let i = 0; i < rows.length; i += 1000) {
+    const chunk = rows.slice(i, i + 1000);
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try { await svc.saveDossiers(snapshotId, snap.disease_id, chunk, 'cli', i === 0); log(`  ✔ wrote ${Math.min(i + 1000, rows.length)}/${rows.length}`); break; }
+      catch (e: any) { const m = String(e?.message || e).slice(0, 140); if (attempt < 3) { log(`  write failed (${attempt}/3): ${m} — retry`); await sleep(6000 * attempt); } else { log(`  ✖ chunk NOT saved: ${m} — re-run \`dossier ${snapshotId}\``); } }
+    }
+  }
+  log('Done.');
 }
 
 // ════════════════════════════ main ════════════════════════════
@@ -284,6 +406,7 @@ async function status(snapshotId: number) {
     if (cmd === 'harvest') { if (!a) throw new Error('usage: harvest "<disease>" [geneCount]'); await harvest(a, Number(b) || 7500); }
     else if (cmd === 'enrich') { if (!a || !b) throw new Error('usage: enrich <snapshotId> <axis|all>'); await enrich(snapId(a), b); }
     else if (cmd === 'status') { if (!a) throw new Error('usage: status <snapshotId>'); await status(snapId(a)); }
+    else if (cmd === 'dossier') { if (!a) throw new Error('usage: dossier <snapshotId>  (run after enrich; needs GENE_DOSSIER table)'); await dossier(snapId(a)); }
     else if (cmd === 'list') { await list(); }
     else { console.log('Commands:\n  list                             show all snapshots + their ids\n  harvest "<disease>" [geneCount]  create a snapshot\n  enrich <snapshotId> <axis|all>   (axes: ' + AXES.join(', ') + ')\n  status <snapshotId>              per-axis coverage\n  add --dry to any command to skip the Oracle write'); }
   } catch (e: any) { console.error('ERROR:', e?.message || e); process.exit(1); }

@@ -61,8 +61,18 @@ export interface UnclassifiedDrugs {
   names: string[];               // their names, so the long-tail can be resolved + mapped
   topStage: string; topStageRank: number;
 }
+// One developed drug, kept individually so the dossier can name it rather than only count it.
+export interface DevelopedDrug {
+  name: string;
+  modality: string | null;        // raw OT drugType
+  family: string | null;          // coarse family (ADC folds under Biologic)
+  stage: string;                  // human stage label
+  stageRank: number;              // 0..4, -1 unknown
+  approved: boolean;
+}
 export interface ModalityFact {
   developed: ModalityFactRow[];   // KNOWN modalities with ≥1 developed drug, most-mature first (Unknown excluded)
+  drugs: DevelopedDrug[];         // the individual drugs — "which drugs", not just "how many"
   totalDrugs: number;             // all developed drugs, incl. unclassified
   provenModalities: number;       // # distinct KNOWN modalities (raw drugType) — excludes Unknown
   provenFamilies: number;         // # distinct families (ADC folds under Biologic) — the coarser count
@@ -93,17 +103,26 @@ async function otFetch(query: string, variables: any): Promise<any> {
   return j.data;
 }
 
+// Symbol -> Ensembl id. Memoised for the process lifetime: a harvest resolves the SAME
+// symbol once per axis (druggability, clinical, annotation, patents...), which for 7,500
+// genes across 4 axes is 30,000 identical lookups. Caching turns that into 7,500.
+// Negative results are cached too, so an unresolvable symbol is not retried per axis.
+const ensemblCache = new Map<string, string | null>();
 export async function geneToEnsembl(gene: string): Promise<string | null> {
+  const key = (gene || '').toUpperCase();
+  if (ensemblCache.has(key)) return ensemblCache.get(key)!;
   const d = await otFetch(`query($q:String!){ search(queryString:$q, entityNames:["target"]){ hits{ id name } } }`, { q: gene });
   const hits: any[] = d?.search?.hits || [];
-  return (hits.find(h => h.name?.toUpperCase() === gene.toUpperCase()) || hits[0])?.id || null;
+  const id = (hits.find(h => h.name?.toUpperCase() === key) || hits[0])?.id || null;
+  ensemblCache.set(key, id);
+  return id;
 }
 
 const stageLabelFromRank = (rank: number): string => {
   const key = Object.keys(STAGE_RANK).find(k => STAGE_RANK[k] === rank);
   return key ? STAGE_LABEL[key] : (rank < 0 ? 'unknown stage' : '—');
 };
-const emptyFact = (): ModalityFact => ({ developed: [], totalDrugs: 0, provenModalities: 0, provenFamilies: 0, bestStageRank: -1, unclassified: null, provenance: 'Open Targets drugAndClinicalCandidates (drug.drugType, maximumClinicalStage)' });
+const emptyFact = (): ModalityFact => ({ developed: [], drugs: [], totalDrugs: 0, provenModalities: 0, provenFamilies: 0, bestStageRank: -1, unclassified: null, provenance: 'Open Targets drugAndClinicalCandidates (drug.drugType, maximumClinicalStage)' });
 const emptyPred = (): ModalityPrediction => ({ buckets: [], tractableModalities: 0, provenance: 'Open Targets tractability (per-modality assessment)' });
 
 export async function getModalityProfile(gene: string): Promise<ModalityProfile> {
@@ -126,25 +145,41 @@ export async function getModalityProfile(gene: string): Promise<ModalityProfile>
     const rows: any[] = t?.drugAndClinicalCandidates?.rows || [];
     const byMod = new Map<string, { count: number; best: number }>();
     const unNames = new Set<string>();
+    const drugList: DevelopedDrug[] = [];
+    const seenDrug = new Set<string>();
     let unBest = -1, unCount = 0;
     for (const r of rows) {
       const rawType = r?.drug?.drugType;
       const rank = STAGE_RANK[r?.drug?.maximumClinicalStage] ?? -1;
+      const name = r?.drug?.name ? String(r.drug.name) : null;
+      // keep each drug once (a drug can appear on several rows), with its modality + stage
+      if (name && !seenDrug.has(name.toUpperCase())) {
+        seenDrug.add(name.toUpperCase());
+        const known = rawType && rawType !== 'Unknown';
+        drugList.push({
+          name,
+          modality: known ? rawType : null,
+          family: known ? modalityFamily(rawType) : null,
+          stage: stageLabelFromRank(rank), stageRank: rank, approved: rank >= 4,
+        });
+      }
       if (!rawType || rawType === 'Unknown') {
         unCount++; unBest = Math.max(unBest, rank);
-        if (r?.drug?.name) unNames.add(r.drug.name);
+        if (name) unNames.add(name);
         continue;
       }
       const cur = byMod.get(rawType) || { count: 0, best: -1 };
       cur.count++; cur.best = Math.max(cur.best, rank);
       byMod.set(rawType, cur);
     }
+    drugList.sort((a, b) => b.stageRank - a.stageRank || a.name.localeCompare(b.name));
     const developed: ModalityFactRow[] = [...byMod.entries()].map(([modality, v]) => ({
       modality, family: modalityFamily(modality), drugCount: v.count,
       topStageRank: v.best, approved: v.best >= 4, topStage: stageLabelFromRank(v.best),
     })).sort((a, b) => b.topStageRank - a.topStageRank || b.drugCount - a.drugCount);
     base.fact = {
       developed,
+      drugs: drugList.slice(0, 60),
       totalDrugs: rows.length,
       provenModalities: developed.length,                              // known modalities only
       provenFamilies: new Set(developed.map(m => m.family)).size,      // ADC folds under Biologic

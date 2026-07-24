@@ -54,6 +54,8 @@ const num = (v: unknown): number | null =>
 // Always emit a JSON object/array (never a bare scalar like `null`) — the content
 // columns carry an `IS JSON` check constraint that rejects top-level scalars.
 const clob = (obj: unknown) => ({ val: JSON.stringify(obj ?? {}), type: oracledb.CLOB });
+// A plain-text CLOB bind (the dossier summary is already a string, not JSON to stringify).
+const clobText = (s: unknown) => ({ val: s == null ? '' : String(s), type: oracledb.CLOB });
 const safeParse = (s: unknown) => { try { return s ? JSON.parse(String(s)) : null; } catch { return null; } };
 
 export interface SnapshotInput {
@@ -298,6 +300,66 @@ export async function saveAxisEvidence(
   } finally {
     await conn.close();
   }
+}
+
+// ── GENE_DOSSIER — the materialised dashboard card (see docs/sql/gene_dossier.sql) ──
+// Derived from EVIDENCE, so this is idempotent: rebuilding a snapshot deletes its rows
+// first, never duplicating. Wide, scalar columns only — the rich JSON stays in EVIDENCE.
+export interface DossierRow {
+  gene_symbol: string; disease_id: string; disease_name: string | null; snapshot_id: number;
+  rank_position: number | null; score: number | null; summary: string | null;
+  approved_name: string | null; uniprot_id: string | null; target_class: string | null;
+  surface_or_secreted: number | null; is_common_essential: number | null;
+  n_drugs: number | null; n_proven_modalities: number | null; n_tractable_modalities: number | null;
+  top_modality: string | null; max_drug_phase: number | null;
+  n_disease_trials: number | null; trials_phase1: number | null; trials_phase2: number | null;
+  trials_phase3: number | null; trials_phase4: number | null; max_disease_phase: number | null; n_stopped_trials: number | null;
+  mutation_frequency: number | null; log2fc: number | null; chronos: number | null; loeuf: number | null;
+  tissue_tau: number | null; n_safety_liabilities: number | null;
+  n_publications: number | null; literature_velocity: number | null; n_patents: number | null;
+  completeness: number | null; missing_axes: string | null; schema_version: string | null;
+}
+
+const DOSSIER_COLS = [
+  'gene_symbol', 'disease_id', 'disease_name', 'snapshot_id', 'rank_position', 'score', 'summary',
+  'approved_name', 'uniprot_id', 'target_class', 'surface_or_secreted', 'is_common_essential',
+  'n_drugs', 'n_proven_modalities', 'n_tractable_modalities', 'top_modality', 'max_drug_phase',
+  'n_disease_trials', 'trials_phase1', 'trials_phase2', 'trials_phase3', 'trials_phase4', 'max_disease_phase', 'n_stopped_trials',
+  'mutation_frequency', 'log2fc', 'chronos', 'loeuf', 'tissue_tau', 'n_safety_liabilities',
+  'n_publications', 'literature_velocity', 'n_patents', 'completeness', 'missing_axes', 'schema_version',
+] as const;
+
+// `clearFirst` deletes the snapshot's existing rows before inserting — pass true ONLY on the
+// first chunk of a multi-chunk write, false on the rest, so chunks append instead of each one
+// wiping the previous.
+export async function saveDossiers(snapshotId: number, diseaseId: string, rows: DossierRow[], actor?: string, clearFirst = true): Promise<{ count: number }> {
+  if (!rows.length) return { count: 0 };
+  const conn = await (await getPool()).getConnection();
+  try {
+    if (clearFirst) await conn.execute(`DELETE FROM ${T('gene_dossier')} WHERE snapshot_id = :s`, { s: snapshotId });
+    const cols = DOSSIER_COLS.join(', ');
+    const binds = DOSSIER_COLS.map((c) => (c === 'summary' ? ':summary' : ':' + c)).join(', ');
+    for (const r of rows) {
+      const b: any = {};
+      for (const c of DOSSIER_COLS) b[c] = c === 'summary' ? clobText((r as any)[c]) : ((r as any)[c] ?? null);
+      await conn.execute(`INSERT INTO ${T('gene_dossier')} (${cols}, generated_at) VALUES (${binds}, SYSTIMESTAMP)`, b);
+    }
+    await logAudit(conn, { actor: actor ?? 'cli', action: 'dossiers_saved', entity: 'gene_dossier', entity_id: String(snapshotId), disease_id: diseaseId, details: { count: rows.length } });
+    await conn.commit();
+    return { count: rows.length };
+  } catch (e) {
+    try { await conn.rollback(); } catch { /* ignore */ }
+    throw e;
+  } finally { await conn.close(); }
+}
+
+export async function listDossiers(snapshotId: number): Promise<any[]> {
+  const conn = await (await getPool()).getConnection();
+  try {
+    const sel = DOSSIER_COLS.map((c) => `${c} AS "${c}"`).join(', ');
+    const r = await conn.execute(`SELECT ${sel} FROM ${T('gene_dossier')} WHERE snapshot_id = :s ORDER BY rank_position`, { s: snapshotId }, { outFormat: oracledb.OUT_FORMAT_OBJECT });
+    return r.rows as any[];
+  } finally { await conn.close(); }
 }
 
 // Append on-demand genes to an existing snapshot's RANKING_SCORES (idempotent per
