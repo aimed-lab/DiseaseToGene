@@ -84,7 +84,8 @@ import {
   Zap,
   Filter,
   Settings,
-  SlidersHorizontal
+  SlidersHorizontal,
+  LayoutDashboard
 } from 'lucide-react';
 
 import PaperExtractor from './PaperExtractor';
@@ -98,6 +99,7 @@ import DependencyPanel from './DependencyPanel';
 import EvidenceCardsPanel from './EvidenceCardsPanel';
 import FunnelView from './FunnelView';
 import RankingsView from './RankingsView';
+import DashboardView from './DashboardView';
 import JobsView from './JobsView';
 import { getCbioMutations } from './cbioportalService';
 import { getChEMBLDruggability } from './chemblService';
@@ -757,7 +759,7 @@ const TabNavigation = ({
   const btnCls = (active: boolean) => `h-9 px-3 xl:px-4 rounded-md text-[11px] font-semibold transition-all flex items-center gap-2 whitespace-nowrap ${active ? (isDark ? 'bg-slate-800 text-white' : 'bg-slate-950 text-white') : (isDark ? 'text-slate-300 hover:text-white hover:bg-slate-800' : 'text-slate-900 hover:text-slate-950 hover:bg-slate-100')}`;
   const iconCls = (active: boolean) => `w-3.5 h-3.5 ${active ? 'text-white' : (isDark ? 'text-slate-400' : 'text-slate-700')}`;
 
-  const primary  = [ {id:'list',i:List,l:'Targets'}, {id:'funnel',i:Filter,l:'Funnel'}, {id:'rankings',i:Layers,l:'Rankings'} ];
+  const primary  = [ {id:'dashboard',i:LayoutDashboard,l:'Dashboard'}, {id:'list',i:List,l:'Targets'}, {id:'funnel',i:Filter,l:'Funnel'}, {id:'rankings',i:Layers,l:'Rankings'} ];
   const trailing = [ {id:'enrichment',i:BarChart3,l:'Enrichment'}, {id:'jobs',i:Cpu,l:'Jobs'} ];
   const flatBtn = (t: { id: string; i: any; l: string }) => {
     const active = viewMode === t.id;
@@ -5767,6 +5769,11 @@ CRITICAL RULES:
                       onAddGene={(g) => handleAddGeneFromPaper(g, 'PAPER')}
                       results={researchState.paperResults}
                     />
+                  )}
+                  {viewMode === 'dashboard' && (
+                    <div className="h-full overflow-hidden">
+                      <DashboardView theme={theme} />
+                    </div>
                   )}
                   {viewMode === 'funnel' && (
                     <div className="h-full p-4 overflow-hidden">

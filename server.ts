@@ -452,6 +452,152 @@ function setupRoutes() {
     }
   });
 
+  // ── Dashboard ───────────────────────────────────────────────────────────────
+  // Overview of what is actually IN the store for a snapshot, plus per-gene dossiers.
+  // A snapshot is 7k score rows + 33k evidence rows, and pulling that over ORDS takes
+  // ~30s, so it is loaded ONCE per snapshot and memoised — the dashboard then answers
+  // from memory. TTL keeps it fresh after a re-enrich without a server restart.
+  const dashCache = new Map<number, { at: number; meta: any; scores: any[]; evidence: any[] }>();
+  const DASH_TTL_MS = 10 * 60 * 1000;
+  const loadSnapshotCached = async (id: number) => {
+    const hit = dashCache.get(id);
+    if (hit && Date.now() - hit.at < DASH_TTL_MS) return hit;
+    const svc = await readSvc();
+    const [meta, scores, evidence] = await Promise.all([
+      svc.getSnapshot(id), svc.listRankingScores(id), svc.snapshotEvidence(id),
+    ]);
+    const entry = { at: Date.now(), meta, scores: scores || [], evidence: evidence || [] };
+    dashCache.set(id, entry);
+    return entry;
+  };
+
+  app.get("/api/dashboard/overview", requireUser, async (req, res) => {
+    if (!readStoreEnabled()) return res.status(503).json({ error: "Oracle store disabled" });
+    try {
+      const id = Number(req.query.snapshotId);
+      if (!Number.isFinite(id)) return res.status(400).json({ error: "snapshotId required" });
+      const { meta, scores, evidence } = await loadSnapshotCached(id);
+      if (!meta) return res.status(404).json({ error: `Snapshot #${id} not found` });
+
+      // per-axis coverage (distinct genes with a row) + schema-version detection
+      const byAxis: Record<string, Set<string>> = {};
+      let legacyDrug = 0, v2Drug = 0, legacyClin = 0, v2Clin = 0, lowConf = 0;
+      for (const e of evidence as any[]) {
+        (byAxis[e.evidence_type] ??= new Set()).add(e.gene_symbol);
+        let j: any = null; try { j = typeof e.value_json === 'string' ? JSON.parse(e.value_json) : e.value_json; } catch { /* ignore */ }
+        if (!j) continue;
+        if (j.low_confidence) lowConf++;
+        if (e.evidence_type === 'druggability') (j.proven_modalities === undefined ? legacyDrug++ : v2Drug++);
+        if (e.evidence_type === 'clinical') (j.n_drugs_in_disease_trials === undefined ? legacyClin++ : v2Clin++);
+      }
+      const uniqueGenes = new Set((scores as any[]).map(r => String(r.gene_symbol).toUpperCase()));
+      const duplicates = scores.length - uniqueGenes.size;
+      const axes = Object.entries(byAxis)
+        .map(([axis, set]) => ({ axis, genes: set.size, pct: uniqueGenes.size ? set.size / uniqueGenes.size : 0 }))
+        .sort((a, b) => b.genes - a.genes);
+
+      // Surface data-quality problems rather than letting the dashboard imply all-is-well.
+      const warnings: string[] = [];
+      if (duplicates > 0) warnings.push(`${duplicates.toLocaleString()} duplicate gene rows in RANKING_SCORES (${uniqueGenes.size.toLocaleString()} unique of ${scores.length.toLocaleString()}) — re-harvest or run scripts/dedupe_ranking_scores.sql.`);
+      if (legacyDrug > 0) warnings.push(`${legacyDrug.toLocaleString()} druggability rows are pre-fix (ChEMBL bioactivity counts, not developed drugs) — re-enrich this axis.`);
+      if (legacyClin > 0) warnings.push(`${legacyClin.toLocaleString()} clinical rows are pre-fix (ClinicalTrials.gov free-text, not gene-attributed) — re-enrich this axis.`);
+      if (lowConf > 0) warnings.push(`${lowConf.toLocaleString()} evidence rows are flagged low-confidence (expression denominator floor or thin literature).`);
+      for (const a of ['expression_tvn', 'dependency', 'safety', 'mutation', 'druggability', 'clinical', 'literature_epmc'])
+        if (!byAxis[a]) warnings.push(`Axis "${a}" has no rows at all — never harvested for this snapshot.`);
+
+      res.json({
+        snapshot: {
+          id, version: meta.version, disease_id: meta.disease_id, disease_name: meta.disease_name,
+          created_at: meta.created_at, label: meta.label,
+          rows: scores.length, unique_genes: uniqueGenes.size, duplicates,
+          evidence_rows: evidence.length,
+        },
+        axes,
+        schema: { druggability: { legacy: legacyDrug, v2: v2Drug }, clinical: { legacy: legacyClin, v2: v2Clin } },
+        warnings,
+      });
+    } catch (e: any) { res.status(502).json({ error: e.message }); }
+  });
+
+  app.get("/api/dashboard/dossier", requireUser, async (req, res) => {
+    if (!readStoreEnabled()) return res.status(503).json({ error: "Oracle store disabled" });
+    try {
+      const id = Number(req.query.snapshotId);
+      const gene = String(req.query.gene || '').toUpperCase().trim();
+      if (!Number.isFinite(id) || !gene) return res.status(400).json({ error: "snapshotId and gene required" });
+      const { meta, scores, evidence } = await loadSnapshotCached(id);
+      if (!meta) return res.status(404).json({ error: `Snapshot #${id} not found` });
+      const scoreRow = (scores as any[]).find(r => String(r.gene_symbol).toUpperCase() === gene) || null;
+      const ev = (evidence as any[]).filter(e => String(e.gene_symbol).toUpperCase() === gene);
+      if (!scoreRow && !ev.length) return res.status(404).json({ error: `${gene} is not in snapshot #${id}` });
+      const { buildGeneDossier } = await import('./dossierService.js');
+      const { fetchPatents } = await import('./evidenceProviders.js');
+      // Patents are not harvested into a snapshot yet — fetched live (annotation only).
+      const patents = await fetchPatents(gene, meta.disease_name || '').catch(() => null);
+      res.json(buildGeneDossier({
+        gene_symbol: gene, disease_id: meta.disease_id, disease_name: meta.disease_name,
+        snapshot_id: id, scoreRow, evidence: ev, patents,
+      }));
+    } catch (e: any) { res.status(502).json({ error: e.message }); }
+  });
+
+  // Ranked list backing the dashboard grid (headline counters per gene, no live calls).
+  app.get("/api/dashboard/genes", requireUser, async (req, res) => {
+    if (!readStoreEnabled()) return res.status(503).json({ error: "Oracle store disabled" });
+    try {
+      const id = Number(req.query.snapshotId);
+      if (!Number.isFinite(id)) return res.status(400).json({ error: "snapshotId required" });
+      // The dashboard pulls the whole (deduped) gene set once and then filters/sorts
+      // client-side, so interaction is instant instead of a round-trip per keystroke.
+      const limit = Math.min(20000, Math.max(1, Number(req.query.limit) || 100));
+      const offset = Math.max(0, Number(req.query.offset) || 0);
+      const q = String(req.query.q || '').toUpperCase().trim();
+      const { meta, scores, evidence } = await loadSnapshotCached(id);
+      if (!meta) return res.status(404).json({ error: `Snapshot #${id} not found` });
+
+      const evByGene: Record<string, Record<string, any>> = {};
+      for (const e of evidence as any[]) {
+        let j: any = null; try { j = typeof e.value_json === 'string' ? JSON.parse(e.value_json) : e.value_json; } catch { /* ignore */ }
+        (evByGene[String(e.gene_symbol).toUpperCase()] ??= {})[e.evidence_type] = j || {};
+      }
+      // dedupe by symbol (keep best rank) so the grid never shows a gene twice
+      const seen = new Set<string>();
+      const rowsAll = (scores as any[])
+        .filter(r => { const g = String(r.gene_symbol).toUpperCase(); if (seen.has(g)) return false; seen.add(g); return true; })
+        .filter(r => !q || String(r.gene_symbol).toUpperCase().includes(q))
+        .map(r => {
+          const g = String(r.gene_symbol).toUpperCase();
+          const ev = evByGene[g] || {};
+          const drug = ev.druggability, clin = ev.clinical, lit = ev.literature_epmc;
+          const ann = ev.annotation, tis = ev.tissue, pat = ev.patents;
+          const drugLegacy = !!drug && drug.proven_modalities === undefined;
+          const clinLegacy = !!clin && clin.n_drugs_in_disease_trials === undefined;
+          const axesPresent = ['mutation', 'expression_tvn', 'dependency', 'safety', 'tissue', 'annotation', 'druggability', 'clinical', 'literature_epmc']
+            .filter(a => ev[a]).length;
+          return {
+            gene_symbol: r.gene_symbol, rank: r.rank, score: r.overall_score ?? r.get_score,
+            n_drugs: drugLegacy ? null : (drug?.total_compounds ?? null),
+            tractable_modalities: drug?.tractable_modalities ?? null,
+            n_disease_trials: clinLegacy ? null : (clin?.n_disease_trials ?? null),
+            trials_by_phase: clinLegacy ? null : (clin?.trials_by_phase ?? null),
+            max_disease_phase: clinLegacy ? null : (clin?.max_disease_trial_phase ?? null),
+            n_publications: lit?.paper_count ?? null,
+            velocity: lit?.velocity ?? null,
+            // ── axes added for the dashboard ──
+            target_class: ann?.target_class ?? null,
+            is_common_essential: ann?.is_common_essential ?? null,
+            surface_or_secreted: ann?.surface_or_secreted ?? null,
+            tissue_tau: tis?.tau ?? null,
+            n_patents: pat?.gene_patents ?? null,
+            n_stopped_trials: clin?.n_stopped_trials ?? null,
+            completeness: axesPresent / 9,
+            legacy: drugLegacy || clinLegacy,
+          };
+        });
+      res.json({ total: rowsAll.length, rows: rowsAll.slice(offset, offset + limit) });
+    } catch (e: any) { res.status(502).json({ error: e.message }); }
+  });
+
   // Save paper-derived evidence cards to Oracle (EVIDENCE table)
   app.post("/api/evidence", requireUser, express.json({ limit: "12mb" }), async (req, res) => {
     if (!oracleStoreEnabled()) return res.status(503).json({ ok: false, error: "Oracle store disabled" });
