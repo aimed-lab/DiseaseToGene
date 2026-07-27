@@ -492,18 +492,30 @@ function setupRoutes() {
       }
       const uniqueGenes = new Set((scores as any[]).map(r => String(r.gene_symbol).toUpperCase()));
       const duplicates = scores.length - uniqueGenes.size;
+      // Show coverage in PIPELINE order (identity → biology → tractability → clinical → context),
+      // not by count — the fullest axis floating to the top is the least informative thing to see.
+      const AXIS_ORDER = ['annotation', 'mutation', 'expression_tvn', 'dependency', 'safety', 'tissue', 'druggability', 'clinical', 'literature_epmc', 'literature', 'patents'];
       const axes = Object.entries(byAxis)
         .map(([axis, set]) => ({ axis, genes: set.size, pct: uniqueGenes.size ? set.size / uniqueGenes.size : 0 }))
-        .sort((a, b) => b.genes - a.genes);
+        .sort((a, b) => {
+          const ai = AXIS_ORDER.indexOf(a.axis), bi = AXIS_ORDER.indexOf(b.axis);
+          return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi);
+        });
 
-      // Surface data-quality problems rather than letting the dashboard imply all-is-well.
+      // GENUINE problems only — things that make the data wrong or misleading. A clean fresh
+      // snapshot should surface ZERO of these (no duplicates, no legacy, nothing missing).
       const warnings: string[] = [];
       if (duplicates > 0) warnings.push(`${duplicates.toLocaleString()} duplicate gene rows in RANKING_SCORES (${uniqueGenes.size.toLocaleString()} unique of ${scores.length.toLocaleString()}) — re-harvest or run scripts/dedupe_ranking_scores.sql.`);
       if (legacyDrug > 0) warnings.push(`${legacyDrug.toLocaleString()} druggability rows are pre-fix (ChEMBL bioactivity counts, not developed drugs) — re-enrich this axis.`);
       if (legacyClin > 0) warnings.push(`${legacyClin.toLocaleString()} clinical rows are pre-fix (ClinicalTrials.gov free-text, not gene-attributed) — re-enrich this axis.`);
-      if (lowConf > 0) warnings.push(`${lowConf.toLocaleString()} evidence rows are flagged low-confidence (expression denominator floor or thin literature).`);
       for (const a of ['expression_tvn', 'dependency', 'safety', 'mutation', 'druggability', 'clinical', 'literature_epmc'])
         if (!byAxis[a]) warnings.push(`Axis "${a}" has no rows at all — never harvested for this snapshot.`);
+
+      // NOTES are informational, NOT problems — low-confidence flags are expected and routine
+      // (an expression value at the pseudocount floor, or velocity on very few papers). Kept
+      // separate so they never inflate the "data issues" count or read as an alarm.
+      const notes: string[] = [];
+      if (lowConf > 0) notes.push(`${lowConf.toLocaleString()} values are flagged low-confidence (routine — expression at the pseudocount floor, or literature velocity on <5 papers). Their axes are down-weighted, not wrong.`);
 
       res.json({
         snapshot: {
@@ -515,6 +527,7 @@ function setupRoutes() {
         axes,
         schema: { druggability: { legacy: legacyDrug, v2: v2Drug }, clinical: { legacy: legacyClin, v2: v2Clin } },
         warnings,
+        notes,
       });
     } catch (e: any) { res.status(502).json({ error: e.message }); }
   });

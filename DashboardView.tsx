@@ -27,6 +27,7 @@ type Overview = {
   axes: Axis[];
   schema: { druggability: { legacy: number; v2: number }; clinical: { legacy: number; v2: number } };
   warnings: string[];
+  notes?: string[];
 };
 type GeneRow = {
   gene_symbol: string; rank: number | null; score: number | null;
@@ -60,6 +61,16 @@ type Dossier = {
 
 const fmt = (n: number | null | undefined) => (n == null ? '—' : n.toLocaleString('en-US'));
 const pctS = (x: number | null | undefined) => (x == null ? '—' : `${Math.round(x * 100)}%`);
+
+// Self-contained SVG spinner (no CSS-injection needed — the SMIL animateTransform rotates it).
+const Spinner: React.FC<{ color?: string; size?: number }> = ({ color = '#2563eb', size = 20 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" style={{ display: 'block', flexShrink: 0 }} aria-label="loading">
+    <circle cx="12" cy="12" r="9" fill="none" stroke={color} strokeOpacity="0.2" strokeWidth="3" />
+    <path d="M12 3 a9 9 0 0 1 9 9" fill="none" stroke={color} strokeWidth="3" strokeLinecap="round">
+      <animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="0.75s" repeatCount="indefinite" />
+    </path>
+  </svg>
+);
 const AXIS_LABEL: Record<string, string> = {
   mutation: 'Somatic mutation', expression_tvn: 'Expression', dependency: 'Dependency', safety: 'Safety',
   druggability: 'Druggability', clinical: 'Clinical', literature_epmc: 'Literature (EPMC)', literature: 'Literature (PubMed)',
@@ -204,16 +215,24 @@ export const DashboardView: React.FC<Props> = ({ theme = 'light' }) => {
     a.click(); URL.revokeObjectURL(a.href);
   };
 
-  // charts recompute from the FILTERED set, so they describe what you are looking at
+  // charts recompute from the FILTERED set, so they describe what you are looking at.
+  // Count each TARGET once, in the bucket of the FURTHEST phase its disease trials reached.
+  // (Summing raw per-gene trial counts double-counts: one gene has many trials, and one
+  //  trial is shared across the several genes its drug hits — so that total exceeds the gene
+  //  count and means little. "Genes by furthest phase" is bounded by #genes and interpretable.)
   const phaseData = useMemo(() => {
-    const t = { phase1: 0, phase2: 0, phase3: 0, phase4: 0 };
-    for (const r of rows) if (r.trials_by_phase) { t.phase1 += r.trials_by_phase.phase1; t.phase2 += r.trials_by_phase.phase2; t.phase3 += r.trials_by_phase.phase3; t.phase4 += r.trials_by_phase.phase4; }
-    return [{ name: 'Phase 1', v: t.phase1 }, { name: 'Phase 2', v: t.phase2 }, { name: 'Phase 3', v: t.phase3 }, { name: 'Phase 4', v: t.phase4 }];
+    const t = [0, 0, 0, 0]; // Phase 1..4
+    for (const r of rows) {
+      if (!(r.n_disease_trials != null && r.n_disease_trials > 0)) continue;
+      const ph = Math.floor(r.max_disease_phase ?? 0);   // floor so PHASE2/3 (2.5) is counted as 2, never overstated
+      if (ph >= 1) t[Math.min(4, ph) - 1]++;
+    }
+    return [{ name: 'Phase 1', v: t[0] }, { name: 'Phase 2', v: t[1] }, { name: 'Phase 3', v: t[2] }, { name: 'Phase 4', v: t[3] }];
   }, [rows]);
   const completenessData = useMemo(() => {
-    const b = [0, 0, 0, 0, 0, 0, 0, 0];
-    for (const r of rows) b[Math.round(r.completeness * 7)]++;
-    return b.map((v, i) => ({ name: `${i}/7`, v }));
+    const b = new Array(10).fill(0);                  // 0..9 axes
+    for (const r of rows) b[Math.round(r.completeness * 9)]++;
+    return b.map((v, i) => ({ name: `${i}/9`, v }));
   }, [rows]);
 
   const snap = ov?.snapshot;
@@ -221,7 +240,7 @@ export const DashboardView: React.FC<Props> = ({ theme = 'light' }) => {
   const sortBtn = (key: SortKey, label: string) => (
     <th key={key} onClick={() => setSort(s => ({ key, dir: s.key === key && s.dir === 'desc' ? 'asc' : 'desc' }))}
       title="Click to sort"
-      style={{ padding: '6px 8px', fontSize: 9, fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.06em',
+      style={{ padding: '6px 8px', fontSize: 9, fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.06em', textAlign: 'center',
         borderBottom: `1px solid ${border}`, whiteSpace: 'nowrap', cursor: 'pointer', color: sort.key === key ? accent : muted, userSelect: 'none' }}>
       {label}{sort.key === key ? (sort.dir === 'asc' ? ' ▲' : ' ▼') : ''}
     </th>
@@ -245,20 +264,28 @@ export const DashboardView: React.FC<Props> = ({ theme = 'light' }) => {
           {err}
         </div>
       )}
-      {loading && <div style={{ ...card, color: muted, fontStyle: 'italic' }}>Loading snapshot… (first load pulls the full evidence table, then it is cached server-side)</div>}
+      {loading && (
+        <div style={{ ...card, display: 'flex', alignItems: 'center', gap: 14 }}>
+          <Spinner color={accent} size={24} />
+          <div>
+            <div style={{ fontWeight: 700, fontSize: 14, color: text }}>Loading snapshot…</div>
+            <div style={{ fontSize: 11, color: muted, marginTop: 1 }}>First load pulls the full evidence table, then it’s cached.</div>
+          </div>
+        </div>
+      )}
 
       {ov && snap && (
         <>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(160px,1fr))', gap: 12, marginBottom: 14 }}>
             {[
-              { k: 'Unique genes', v: fmt(snap.unique_genes), sub: snap.duplicates ? `${fmt(snap.duplicates)} duplicate rows` : 'no duplicates' },
-              { k: 'Evidence rows', v: fmt(snap.evidence_rows), sub: `${ov.axes.length} axes` },
-              { k: 'Snapshot', v: `#${snap.id} v${snap.version}`, sub: snap.label || '—' },
-              { k: 'Data issues', v: String(ov.warnings.length), sub: ov.warnings.length ? 'see below' : 'none found' },
+              { k: 'Unique genes', v: fmt(snap.unique_genes), sub: snap.duplicates ? `${fmt(snap.duplicates)} duplicate rows` : 'no duplicates', bad: snap.duplicates > 0 },
+              { k: 'Evidence rows', v: fmt(snap.evidence_rows), sub: `across ${ov.axes.length} axes`, bad: false },
+              { k: 'Avg. evidence', v: allRows.length ? (allRows.reduce((a, r) => a + r.completeness, 0) / allRows.length * 9).toFixed(1) : '—', sub: 'of 9 axes per gene', bad: false },
+              { k: 'Data issues', v: String(ov.warnings.length), sub: ov.warnings.length ? 'see below' : 'none — clean snapshot', bad: ov.warnings.length > 0 },
             ].map(c => (
               <div key={c.k} style={card}>
                 <div style={{ fontSize: 9, fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.08em', color: muted }}>{c.k}</div>
-                <div style={{ fontSize: 24, fontWeight: 900, color: c.k === 'Data issues' && ov.warnings.length ? '#d97706' : accent, marginTop: 4 }}>{c.v}</div>
+                <div style={{ fontSize: 24, fontWeight: 900, color: c.bad ? '#d97706' : (c.k === 'Data issues' ? '#16a34a' : accent), marginTop: 4 }}>{c.v}</div>
                 <div style={{ fontSize: 10, color: muted, marginTop: 2 }}>{c.sub}</div>
               </div>
             ))}
@@ -285,6 +312,13 @@ export const DashboardView: React.FC<Props> = ({ theme = 'light' }) => {
             </div>
           )}
 
+          {/* Informational notes — routine, NOT problems. Quiet footnote, never an alarm. */}
+          {(ov.notes?.length ?? 0) > 0 && (
+            <div style={{ fontSize: 11, color: muted, marginBottom: 14, lineHeight: 1.6 }}>
+              {ov.notes!.map((n, i) => <div key={i}>ⓘ {n}</div>)}
+            </div>
+          )}
+
           <div style={{ display: 'grid', gridTemplateColumns: 'minmax(280px,1fr) minmax(280px,1fr)', gap: 12, marginBottom: 14 }}>
             <div style={card}>
               <div style={{ fontSize: 10, fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.08em', color: muted, marginBottom: 10 }}>
@@ -308,7 +342,7 @@ export const DashboardView: React.FC<Props> = ({ theme = 'light' }) => {
 
             <div style={card}>
               <div style={{ fontSize: 10, fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.08em', color: muted, marginBottom: 6 }}>
-                Trials by phase <span style={{ fontWeight: 600, textTransform: 'none', letterSpacing: 0 }}>— across the {fmt(rows.length)} genes in view</span>
+                Targets by furthest trial phase <span style={{ fontWeight: 600, textTransform: 'none', letterSpacing: 0 }}>— each gene counted once, at its most advanced disease trial</span>
               </div>
               <div style={{ height: 90 }}>
                 <ResponsiveContainer width="100%" height="100%">
@@ -328,7 +362,7 @@ export const DashboardView: React.FC<Props> = ({ theme = 'light' }) => {
                     <YAxis tick={{ fontSize: 10, fill: muted }} axisLine={false} tickLine={false} />
                     <RechartsTooltip contentStyle={{ background: bg, border: `1px solid ${border}`, borderRadius: 8, fontSize: 11, color: text }} />
                     <Bar dataKey="v" radius={[3, 3, 0, 0]}>
-                      {completenessData.map((_, i) => <Cell key={i} fill={i >= 6 ? '#16a34a' : i >= 4 ? '#d97706' : '#dc2626'} />)}
+                      {completenessData.map((_, i) => <Cell key={i} fill={i >= 7 ? '#16a34a' : i >= 4 ? '#d97706' : '#dc2626'} />)}
                     </Bar>
                   </BarChart>
                 </ResponsiveContainer>
@@ -376,7 +410,7 @@ export const DashboardView: React.FC<Props> = ({ theme = 'light' }) => {
                     {sortBtn('n_drugs', 'Drugs')}
                     {sortBtn('tractable_modalities', 'Tractable')}
                     {sortBtn('n_disease_trials', 'Trials')}
-                    <th style={{ padding: '6px 8px', fontSize: 9, fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.06em', borderBottom: `1px solid ${border}`, color: muted, whiteSpace: 'nowrap' }}>P1/P2/P3</th>
+                    <th style={{ padding: '6px 8px', fontSize: 9, fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.06em', borderBottom: `1px solid ${border}`, color: muted, whiteSpace: 'nowrap', textAlign: 'center' }}>P1/P2/P3</th>
                     <th style={{ padding: '6px 8px', fontSize: 9, fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.06em', borderBottom: `1px solid ${border}`, color: muted, textAlign: 'left', whiteSpace: 'nowrap' }}>Class</th>
                     {sortBtn('tissue_tau', 'Tau')}
                     {sortBtn('n_publications', 'Papers')}
@@ -396,21 +430,21 @@ export const DashboardView: React.FC<Props> = ({ theme = 'light' }) => {
                             {isPinned ? '★' : '☆'}
                           </button>
                         </td>
-                        <td onClick={() => openDossier(r.gene_symbol)} style={{ padding: '6px 8px', color: muted, fontVariantNumeric: 'tabular-nums', cursor: 'pointer' }}>{r.rank ?? '—'}</td>
-                        <td onClick={() => openDossier(r.gene_symbol)} style={{ padding: '6px 8px', fontWeight: 800, color: accent, cursor: 'pointer' }}>
+                        <td onClick={() => openDossier(r.gene_symbol)} style={{ padding: '6px 8px', color: muted, fontVariantNumeric: 'tabular-nums', cursor: 'pointer', textAlign: 'center' }}>{r.rank ?? '—'}</td>
+                        <td onClick={() => openDossier(r.gene_symbol)} style={{ padding: '6px 8px', fontWeight: 800, color: accent, cursor: 'pointer', textAlign: 'left' }}>
                           {r.gene_symbol}{r.legacy && <span title="Pre-fix evidence — re-enrich" style={{ marginLeft: 6, fontSize: 9, color: '#d97706' }}>legacy</span>}
                         </td>
-                        <td style={{ padding: '6px 8px', fontVariantNumeric: 'tabular-nums' }}>{r.score != null ? r.score.toFixed(3) : '—'}</td>
-                        <td style={{ padding: '6px 8px', fontVariantNumeric: 'tabular-nums' }}>{fmt(r.n_drugs)}</td>
-                        <td style={{ padding: '6px 8px', fontVariantNumeric: 'tabular-nums' }}>{fmt(r.tractable_modalities)}</td>
-                        <td style={{ padding: '6px 8px', fontVariantNumeric: 'tabular-nums' }}>{fmt(r.n_disease_trials)}</td>
-                        <td style={{ padding: '6px 8px', fontVariantNumeric: 'tabular-nums', color: muted }}>{tp ? `${tp.phase1}/${tp.phase2}/${tp.phase3}` : '—'}</td>
-                        <td style={{ padding: '6px 8px', color: muted, whiteSpace: 'nowrap', maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis' }} title={r.target_class || ''}>{r.target_class || '—'}{r.is_common_essential ? <span title="Pan-essential across most cell lines" style={{ marginLeft: 4, color: '#d97706', fontWeight: 900 }}>E</span> : null}</td>
-                        <td style={{ padding: '6px 8px', fontVariantNumeric: 'tabular-nums', color: (r.tissue_tau ?? 0) >= 0.6 ? '#16a34a' : muted }}>{r.tissue_tau != null ? r.tissue_tau.toFixed(2) : '—'}</td>
-                        <td style={{ padding: '6px 8px', fontVariantNumeric: 'tabular-nums' }}>{fmt(r.n_publications)}</td>
-                        <td style={{ padding: '6px 8px', fontVariantNumeric: 'tabular-nums' }}>{pctS(r.velocity)}</td>
-                        <td style={{ padding: '6px 8px' }}>
-                          <div title={`${Math.round(r.completeness * 9)} of 9 axes have evidence`} style={{ width: 56, height: 6, background: isDark ? '#111827' : '#f1f5f9', borderRadius: 3, overflow: 'hidden' }}>
+                        <td style={{ padding: '6px 8px', fontVariantNumeric: 'tabular-nums', textAlign: 'center' }}>{r.score != null ? r.score.toFixed(3) : '—'}</td>
+                        <td style={{ padding: '6px 8px', fontVariantNumeric: 'tabular-nums', textAlign: 'center' }}>{fmt(r.n_drugs)}</td>
+                        <td style={{ padding: '6px 8px', fontVariantNumeric: 'tabular-nums', textAlign: 'center' }}>{fmt(r.tractable_modalities)}</td>
+                        <td style={{ padding: '6px 8px', fontVariantNumeric: 'tabular-nums', textAlign: 'center' }}>{fmt(r.n_disease_trials)}</td>
+                        <td style={{ padding: '6px 8px', fontVariantNumeric: 'tabular-nums', color: muted, textAlign: 'center' }}>{tp ? `${tp.phase1}/${tp.phase2}/${tp.phase3}` : '—'}</td>
+                        <td style={{ padding: '6px 8px', color: muted, whiteSpace: 'nowrap', maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'left' }} title={r.target_class || ''}>{r.target_class || '—'}{r.is_common_essential ? <span title="Pan-essential across most cell lines" style={{ marginLeft: 4, color: '#d97706', fontWeight: 900 }}>E</span> : null}</td>
+                        <td style={{ padding: '6px 8px', fontVariantNumeric: 'tabular-nums', color: (r.tissue_tau ?? 0) >= 0.6 ? '#16a34a' : muted, textAlign: 'center' }}>{r.tissue_tau != null ? r.tissue_tau.toFixed(2) : '—'}</td>
+                        <td style={{ padding: '6px 8px', fontVariantNumeric: 'tabular-nums', textAlign: 'center' }}>{fmt(r.n_publications)}</td>
+                        <td style={{ padding: '6px 8px', fontVariantNumeric: 'tabular-nums', textAlign: 'center' }}>{pctS(r.velocity)}</td>
+                        <td style={{ padding: '6px 8px', textAlign: 'center' }}>
+                          <div title={`${Math.round(r.completeness * 9)} of 9 axes have evidence`} style={{ width: 56, height: 6, background: isDark ? '#111827' : '#f1f5f9', borderRadius: 3, overflow: 'hidden', display: 'inline-block' }}>
                             <div style={{ width: `${r.completeness * 100}%`, height: '100%', background: r.completeness >= 0.8 ? '#16a34a' : r.completeness >= 0.5 ? '#d97706' : '#dc2626' }} />
                           </div>
                         </td>
@@ -466,7 +500,7 @@ export const DashboardView: React.FC<Props> = ({ theme = 'light' }) => {
               <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
                 <button onClick={() => { setGene(null); setDossier(null); }} style={{ background: 'none', border: 'none', color: muted, cursor: 'pointer', fontSize: 14 }}>✕</button>
               </div>
-              {dosLoading && <div style={{ color: muted, fontStyle: 'italic' }}>Building dossier for {gene}…</div>}
+              {dosLoading && <div style={{ display: 'flex', alignItems: 'center', gap: 10, color: muted }}><Spinner color={accent} size={18} /> Building dossier for {gene}…</div>}
               {!dosLoading && !dossier && <div style={{ color: muted }}>No dossier for {gene}.</div>}
               {dossier && <DossierPanel d={dossier} isDark={isDark} muted={muted} border={border} text={text} accent={accent} />}
             </div>
@@ -481,6 +515,41 @@ const LEVEL_STYLE: Record<string, { bg: string; fg: string; label: string; title
   fact: { bg: 'rgba(22,163,74,0.12)', fg: '#16a34a', label: 'fact', title: 'A record of something that happened — a drug exists, a trial ran.' },
   prediction: { bg: 'rgba(217,119,6,0.12)', fg: '#d97706', label: 'prediction', title: 'A forward-looking assessment, not a record. Kept structurally separate from facts.' },
   annotation: { bg: 'rgba(100,116,139,0.12)', fg: '#64748b', label: 'annotation', title: 'Context only — must never drive a score.' },
+};
+
+// One attribute row. Long values (e.g. the OT function narrative, which can run several
+// hundred characters) are CLAMPED to a few lines with a Show more / less toggle, so one
+// verbose attribute can no longer blow the card's height out and bury the rest.
+const LONG_VALUE = 160;   // chars beyond which a value collapses
+const AttrRow: React.FC<{ a: Attr; muted: string; border: string; text: string }> = ({ a, muted, border, text }) => {
+  const [open, setOpen] = useState(false);
+  const ls = LEVEL_STYLE[a.level] || LEVEL_STYLE.annotation;
+  const off = a.value == null;
+  const valueStr = off ? '' : `${a.value}${a.unit ? ` ${a.unit}` : ''}`;
+  const isLong = valueStr.length > LONG_VALUE;
+  const clamp: React.CSSProperties = isLong && !open
+    ? { display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden' } as any
+    : {};
+  return (
+    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '4px 0', borderTop: `1px solid ${border}` }}>
+      <div style={{ flex: 1, fontSize: 11, minWidth: 0 }}>
+        <div style={{ color: muted }}>{a.label}</div>
+        <div style={{ fontWeight: 700, color: off ? muted : text, fontStyle: off ? 'italic' : 'normal', lineHeight: 1.45, ...clamp }}>
+          {off ? (a.confidence === 'not_fetched' ? 'not fetched' : '—') : valueStr}
+        </div>
+        {isLong && (
+          <button onClick={() => setOpen(o => !o)}
+            style={{ background: 'none', border: 'none', padding: 0, marginTop: 2, cursor: 'pointer', fontSize: 10, fontWeight: 700, color: '#2563eb' }}>
+            {open ? 'Show less' : 'Show more'}
+          </button>
+        )}
+        {a.note && <div style={{ fontSize: 10, color: muted, marginTop: 2, lineHeight: 1.5 }}>{a.note}</div>}
+        <div style={{ fontSize: 9, color: muted, marginTop: 2 }}>{a.source}</div>
+      </div>
+      <span title={ls.title} style={{ fontSize: 8, fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.05em', background: ls.bg, color: ls.fg, padding: '2px 5px', borderRadius: 4, whiteSpace: 'nowrap' }}>{ls.label}</span>
+      {a.confidence === 'low' && <span title="Low confidence — see the note" style={{ fontSize: 8, fontWeight: 900, color: '#d97706' }}>LOW</span>}
+    </div>
+  );
 };
 
 const DossierPanel: React.FC<{ d: Dossier; isDark: boolean; muted: string; border: string; text: string; accent: string }> =
@@ -502,24 +571,7 @@ const DossierPanel: React.FC<{ d: Dossier; isDark: boolean; muted: string; borde
         <div key={c.key} style={{ border: `1px solid ${border}`, borderRadius: 10, padding: 12 }}>
           <div style={{ fontSize: 10, fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.07em', color: accent }}>{c.label}</div>
           <div style={{ fontSize: 10, color: muted, marginBottom: 8 }}>{c.blurb}</div>
-          {c.attrs.map(a => {
-            const ls = LEVEL_STYLE[a.level] || LEVEL_STYLE.annotation;
-            const off = a.value == null;
-            return (
-              <div key={a.key} style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '4px 0', borderTop: `1px solid ${border}` }}>
-                <div style={{ flex: 1, fontSize: 11 }}>
-                  <div style={{ color: muted }}>{a.label}</div>
-                  <div style={{ fontWeight: 700, color: off ? muted : text, fontStyle: off ? 'italic' : 'normal' }}>
-                    {off ? (a.confidence === 'not_fetched' ? 'not fetched' : '—') : `${a.value}${a.unit ? ` ${a.unit}` : ''}`}
-                  </div>
-                  {a.note && <div style={{ fontSize: 10, color: muted, marginTop: 2, lineHeight: 1.5 }}>{a.note}</div>}
-                  <div style={{ fontSize: 9, color: muted, marginTop: 2 }}>{a.source}</div>
-                </div>
-                <span title={ls.title} style={{ fontSize: 8, fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.05em', background: ls.bg, color: ls.fg, padding: '2px 5px', borderRadius: 4, whiteSpace: 'nowrap' }}>{ls.label}</span>
-                {a.confidence === 'low' && <span title="Low confidence — see the note" style={{ fontSize: 8, fontWeight: 900, color: '#d97706' }}>LOW</span>}
-              </div>
-            );
-          })}
+          {c.attrs.map(a => <AttrRow key={a.key} a={a} muted={muted} border={border} text={text} />)}
         </div>
       ))}
     </div>

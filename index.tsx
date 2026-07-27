@@ -100,6 +100,7 @@ import EvidenceCardsPanel from './EvidenceCardsPanel';
 import FunnelView from './FunnelView';
 import RankingsView from './RankingsView';
 import DashboardView from './DashboardView';
+import { glossaryPromptBlock } from './dashboardGlossary';
 import JobsView from './JobsView';
 import { getCbioMutations } from './cbioportalService';
 import { getChEMBLDruggability } from './chemblService';
@@ -5395,7 +5396,7 @@ CRITICAL RULES:
         { name: 'search_diseases', parameters: { type: Type.OBJECT, properties: { query: { type: Type.STRING } }, required: ['query'] } },
         { name: 'get_genes', parameters: { type: Type.OBJECT, properties: { id: { type: Type.STRING }, name: { type: Type.STRING } }, required: ['id', 'name'] } },
         { name: 'load_more', parameters: { type: Type.OBJECT, properties: {}, required: [] } },
-        { name: 'update_view', parameters: { type: Type.OBJECT, properties: { mode: { type: Type.STRING, enum: ['list', 'enrichment', 'raw', 'pubtator'] } }, required: ['mode'] } },
+        { name: 'update_view', parameters: { type: Type.OBJECT, properties: { mode: { type: Type.STRING, enum: ['dashboard', 'list', 'funnel', 'rankings', 'enrichment', 'raw', 'pubtator'] } }, required: ['mode'] } },
         { name: 'get_target_list', parameters: { type: Type.OBJECT, properties: { limit: { type: Type.NUMBER } } } },
         { name: 'get_active_filters', parameters: { type: Type.OBJECT, properties: {} } },
         { name: 'apply_filters', parameters: { type: Type.OBJECT, properties: { conditions: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { field: { type: Type.STRING }, operator: { type: Type.STRING, enum: ['>', '<', '>=', '<=', '=', '!=', 'between', 'contains', 'not_contains'] }, value: { type: Type.NUMBER }, value2: { type: Type.NUMBER }, boolValue: { type: Type.BOOLEAN }, stringValue: { type: Type.STRING } }, required: ['field', 'operator'] } }, logic: { type: Type.STRING, enum: ['AND', 'OR'] } }, required: ['conditions'] } },
@@ -5457,7 +5458,11 @@ CRITICAL RULES:
       - If no rows match, explain why and suggest a relaxed filter.
       - Use Open Targets scores for ranking backbone and drill-down metrics for specific evidence.
       - Do not ask unnecessary clarification questions.
-      - Always work in the context of the current Target List and its active filters.`;
+      - Always work in the context of the current Target List and its active filters.
+
+      DASHBOARD REFERENCE — the meaning of every dashboard term, column, abbreviation, range, formula and data source:
+      When the user asks what a term/column/metric/abbreviation means, or asks for its RANGE, FORMULA, DATA SOURCE, or evidence level, answer ONLY from this reference. Quote the range and formula verbatim when present, and always name the exact source. If a value has a caveat, include it. Never invent a range, formula or source; if a term is not in this reference, say so plainly rather than guessing. These are explanatory questions — answer them directly in prose, no tool call needed.
+${glossaryPromptBlock()}`;
 
       const callAI = async (messages: Message[]) => {
         const res = await authenticatedFetch('/api/ai/gemini-chat', {
@@ -5736,7 +5741,7 @@ CRITICAL RULES:
                     onShowScoreInfo={setActiveScoreInfo}
                   />
                 </div>
-              ) : researchState.targets.length === 0 && !['raw', 'paper', 'pubtator', 'funnel', 'rankings', 'jobs'].includes(viewMode) ? (<div className="h-full flex flex-col items-center justify-center p-20 text-center animate-in zoom-in duration-500"><Search className="w-16 h-16 text-blue-500 mb-8 opacity-30" /><h2 className={`text-xl font-bold mb-2 tracking-tight ${theme === 'dark' ? 'text-neutral-200' : 'text-slate-950'}`}>System Ready for Research Focus</h2><p className={`text-sm max-w-sm leading-relaxed ${theme === 'dark' ? 'text-neutral-500' : 'text-slate-700'}`}>Search for a therapeutic area or disease in the terminal to begin multi-modal target discovery.</p></div>) : (viewMode === 'raw') && !activeCancerType ? (<div className="h-full flex flex-col items-center justify-center p-12 text-center"><div className="p-5 rounded-full bg-blue-50 dark:bg-blue-900/20 mb-6"><AlertCircle className="w-12 h-12 text-blue-600" /></div><h3 className="text-xl font-bold mb-2 text-neutral-800 dark:text-neutral-200">Optimized Context Required</h3><p className="text-sm max-w-md text-neutral-600 dark:text-neutral-500 leading-relaxed">Cohort analytics are currently specifically tuned for high-resolution TCGA (e.g. BRCA, KIRC, BLCA) studies.</p></div>) : (
+              ) : researchState.targets.length === 0 && !['dashboard', 'raw', 'paper', 'pubtator', 'funnel', 'rankings', 'jobs'].includes(viewMode) ? (<div className="h-full flex flex-col items-center justify-center p-20 text-center animate-in zoom-in duration-500"><Search className="w-16 h-16 text-blue-500 mb-8 opacity-30" /><h2 className={`text-xl font-bold mb-2 tracking-tight ${theme === 'dark' ? 'text-neutral-200' : 'text-slate-950'}`}>System Ready for Research Focus</h2><p className={`text-sm max-w-sm leading-relaxed ${theme === 'dark' ? 'text-neutral-500' : 'text-slate-700'}`}>Search for a therapeutic area or disease in the terminal to begin multi-modal target discovery.</p></div>) : (viewMode === 'raw') && !activeCancerType ? (<div className="h-full flex flex-col items-center justify-center p-12 text-center"><div className="p-5 rounded-full bg-blue-50 dark:bg-blue-900/20 mb-6"><AlertCircle className="w-12 h-12 text-blue-600" /></div><h3 className="text-xl font-bold mb-2 text-neutral-800 dark:text-neutral-200">Optimized Context Required</h3><p className="text-sm max-w-md text-neutral-600 dark:text-neutral-500 leading-relaxed">Cohort analytics are currently specifically tuned for high-resolution TCGA (e.g. BRCA, KIRC, BLCA) studies.</p></div>) : (
                 <div className={`h-full rounded-2xl border overflow-hidden shadow-xl shadow-slate-950/5 ${theme === 'dark' ? 'bg-[#0b111c]/95 border-slate-800/80' : 'bg-white/95 border-slate-200'}`}>
                   {viewMode === 'pubtator' && (
                     <PubTatorView
