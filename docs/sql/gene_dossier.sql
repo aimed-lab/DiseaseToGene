@@ -84,5 +84,11 @@ CREATE INDEX gene_dossier_score_ix  ON gene_dossier (disease_id, score DESC);
 --   "novel & tractable" = no drug, no trial, but a tractable modality
 CREATE INDEX gene_dossier_novel_ix  ON gene_dossier (snapshot_id, n_drugs, n_disease_trials, n_tractable_modalities);
 
--- Read-only grant for the ORDS/app reader role (mirror the other tables):
--- GRANT SELECT ON gene_dossier TO <reader_role>;
+-- ── GRANTS (REQUIRED) ─────────────────────────────────────────────────────────
+-- The runtime connects as the APP user and reaches tables through the RW role, exactly
+-- like ranking_scores / evidence. WITHOUT this grant the app user cannot see the table
+-- and every write fails with ORA-00942 ("table or view does not exist"). Run as the OWNER.
+GRANT SELECT, INSERT, UPDATE, DELETE ON gene_dossier TO DISEASE2TARGET_RW;
+
+-- ORDS read layer (only if the dashboard is served through ORDS off-VPN):
+-- GRANT SELECT ON gene_dossier TO <ords_reader_role>;
