@@ -126,7 +126,7 @@ export function buildGeneDossier(input: DossierInput): GeneDossier {
   const s = input.scoreRow || {};
   const mut = ev.mutation, dys = ev.expression_tvn, dep = ev.dependency, saf = ev.safety;
   const drug = ev.druggability, clin = ev.clinical, lit = ev.literature_epmc, pm = ev.literature;
-  const ann = ev.annotation, tis = ev.tissue, pat = ev.patents;
+  const ann = ev.annotation, tis = ev.tissue, pat = ev.patents, net = ev.network;
 
   const otOverall = num(s.get_score);
   const genetic = num(s.genetic_score);
@@ -297,6 +297,19 @@ export function buildGeneDossier(input: DossierInput): GeneDossier {
           note: lit?.low_confidence ? 'Low confidence: too few papers for a stable recent/total ratio.' : 'Momentum, not biological strength.' }),
       attr('pubmed_papers', 'PubMed papers', pm?.paper_count ?? null, 'PubMed', 'annotation',
         { note: 'Precise per-paper gene tagging, but rate-limited and ~20x smaller — shown for reference, never scored.' }),
+    ],
+  });
+
+  categories.push({
+    key: 'network', label: 'Network biology', blurb: 'How central is it among the disease genes?',
+    attrs: [
+      attr('winner', 'Network importance (WINNER)', net?.winner_score != null ? fx(num(net.winner_score)!, 3) : null, srcOf.network || 'STRING PPI', 'prediction',
+        { note: 'Personalised-PageRank importance in the STRING interaction network of the top-ranked genes. Higher = a more central hub among disease-associated proteins.' }),
+      attr('rwr', 'Seed proximity (RWR)', net?.rwr_score != null ? fx(num(net.rwr_score)!, 3) : null, srcOf.network || 'STRING PPI', 'prediction',
+        { note: 'Random-walk-with-restart proximity to the top-ranked seed genes. Higher = more tightly wired to the known drivers.' }),
+      attr('is_seed', 'Seed gene', net ? (net.is_seed ? 'yes — a top-ranked seed' : 'no') : null, 'Disease2Target', 'annotation'),
+      attr('ranking_pval', 'Network ranking p-value', net?.ranking_pval != null ? fx(num(net.ranking_pval)!, 4) : null, 'WINNER null model', 'prediction',
+        { note: 'Empirical significance vs a degree-preserving random-network null. Populated by the Python WINNER upgrade (empty until then).' }),
     ],
   });
 

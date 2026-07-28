@@ -96,7 +96,7 @@ async function toolGetDossier(args) {
 
   const ann = byType.annotation, dr = byType.druggability, cl = byType.clinical;
   const ex = byType.expression_tvn, dp = byType.dependency, sf = byType.safety;
-  const ts = byType.tissue, mu = byType.mutation, lit = byType.literature_epmc, pat = byType.patents;
+  const ts = byType.tissue, mu = byType.mutation, lit = byType.literature_epmc, pat = byType.patents, net = byType.network;
 
   let o = `# ${gene} — target dossier\n**Disease:** ${snap.disease_name} · **Snapshot:** #${snap.id} v${snap.version}\n`;
 
@@ -124,6 +124,8 @@ async function toolGetDossier(args) {
   if (ts) factLines.push(`- **Tissue specificity (GTEx tau):** ${ts.display || ''}`);
   if (lit) factLines.push(`- **Literature (Europe PMC):** ${lit.display || ''}`);
   o += factLines.length ? factLines.join('\n') + '\n' : '- (no fact axes populated for this gene in this snapshot)\n';
+
+  if (net) o += `\n## Network biology (prediction)\n- **WINNER importance:** ${net.winner_score ?? '—'} · **RWR seed proximity:** ${net.rwr_score ?? '—'}${net.is_seed ? ' · seed gene' : ''}${net.ranking_pval != null ? ` · ranking p=${net.ranking_pval}` : ''}\n`;
 
   if (dr) {
     o += `\n## Druggability\n`;
