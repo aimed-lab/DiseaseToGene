@@ -39,12 +39,20 @@ import {
 } from '../evidenceProviders.ts';
 import { fetchTargetProfile, isSurfaceOrSecreted } from '../targetProfileService.ts';
 import { resolveCohort } from '../diseaseRegistry.ts';
+import { runWINNER } from '../winner.ts';
+import { runRWR } from '../rwr.ts';
 
 const OT = 'https://api.platform.opentargets.org/api/v4/graphql';
 const DRY = process.argv.includes('--dry');
 // Order matters for `enrich <id> all`: cheap/local axes first so a failure late in the run
 // costs the least. `annotation` and `patents` are the axes added for the dashboard.
-const AXES = ['expression', 'dependency', 'safety', 'tissue', 'mutation', 'annotation', 'druggability', 'clinical', 'patents', 'literature'] as const;
+const AXES = ['expression', 'dependency', 'safety', 'tissue', 'mutation', 'annotation', 'druggability', 'clinical', 'patents', 'literature', 'network'] as const;
+
+// Network axis config (WINNER + RWR over the STRING PPI graph). Bounded to the top-N genes
+// by rank so the (dense) WINNER matrix stays tractable in a batch run. Override via env.
+const NETWORK_N = Number(process.env.WINNER_NETWORK_N) || 800;   // node set = top-N ranked genes
+const NETWORK_SEEDS = Number(process.env.WINNER_SEEDS) || 12;    // RWR seeds = top-K ranked genes
+const STRING_MIN_SCORE = Number(process.env.STRING_MIN_SCORE) || 400; // STRING confidence (0–1000)
 
 const log = (m: string) => console.log(`[${new Date().toISOString().slice(11, 19)}] ${m}`);
 const toNum = (v: any): number | null => (Number.isFinite(Number(v)) ? Number(v) : null);
@@ -105,6 +113,23 @@ async function pooled<T, R>(items: T[], conc: number, fn: (x: T) => Promise<R>):
     while (i < items.length) { const k = i++; out[k] = await fn(items[k]); }
   });
   await Promise.all(workers); return out;
+}
+
+// STRING PPI edges among a set of symbols. Uses POST (no URL length limit) so the whole
+// node set goes in ONE call — a chunked GET would miss edges that cross chunk boundaries.
+async function fetchStringEdges(symbols: string[]): Promise<any[]> {
+  try {
+    const body = new URLSearchParams({
+      identifiers: symbols.join('\r'), species: '9606',
+      required_score: String(STRING_MIN_SCORE), caller_identity: 'diseasetotarget_app',
+    });
+    const r = await fetch('https://string-db.org/api/json/network', {
+      method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body,
+    });
+    if (!r.ok) return [];
+    const rows = await r.json();
+    return Array.isArray(rows) ? rows : [];
+  } catch { return []; }
 }
 
 // ════════════════════════════ HARVEST ════════════════════════════
@@ -308,6 +333,44 @@ async function buildAxis(axis: string, genes: string[], diseaseName: string, dis
       });
       if (++n % 500 === 0) log(`  patents ${n}/${genes.length}…`);
     });
+  } else if (axis === 'network') {
+    // WINNER (network importance) + RWR (proximity to the top-ranked seeds) over the STRING
+    // PPI graph, stored as an axis. `genes` arrives rank-ordered (from listRankingScores), so
+    // the top-N are the network node set and the top-K are the RWR seeds. Bounded by NETWORK_N
+    // so the dense WINNER matrix is tractable; genes below the cut get no network row (like any
+    // partial-coverage axis). The heavy p-value/expansion pass is a later Python-WINNER upgrade
+    // (the ranking_pval / expansion_pval fields below are reserved for it).
+    const nodeSet = genes.slice(0, NETWORK_N);
+    const seeds = genes.slice(0, NETWORK_SEEDS);
+    if (nodeSet.length < 3) { log('network: too few genes for a network; skipping'); return rows; }
+    log(`  network: fetching STRING edges for top ${nodeSet.length} genes (seeds: ${seeds.slice(0, 5).join(', ')}…)`);
+    const edges = await fetchStringEdges(nodeSet);
+    if (!edges.length) { log('network: no STRING interactions returned; skipping'); return rows; }
+    log(`  network: ${edges.length} STRING edges — running WINNER + RWR`);
+    const winnerRaw = runWINNER(nodeSet, edges);
+    const rwrRaw = runRWR(nodeSet, edges, seeds);
+    const maxW = Math.max(...Object.values(winnerRaw), 1e-10);
+    const maxR = Math.max(...Object.values(rwrRaw), 1e-10);
+    const seedSet = new Set(seeds);
+    for (const g of nodeSet) {
+      const wr = winnerRaw[g] ?? 0, rr = rwrRaw[g] ?? 0;
+      if (wr === 0 && rr === 0) continue;   // isolated node — no network signal, don't store
+      const wNorm = clamp01(wr / maxW), rNorm = clamp01(rr / maxR);
+      rows.push({
+        gene_symbol: g, evidence_type: 'network',
+        source: `STRING v12 PPI (score≥${STRING_MIN_SCORE}) · WINNER + RWR personalised PageRank`,
+        value_text: `WINNER ${wNorm.toFixed(3)} · RWR ${rNorm.toFixed(3)}${seedSet.has(g) ? ' · seed' : ''}`,
+        value_json: {
+          axis: wNorm, direction: 'pro',
+          display: `network importance ${wNorm.toFixed(3)} (WINNER) · seed proximity ${rNorm.toFixed(3)} (RWR)${seedSet.has(g) ? ' · seed gene' : ''}`,
+          winner_score: +wNorm.toFixed(4), winner_raw: +wr.toFixed(6),
+          rwr_score: +rNorm.toFixed(4), is_seed: seedSet.has(g),
+          ranking_pval: null, expansion_pval: null,   // reserved for the Python winner-pvalue upgrade
+          n_network_genes: nodeSet.length, n_edges: edges.length,
+        },
+      });
+    }
+    log(`  network: ${rows.length} genes scored (of ${nodeSet.length} in the network)`);
   } else throw new Error(`Unknown axis "${axis}" (valid: ${AXES.join(', ')}, all)`);
   return rows;
 }
@@ -375,7 +438,7 @@ async function status(snapshotId: number) {
   for (const r of ev as any[]) (byType[r.evidence_type] ??= new Set()).add(r.gene_symbol);
   log(`Snapshot #${snapshotId} · ${snap.disease_name} · ${scores.length} genes in RANKING_SCORES`);
   log(`EVIDENCE rows: ${(ev as any[]).length}`);
-  for (const a of ['expression_tvn', 'dependency', 'safety', 'tissue', 'mutation', 'annotation', 'druggability', 'clinical', 'patents', 'literature', 'literature_epmc'])
+  for (const a of ['expression_tvn', 'dependency', 'safety', 'tissue', 'mutation', 'annotation', 'druggability', 'clinical', 'patents', 'literature', 'literature_epmc', 'network'])
     log(`  ${a.padEnd(16)} ${byType[a]?.size ?? 0} genes`);
 }
 
