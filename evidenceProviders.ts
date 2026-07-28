@@ -11,7 +11,7 @@
 // Keep any string destined for Oracle value_text/value_json ASCII/Latin-1 safe
 // (the DB charset mangles arrows etc.); "·" is fine, arrows are not.
 
-import { getModalityProfile, geneToEnsembl } from './modalityService.ts';
+import { getModalityProfile, geneToEnsembl } from './modalityService.js';
 
 // ─── small helpers ────────────────────────────────────────────────────────────
 const num = (v: any): number | null => (Number.isFinite(Number(v)) ? Number(v) : null);

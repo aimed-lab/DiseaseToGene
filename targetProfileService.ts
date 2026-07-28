@@ -18,7 +18,7 @@
 // THREE-STATE: a failed lookup returns null so the caller writes NO row, never a
 // fabricated empty profile.
 
-import { geneToEnsembl } from './modalityService.ts';
+import { geneToEnsembl } from './modalityService.js';
 
 const OT = 'https://api.platform.opentargets.org/api/v4/graphql';
 
