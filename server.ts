@@ -452,6 +452,38 @@ function setupRoutes() {
     }
   });
 
+  // ── Diagnostics ───────────────────────────────────────────────────────────────
+  // Reports, FROM INSIDE the running function, which Oracle read path is active and whether
+  // a live call works — so a 500 on Vercel can be diagnosed without guessing. Reveals only
+  // config flags + the ORDS host (no secrets). Intentionally open (no requireUser) so it is
+  // reachable even if auth itself is the problem. Safe to remove once production is stable.
+  app.get('/api/_diag', async (_req, res) => {
+    let ordsHost: string | null = null;
+    try { ordsHost = process.env.ORDS_BASE_URL ? new URL(process.env.ORDS_BASE_URL).host : null; } catch { ordsHost = 'INVALID_URL'; }
+    const info: any = {
+      node: process.version,
+      onVercel: !!process.env.VERCEL,
+      flags: {
+        USE_ORDS_is_1: process.env.USE_ORDS === '1',
+        USE_ORDS_raw: process.env.USE_ORDS ?? null,          // to catch "true"/"TRUE"/" 1 "
+        ORDS_BASE_URL_set: !!process.env.ORDS_BASE_URL,
+        ords_host: ordsHost,
+        USE_ORACLE_STORE: process.env.USE_ORACLE_STORE ?? null,
+        has_supabase: !!process.env.SUPABASE_URL,
+      },
+      readPath: ordsReadEnabled() ? 'ords' : (oracleStoreEnabled() ? 'oracle(node-oracledb — cannot reach internal Oracle from Vercel)' : 'DISABLED (503)'),
+    };
+    try {
+      const svc = await readSvc();
+      const t0 = Date.now();
+      const snaps = await svc.listSnapshots();
+      info.liveTest = { ok: true, ms: Date.now() - t0, snapshots: Array.isArray(snaps) ? snaps.length : 0 };
+    } catch (e: any) {
+      info.liveTest = { ok: false, error: String(e?.message || e).slice(0, 400) };
+    }
+    res.json(info);
+  });
+
   // ── Dashboard ───────────────────────────────────────────────────────────────
   // Overview of what is actually IN the store for a snapshot, plus per-gene dossiers.
   // A snapshot is 7k score rows + 33k evidence rows, and pulling that over ORDS takes
