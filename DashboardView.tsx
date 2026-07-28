@@ -45,7 +45,10 @@ type Detail = {
   modalities: { modality: string; family: string; drugCount: number; topStage: string; approved: boolean }[];
   tractability: { modality: string; code: string; labels: string[] }[];
   trials: { id: string | null; url: string | null; phase: number; status: string | null; title: string | null;
-            year: number | null; drug: string | null; why_stopped: string | null; stop_reasons: string[] }[];
+            year: number | null; drug: string | null; why_stopped: string | null; stop_reasons: string[];
+            sponsor?: string | null; collaborators?: string[]; start_date?: string | null; completion_date?: string | null;
+            enrollment?: number | null; n_locations?: number; countries?: string[];
+            locations?: { facility: string | null; city: string | null; state: string | null; country: string | null }[] }[];
   papers: { title: string; id: string; source: string; journal: string | null; year: string | null }[];
   safety_liabilities: { event: string | null; datasource: string | null; effects: string[] }[];
   variants: { change: string; count: number; fraction: number }[];
@@ -645,24 +648,36 @@ const DetailTables: React.FC<{ d: Dossier; isDark: boolean; muted: string; borde
           {head(`Clinical trials in ${d.disease_name}`, 'Each trial’s own phase in THIS disease. A stopped trial shows why — toxicity is a very different signal from a business decision.')}
           <div style={{ maxHeight: 260, overflowY: 'auto' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <thead><tr><th style={th}>Trial</th><th style={th}>Phase</th><th style={th}>Status</th><th style={th}>Drug</th><th style={th}>Year</th></tr></thead>
+              <thead><tr><th style={th}>Trial</th><th style={th}>Phase</th><th style={th}>Status</th><th style={th}>Year</th><th style={th}>Drug</th><th style={th}>Sponsor</th></tr></thead>
               <tbody>
-                {dt.trials.map((t, i) => (
+                {dt.trials.map((t, i) => {
+                  const meta: string[] = [];
+                  if (t.n_locations) meta.push(`${t.n_locations} site${t.n_locations === 1 ? '' : 's'}${Array.isArray(t.countries) && t.countries.length ? ` · ${t.countries.slice(0, 3).join(', ')}${t.countries.length > 3 ? '…' : ''}` : ''}`);
+                  if (t.enrollment) meta.push(`${t.enrollment.toLocaleString()} enrolled`);
+                  if (t.completion_date) meta.push(`est. completion ${String(t.completion_date).slice(0, 4)}`);
+                  return (
                   <React.Fragment key={t.id || i}>
                     <tr>
                       <td style={td}>{t.url ? <a href={t.url} target="_blank" rel="noreferrer" style={{ color: accent, textDecoration: 'none' }}>{(t.id || 'trial').toUpperCase()}</a> : (t.id || '—')}</td>
                       <td style={{ ...td, fontVariantNumeric: 'tabular-nums' }}>{t.phase ? `P${t.phase}` : '—'}</td>
                       <td style={{ ...td, color: muted }}>{(t.status || '—').replace(/_/g, ' ').toLowerCase()}</td>
-                      <td style={td}>{t.drug || '—'}</td>
                       <td style={{ ...td, color: muted, fontVariantNumeric: 'tabular-nums' }}>{t.year ?? '—'}</td>
+                      <td style={td}>{t.drug || '—'}</td>
+                      <td style={{ ...td, color: muted }}>{t.sponsor || '—'}</td>
                     </tr>
+                    {meta.length > 0 && (
+                      <tr><td colSpan={6} style={{ ...td, borderTop: 'none', paddingTop: 0, fontSize: 10, color: muted }}>
+                        📍 {meta.join(' · ')}
+                      </td></tr>
+                    )}
                     {t.why_stopped && (
-                      <tr><td colSpan={5} style={{ ...td, borderTop: 'none', paddingTop: 0, fontSize: 10, color: '#b45309' }}>
+                      <tr><td colSpan={6} style={{ ...td, borderTop: 'none', paddingTop: 0, fontSize: 10, color: '#b45309' }}>
                         ⚠ stopped: {t.why_stopped}{t.stop_reasons?.length ? ` (${t.stop_reasons.join(', ')})` : ''}
                       </td></tr>
                     )}
                   </React.Fragment>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>

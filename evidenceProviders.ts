@@ -269,6 +269,11 @@ export interface ClinicalStat {
     id: string | null; url: string | null; phase: number; status: string | null;
     title: string | null; year: number | null; drug: string | null;
     why_stopped: string | null; stop_reasons: string[];
+    // ── enriched from ClinicalTrials.gov (OT carries none of these) ──
+    sponsor?: string | null; collaborators?: string[];
+    start_date?: string | null; completion_date?: string | null; enrollment?: number | null;
+    n_locations?: number; countries?: string[];
+    locations?: { facility: string | null; city: string | null; state: string | null; country: string | null }[];
   }[];
   n_stopped_trials: number;
 }
@@ -280,6 +285,65 @@ function clinicalAxis(maxPhase: number, nDrugs: number): number {
   const base = clamp01(maxPhase / 4);
   const breadth = Math.min(0.10, 0.02 * Math.log1p(nDrugs));
   return clamp01(base + breadth);
+}
+
+// Trial metadata Open Targets does NOT carry — start year, sponsor/collaborators, sites,
+// enrollment, completion — fetched from the ClinicalTrials.gov v2 API by NCT id and merged
+// into the trial records in place. Batched (filter.ids), best-effort: a failed lookup leaves
+// the OT-only record untouched. #13 (expand clinical trial info).
+async function enrichTrialsWithCtgov(
+  trials: { id: string | null; year: number | null; status: string | null; why_stopped: string | null; [k: string]: any }[],
+): Promise<void> {
+  const ids = [...new Set(trials.map(t => (t.id || '').toUpperCase()).filter(x => /^NCT\d+$/.test(x)))];
+  if (!ids.length) return;
+  const meta = new Map<string, any>();
+  const CHUNK = 40;
+  for (let i = 0; i < ids.length; i += CHUNK) {
+    const batch = ids.slice(i, i + CHUNK);
+    try {
+      const url = `https://clinicaltrials.gov/api/v2/studies?filter.ids=${batch.join(',')}`
+        + '&fields=protocolSection.identificationModule,protocolSection.statusModule,'
+        + 'protocolSection.sponsorCollaboratorsModule,protocolSection.designModule,protocolSection.contactsLocationsModule'
+        + `&pageSize=${batch.length}`;
+      const r = await fetch(url, { headers: { Accept: 'application/json' } });
+      if (!r.ok) continue;
+      const j: any = await r.json();
+      for (const s of (j?.studies ?? [])) {
+        const ps = s?.protocolSection ?? {};
+        const nct = String(ps?.identificationModule?.nctId ?? '').toUpperCase();
+        if (!nct) continue;
+        const st = ps?.statusModule ?? {}, sp = ps?.sponsorCollaboratorsModule ?? {};
+        const start = st?.startDateStruct?.date ?? null;
+        const yr = start ? Number(String(start).slice(0, 4)) : null;
+        const locs = (ps?.contactsLocationsModule?.locations ?? []).map((l: any) => ({
+          facility: l?.facility ?? null, city: l?.city ?? null, state: l?.state ?? null, country: l?.country ?? null,
+        }));
+        meta.set(nct, {
+          year: (yr && yr > 1900) ? yr : null,
+          start_date: start,
+          completion_date: st?.completionDateStruct?.date ?? st?.primaryCompletionDateStruct?.date ?? null,
+          status: st?.overallStatus ?? null,
+          why_stopped: st?.whyStopped ?? null,
+          sponsor: sp?.leadSponsor?.name ?? null,
+          collaborators: (sp?.collaborators ?? []).map((c: any) => String(c?.name ?? '')).filter(Boolean).slice(0, 8),
+          enrollment: Number.isFinite(Number(ps?.designModule?.enrollmentInfo?.count)) ? Number(ps.designModule.enrollmentInfo.count) : null,
+          n_locations: locs.length,
+          countries: [...new Set(locs.map((l: any) => l.country).filter(Boolean))].slice(0, 12),
+          locations: locs.slice(0, 15),
+        });
+      }
+    } catch { /* skip this batch — keep the OT-only trial record */ }
+  }
+  for (const t of trials) {
+    const m = t.id ? meta.get(t.id.toUpperCase()) : null;
+    if (!m) continue;
+    if (t.year == null) t.year = m.year;                              // OT year was usually null — CT.gov fills it
+    if (!t.status && m.status) t.status = m.status;
+    if (!t.why_stopped && m.why_stopped) t.why_stopped = String(m.why_stopped).slice(0, 400);
+    t.sponsor = m.sponsor; t.collaborators = m.collaborators;
+    t.start_date = m.start_date; t.completion_date = m.completion_date; t.enrollment = m.enrollment;
+    t.n_locations = m.n_locations; t.countries = m.countries; t.locations = m.locations;
+  }
 }
 
 export async function fetchClinical(symbol: string, scope: DiseaseScope): Promise<ClinicalStat | null> {
@@ -341,6 +405,9 @@ export async function fetchClinical(symbol: string, scope: DiseaseScope): Promis
       if (r?.drug?.name) drugs.add(String(r.drug.name));
       if (bestForDrug > maxPhase) maxPhase = bestForDrug;
     }
+    // most-advanced first, so the stored cap keeps the trials that matter
+    const finalTrials = trials.sort((a, b) => b.phase - a.phase || (b.year ?? 0) - (a.year ?? 0)).slice(0, 60);
+    await enrichTrialsWithCtgov(finalTrials);   // fill year / sponsor / sites from ClinicalTrials.gov
     const nDrugs = drugs.size;
     return {
       trial_count: nDrugs, max_phase: maxPhase,
@@ -348,8 +415,7 @@ export async function fetchClinical(symbol: string, scope: DiseaseScope): Promis
       drug_names: [...drugs].slice(0, 25),
       axis: clinicalAxis(maxPhase, nDrugs),
       n_disease_trials: nTrials, trials_by_phase: byPhase,
-      // most-advanced first, so a stored cap keeps the trials that matter
-      trials: trials.sort((a, b) => b.phase - a.phase || (b.year ?? 0) - (a.year ?? 0)).slice(0, 60),
+      trials: finalTrials,
       n_stopped_trials: nStopped,
     };
   } catch { return null; }                         // fetch failed → not-fetched (3-state)

@@ -58,7 +58,10 @@ export interface DossierDetail {
   modalities: { modality: string; family: string; drugCount: number; topStage: string; approved: boolean }[];
   tractability: { modality: string; code: string; labels: string[] }[];
   trials: { id: string | null; url: string | null; phase: number; status: string | null; title: string | null;
-            year: number | null; drug: string | null; why_stopped: string | null; stop_reasons: string[] }[];
+            year: number | null; drug: string | null; why_stopped: string | null; stop_reasons: string[];
+            sponsor?: string | null; collaborators?: string[]; start_date?: string | null; completion_date?: string | null;
+            enrollment?: number | null; n_locations?: number; countries?: string[];
+            locations?: { facility: string | null; city: string | null; state: string | null; country: string | null }[] }[];
   papers: { title: string; id: string; source: string; journal: string | null; year: string | null }[];
   safety_liabilities: { event: string | null; datasource: string | null; effects: string[] }[];
   variants: { change: string; count: number; fraction: number }[];

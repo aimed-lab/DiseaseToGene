@@ -140,7 +140,7 @@ async function toolGetDossier(args) {
     const trials = Array.isArray(cl.trials) ? cl.trials.slice(0, 8) : [];
     for (const t of trials) {
       const nct = String(t.id || '').toUpperCase();
-      o += `  - **${nct}** — Phase ${t.phase ?? '—'} · ${t.status ?? ''}${t.drug ? ` · ${t.drug}` : ''}${t.why_stopped ? ` · ⚠ stopped: ${String(t.why_stopped).slice(0, 120)}` : ''}\n`;
+      o += `  - **${nct}** — Phase ${t.phase ?? '—'} · ${t.status ?? ''}${t.year ? ` · ${t.year}` : ''}${t.drug ? ` · ${t.drug}` : ''}${t.sponsor ? ` · ${t.sponsor}` : ''}${t.n_locations ? ` · ${t.n_locations} sites` : ''}${t.why_stopped ? ` · ⚠ stopped: ${String(t.why_stopped).slice(0, 100)}` : ''}\n`;
     }
   } else {
     o += `\n## Clinical trials\n- No clinical precedent in ${snap.disease_name} — a **neutral novelty signal**, not a negative.\n`;
@@ -179,10 +179,11 @@ async function toolGetClinicalTrials(args) {
   let o = `# ${gene} — clinical trials in ${snap.disease_name}\n\n`;
   o += `**${cl.n_drugs_in_disease_trials ?? 0} drug(s) in disease trials · max Phase ${cl.max_disease_trial_phase ?? '—'}** · ${cl.n_disease_trials ?? 0} disease trials total`;
   if (cl.trials_by_phase) o += ` (P1 ${cl.trials_by_phase.phase1 || 0} · P2 ${cl.trials_by_phase.phase2 || 0} · P3 ${cl.trials_by_phase.phase3 || 0} · P4 ${cl.trials_by_phase.phase4 || 0})`;
-  o += `\n\n| NCT | Phase | Status | Drug | Why stopped |\n|---|---|---|---|---|\n`;
+  o += `\n\n| NCT | Phase | Status | Year | Drug | Sponsor | Sites | Why stopped |\n|---|---|---|---|---|---|---|---|\n`;
   const trials = Array.isArray(cl.trials) ? cl.trials : [];
   for (const t of trials.slice(0, 40)) {
-    o += `| [${String(t.id || '').toUpperCase()}](${t.url || ''}) | ${t.phase ?? '—'} | ${t.status ?? ''} | ${t.drug ?? ''} | ${t.why_stopped ? String(t.why_stopped).slice(0, 100) : ''} |\n`;
+    const sites = t.n_locations ? `${t.n_locations}${Array.isArray(t.countries) && t.countries.length ? ` (${t.countries.slice(0, 3).join(', ')})` : ''}` : '';
+    o += `| [${String(t.id || '').toUpperCase()}](${t.url || ''}) | ${t.phase ?? '—'} | ${t.status ?? ''} | ${t.year ?? '—'} | ${t.drug ?? ''} | ${t.sponsor ?? '—'} | ${sites || '—'} | ${t.why_stopped ? String(t.why_stopped).slice(0, 80) : ''} |\n`;
   }
   return text(o);
 }
