@@ -38,6 +38,7 @@ import {
   fetchCohortMutations, fetchDruggability, fetchClinical, fetchLiterature, fetchPubmedLiterature, resolveCbioStudy, resolveDiseaseScope, fetchPatents,
 } from '../evidenceProviders.ts';
 import { fetchTargetProfile, isSurfaceOrSecreted } from '../targetProfileService.ts';
+import { resolveCohort } from '../diseaseRegistry.ts';
 
 const OT = 'https://api.platform.opentargets.org/api/v4/graphql';
 const DRY = process.argv.includes('--dry');
@@ -165,12 +166,14 @@ async function loadGenes(snapshotId: number): Promise<{ genes: string[]; disease
 // Build the EVIDENCE rows for one axis — SAME shapes the server's enrichAxes writes,
 // so the funnel reads CLI-written evidence identically.
 async function buildAxis(axis: string, genes: string[], diseaseName: string, diseaseId: string): Promise<any[]> {
-  const pancreatic = /pancrea|pdac|paad|ductal adenocarcinoma/i.test(diseaseName || '');
+  const cohort = resolveCohort(diseaseName, diseaseId);
   const rows: any[] = [];
 
   if (axis === 'expression') {
-    if (!pancreatic) { log('expression: disease not pancreatic — no reference; skipping'); return rows; }
-    const ex = loadRef('expression_paad.json');
+    const ref = cohort?.expression;
+    if (!ref) { log(`expression: no reference cohort for "${diseaseName}" — skipping (add it to data/disease_registry.json)`); return rows; }
+    const ex = loadRef(ref.ref_file);
+    if (!ex?.genes) { log(`expression: ${ref.ref_file} not built yet — run \`node scripts/build_expression.mjs ${cohort!.key}\`; skipping`); return rows; }
     for (const g of genes) { const d = ex?.genes?.[g]; if (!d) continue; const log2fc = toNum(d.log2fc); const a = log2fc != null ? clamp01(Math.abs(log2fc) / 4) : null; const up = (log2fc ?? 0) >= 0;
       // #5: direction reflects the SIGN of log2FC (over- vs under-expression), not a constant 'pro'.
       // #4: flag genes whose |log2FC| is driven by a near-zero normal-tissue denominator (the shared
@@ -178,12 +181,14 @@ async function buildAxis(axis: string, genes: string[], diseaseName: string, dis
       const normalFloored = LOW_EXPR_FLOOR != null && toNum(d.normal_median) != null && toNum(d.normal_median)! <= LOW_EXPR_FLOOR;
       const cappedLog2fc = log2fc != null ? Math.max(-EXPR_LOG2FC_CAP, Math.min(EXPR_LOG2FC_CAP, log2fc)) : null;
       const axisCapped = cappedLog2fc != null ? clamp01(Math.abs(cappedLog2fc) / 4) : null;
-      rows.push({ gene_symbol: g, evidence_type: 'expression_tvn', source: ex.meta?.source || 'UCSC Xena Toil (TCGA-PAAD vs GTEx)', value_text: `${up ? 'up' : 'down'} log2FC ${log2fc}${normalFloored ? ' (low-confidence: normal floor)' : ''}`, value_json: { axis: axisCapped, direction: up ? 'pro' : 'con', display: `${up ? 'up' : 'down'} log2FC ${log2fc} (p ${d.p})${normalFloored ? ' · low-confidence' : ''}`, log2fc, log2fc_capped: cappedLog2fc, low_confidence: normalFloored, p: d.p, tumor_median: d.tumor_median, normal_median: d.normal_median, n_tumor: toNum(d.n_tumor), n_normal: toNum(d.n_normal) } }); }
+      rows.push({ gene_symbol: g, evidence_type: 'expression_tvn', source: ex.meta?.source || ref.source_label, value_text: `${up ? 'up' : 'down'} log2FC ${log2fc}${normalFloored ? ' (low-confidence: normal floor)' : ''}`, value_json: { axis: axisCapped, direction: up ? 'pro' : 'con', display: `${up ? 'up' : 'down'} log2FC ${log2fc} (p ${d.p})${normalFloored ? ' · low-confidence' : ''}`, log2fc, log2fc_capped: cappedLog2fc, low_confidence: normalFloored, p: d.p, tumor_median: d.tumor_median, normal_median: d.normal_median, n_tumor: toNum(d.n_tumor), n_normal: toNum(d.n_normal) } }); }
   } else if (axis === 'dependency') {
-    if (!pancreatic) { log('dependency: disease not pancreatic — no reference; skipping'); return rows; }
-    const dp = loadRef('depmap_pancreatic.json');
+    const ref = cohort?.dependency;
+    if (!ref) { log(`dependency: no reference cohort for "${diseaseName}" — skipping (add it to data/disease_registry.json)`); return rows; }
+    const dp = loadRef(ref.ref_file);
+    if (!dp?.genes) { log(`dependency: ${ref.ref_file} not built yet — run \`node scripts/build_depmap.mjs ${cohort!.key}\`; skipping`); return rows; }
     for (const g of genes) { const d = dp?.genes?.[g]; if (!d) continue; const mean = toNum(d.mean); const a = mean != null ? clamp01(-mean) : null;
-      rows.push({ gene_symbol: g, evidence_type: 'dependency', source: dp.meta?.source || 'DepMap CRISPR (Chronos, Pancreas)', value_text: `Chronos ${mean}`, value_json: { axis: a, direction: 'pro', display: `Chronos ${mean}${d.frac_dependent != null ? ` · ${Math.round(d.frac_dependent * 100)}% lines` : ''}`, mean, min: d.min, frac_dependent: d.frac_dependent, n_lines: d.n_lines } }); }
+      rows.push({ gene_symbol: g, evidence_type: 'dependency', source: dp.meta?.source || ref.source_label, value_text: `Chronos ${mean}`, value_json: { axis: a, direction: 'pro', display: `Chronos ${mean}${d.frac_dependent != null ? ` · ${Math.round(d.frac_dependent * 100)}% lines` : ''}`, mean, min: d.min, frac_dependent: d.frac_dependent, n_lines: d.n_lines } }); }
   } else if (axis === 'safety') {
     let n = 0;
     await pooled(genes, 6, async g => { const c = await gnomadConstraint(g); if (!c || (c.pli == null && c.loeuf == null)) return;

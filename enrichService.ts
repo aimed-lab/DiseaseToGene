@@ -20,6 +20,7 @@ import {
   fetchCohortMutations, fetchDruggability, fetchClinical, fetchLiterature,
   resolveCbioStudy, resolveDiseaseScope, type MutationStat,
 } from './evidenceProviders.js';
+import { resolveCohort } from './diseaseRegistry.js';
 
 const OT = 'https://api.platform.opentargets.org/api/v4/graphql';
 
@@ -82,15 +83,15 @@ export interface EnrichedGene {
 // = human name (used for the cBioPortal cohort match + literature/clinical queries).
 export async function enrichGene(gene: string, diseaseId: string, diseaseName: string): Promise<EnrichedGene> {
   const g = (gene || '').trim().toUpperCase();
-  // pancreatic-scoped reference tables (expression / dependency) — only apply when the
-  // disease is one we have references for; otherwise those three tiers stay null.
+  // Cohort-scoped reference tables (expression / dependency) — only apply when the
+  // disease has a registry entry with references built; otherwise those tiers stay null.
   const cbio = resolveCbioStudy(diseaseName);            // matches paad / gbm cohorts
-  const pancreatic = /pancrea|paad|pdac/i.test(diseaseName);
+  const cohortCfg = resolveCohort(diseaseName, diseaseId);   // named *Cfg to not shadow the cohort() fn below
 
   const [ens, exprRef, depRef, gnomRef, clinScope] = await Promise.all([
     geneToEnsembl(g),
-    pancreatic ? loadRef('expression_paad.json') : Promise.resolve(null),
-    pancreatic ? loadRef('depmap_pancreatic.json') : Promise.resolve(null),
+    cohortCfg?.expression ? loadRef(cohortCfg.expression.ref_file) : Promise.resolve(null),
+    cohortCfg?.dependency ? loadRef(cohortCfg.dependency.ref_file) : Promise.resolve(null),
     loadRef('gnomad_constraint.json'),
     resolveDiseaseScope(diseaseId, diseaseName),   // #3: disease-scoped clinical
   ]);
@@ -120,8 +121,8 @@ export async function enrichGene(gene: string, diseaseId: string, diseaseName: s
   const tiers: Record<string, TierStatus> = {
     genetic: tier(raw.genetic, 'Open Targets (genetic_association)'),
     mutation: tier(raw.frequency, cbio ? `cBioPortal (${cbio.id})` : 'cBioPortal (no cohort for this disease)'),
-    dysregulation: tier(raw.log2fc, pancreatic ? 'TCGA-PAAD vs GTEx' : 'expression reference (disease not set up)'),
-    dependency: tier(raw.chronos, pancreatic ? 'DepMap (pancreatic)' : 'DepMap (lineage not set up)'),
+    dysregulation: tier(raw.log2fc, cohortCfg?.expression ? cohortCfg.expression.source_label : 'expression reference (disease not set up)'),
+    dependency: tier(raw.chronos, cohortCfg?.dependency ? cohortCfg.dependency.source_label : 'DepMap (lineage not set up)'),
     safety: tier(raw.loeuf, 'gnomAD v4 LOEUF'),
     druggability: tier(drug?.label ?? null, 'ChEMBL'),
     clinical: tier(raw.trial_count, 'ClinicalTrials.gov'),

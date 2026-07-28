@@ -5,7 +5,7 @@
 // Why preloaded (not live): a valid tumor-vs-normal fold-change requires tumor
 // (TCGA-PAAD) and normal (GTEx pancreas) expression processed through the SAME
 // pipeline/units. The UCSC Xena "Toil" compendium does exactly that. We build a
-// gene-keyed table once (scripts/build_expression_paad.mjs) and serve it — which
+// gene-keyed table once (scripts/build_expression.mjs <cohort>) and serve it — which
 // is also more reproducible/traceable than a live call. Until the table is built,
 // the endpoint returns { notLoaded: true } and the panel says so.
 //

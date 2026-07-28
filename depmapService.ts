@@ -5,7 +5,7 @@
 // Why preloaded (not live): DepMap has no usable per-gene public API (the portal
 // returns a bot-verification wall). The CRISPR (Chronos) gene-effect data ships as
 // a bulk matrix [~1,100 cell lines × ~18,000 genes]. We slice the pancreatic
-// lineage once (scripts/build_depmap_pancreatic.mjs) into a gene-keyed table and
+// lineage once (scripts/build_depmap.mjs <cohort>) into a gene-keyed table and
 // serve it. Until built, the endpoint returns { notLoaded: true }.
 //
 // Purpose: the dependency gate — does the tumor actually NEED this gene to

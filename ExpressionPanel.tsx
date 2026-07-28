@@ -48,7 +48,7 @@ export const ExpressionPanel: React.FC<Props> = ({ geneSymbol, currentDisease = 
       <div style={wrap}>
         <Header accent={accent} muted={muted} />
         <div style={{ color: muted, fontStyle: 'italic', marginTop: 6 }}>
-          Expression reference table not built yet. Run <code>scripts/build_expression_paad.mjs</code> to populate it.
+          Expression reference table not built yet. Run <code>node scripts/build_expression.mjs &lt;cohort&gt;</code> to populate it.
         </div>
       </div>
     );

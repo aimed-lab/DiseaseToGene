@@ -1,22 +1,20 @@
-// Build the preloaded tumor-vs-normal expression reference table (pancreatic).
-//   node scripts/build_expression_paad.mjs
+// Build a tumor-vs-normal expression reference table for ANY cancer cohort.
+//   node scripts/build_expression.mjs <cohortKey>
+//   e.g. node scripts/build_expression.mjs pdac
+//        node scripts/build_expression.mjs gbm
 //
-// One-time offline build. Uses the UCSC Xena "Toil" compendium, where TCGA and
-// GTEx are reprocessed through the SAME pipeline (so tumor and normal are unit-
-// comparable — the reason a naive cBioPortal-RSEM vs GTEx-TPM fold-change is
-// invalid). Produces data/expression_paad.json, served by the app at /api/expression.
+// The cohort (which primary site / TCGA disease, and the output file) is read from
+// data/disease_registry.json. This generalizes the old build_expression_paad.mjs:
+// the SAME UCSC Xena "Toil" compendium (TCGA + GTEx reprocessed through one pipeline,
+// so tumor and normal are unit-comparable) contains every cancer, so we just change
+// the primary-site filter per cohort. The ~2.5 GB matrix downloads ONCE into
+// ./xena_raw/ and is reused for every cohort you build.
 //
-// Downloads (the script fetches these automatically into ./xena_raw/; each is a
-// one-time pull — the matrix is large, ~2.5 GB uncompressed):
-//   - expression matrix : TcgaTargetGtex_rsem_gene_tpm.gz   (rows = Ensembl gene id, values = log2(tpm+0.001))
-//   - phenotype         : TcgaTargetGTEX_phenotype.txt.gz   (sample → study / primary site / sample type)
-//   - probemap          : gencode.v23.annotation.gene.probemap (Ensembl id → gene symbol)
+// For a site that hosts more than one TCGA project (e.g. Brain = GBM + LGG), set
+// "xena_tcga_disease" in the registry entry to further filter the TCGA tumor set to
+// the matching disease; otherwise all TCGA primary tumors at the site are used.
 //
-// Cohorts selected:
-//   tumor  = TCGA  · primary site Pancreas · sample type "Primary Tumor"
-//   normal = GTEX  · primary site Pancreas
-//
-// NOTE: dataset IDs/URLs occasionally change between Xena releases — verify against
+// NOTE: Xena dataset IDs/URLs occasionally change between releases — verify against
 // https://xenabrowser.net/datapages/ if a download 404s.
 
 import fs from 'fs';
@@ -27,13 +25,21 @@ import { pipeline } from 'stream/promises';
 
 const HUB = 'https://toil-xena-hub.s3.us-east-1.amazonaws.com/download';
 const RAW = path.join(process.cwd(), 'xena_raw');
-const OUT = path.join(process.cwd(), 'data', 'expression_paad.json');
 
 const FILES = {
   matrix: { url: `${HUB}/TcgaTargetGtex_rsem_gene_tpm.gz`, gz: 'TcgaTargetGtex_rsem_gene_tpm.gz' },
   pheno:  { url: `${HUB}/TcgaTargetGTEX_phenotype.txt.gz`, gz: 'TcgaTargetGTEX_phenotype.txt.gz' },
   probe:  { url: `${HUB}/probeMap/gencode.v23.annotation.gene.probemap`, gz: 'gencode.v23.annotation.gene.probemap' },
 };
+
+// ── cohort config from the shared registry ──
+function loadCohort(key) {
+  const reg = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'data', 'disease_registry.json'), 'utf-8'));
+  const c = (reg.cohorts || []).find(x => String(x.key).toLowerCase() === String(key).toLowerCase());
+  if (!c) throw new Error(`No cohort "${key}" in data/disease_registry.json (have: ${(reg.cohorts || []).map(x => x.key).join(', ')})`);
+  if (!c.expression) throw new Error(`Cohort "${key}" has no "expression" config in the registry.`);
+  return c;
+}
 
 async function download(url, dest) {
   if (fs.existsSync(dest)) { console.log(`cached  ${path.basename(dest)}`); return; }
@@ -81,6 +87,15 @@ function erf(x) {
 }
 
 async function main() {
+  const key = process.argv[2];
+  if (!key) { console.error('usage: node scripts/build_expression.mjs <cohortKey>   (e.g. pdac, gbm)'); process.exit(1); }
+  const cohort = loadCohort(key);
+  const cfg = cohort.expression;
+  const OUT = path.join(process.cwd(), 'data', cfg.ref_file);
+  const siteRe = new RegExp(cfg.xena_primary_site.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+  const diseaseRe = cfg.xena_tcga_disease ? new RegExp(cfg.xena_tcga_disease.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') : null;
+  console.log(`Cohort ${cohort.key} — site /${siteRe.source}/${diseaseRe ? ` · TCGA disease /${diseaseRe.source}/` : ''} → data/${cfg.ref_file}`);
+
   fs.mkdirSync(RAW, { recursive: true });
   for (const f of Object.values(FILES)) await download(f.url, path.join(RAW, f.gz));
 
@@ -88,7 +103,7 @@ async function main() {
   const tumor = new Set(), normal = new Set();
   {
     const rl = lineStream(path.join(RAW, FILES.pheno.gz));
-    let header = null, siteCol = -1, typeCol = -1, studyCol = -1;
+    let header = null, siteCol = -1, typeCol = -1, studyCol = -1, diseaseCol = -1;
     for await (const line of rl) {
       const cols = line.split('\t');
       if (!header) {
@@ -96,15 +111,24 @@ async function main() {
         siteCol = header.findIndex(h => /_primary_site/i.test(h));
         typeCol = header.findIndex(h => /_sample_type/i.test(h));
         studyCol = header.findIndex(h => /_study/i.test(h));
+        // detailed disease/category column, used only when xena_tcga_disease is set
+        diseaseCol = header.findIndex(h => /detailed_category|primary.?disease|_primary_disease/i.test(h));
+        if (diseaseRe && diseaseCol < 0) console.warn('  ! xena_tcga_disease is set but no disease/category column was found — falling back to site-only tumor selection.');
         continue;
       }
       const id = cols[0], site = cols[siteCol] || '', type = cols[typeCol] || '', study = cols[studyCol] || '';
-      if (!/pancrea/i.test(site)) continue;
-      if (/TCGA/i.test(study) && /primary tumor/i.test(type)) tumor.add(id);
-      else if (/GTEX/i.test(study)) normal.add(id);
+      const disease = diseaseCol >= 0 ? (cols[diseaseCol] || '') : '';
+      if (!siteRe.test(site)) continue;
+      if (/TCGA/i.test(study) && /primary tumor/i.test(type)) {
+        if (diseaseRe && diseaseCol >= 0 && !diseaseRe.test(disease)) continue; // wrong TCGA project at this site
+        tumor.add(id);
+      } else if (/GTEX/i.test(study)) {
+        normal.add(id);
+      }
     }
   }
   console.log(`tumor samples: ${tumor.size} · normal samples: ${normal.size}`);
+  if (!tumor.size || !normal.size) throw new Error('No tumor or no normal samples matched — check xena_primary_site / xena_tcga_disease in the registry.');
 
   // 2) Ensembl id → symbol
   const sym = new Map();
@@ -119,7 +143,7 @@ async function main() {
   }
 
   // 3) stream matrix; per gene compute tumor/normal medians + log2FC + p
-  const out = { meta: { source: 'UCSC Xena Toil (TCGA-PAAD vs GTEx pancreas)', units: 'log2(TPM+0.001)', n_tumor: tumor.size, n_normal: normal.size, built: new Date().toISOString().slice(0, 10) }, genes: {} };
+  const out = { meta: { source: cfg.source_label, cohort: cohort.key, units: 'log2(TPM+0.001)', n_tumor: tumor.size, n_normal: normal.size, built: new Date().toISOString().slice(0, 10) }, genes: {} };
   const rl = lineStream(path.join(RAW, FILES.matrix.gz));
   let header = null, tIdx = [], nIdx = [];
   let rows = 0;
@@ -146,7 +170,6 @@ async function main() {
     const tMed = median(tv), nMed = median(nv);
     const log2fc = tMed - nMed; // values already log2 → difference is log2 fold-change
     const p = mannWhitneyP(tv, nv);
-    // keep the stronger record if a symbol maps to multiple Ensembl ids
     const prev = out.genes[symbol];
     if (!prev || Math.abs(log2fc) > Math.abs(prev.log2fc)) {
       out.genes[symbol] = { tumor_median: +tMed.toFixed(3), normal_median: +nMed.toFixed(3), log2fc: +log2fc.toFixed(3), p: +p.toExponential(2), n_tumor: tv.length, n_normal: nv.length };

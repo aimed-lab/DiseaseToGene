@@ -46,7 +46,7 @@ export const DependencyPanel: React.FC<Props> = ({ geneSymbol, currentDisease = 
       <div style={wrap}>
         <Header accent={accent} muted={muted} />
         <div style={{ color: muted, fontStyle: 'italic', marginTop: 6 }}>
-          DepMap reference table not built yet. Run <code>scripts/build_depmap_pancreatic.mjs</code> to populate it.
+          DepMap reference table not built yet. Run <code>node scripts/build_depmap.mjs &lt;cohort&gt;</code> to populate it.
         </div>
       </div>
     );
