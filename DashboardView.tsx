@@ -37,6 +37,7 @@ type GeneRow = {
   completeness: number; legacy: boolean;
   target_class?: string | null; is_common_essential?: boolean | null; surface_or_secreted?: boolean | null;
   tissue_tau?: number | null; n_patents?: number | null; n_stopped_trials?: number | null;
+  winner_score?: number | null; rwr_score?: number | null; is_seed?: boolean | null;
 };
 type Attr = { key: string; label: string; value: string | number | null; unit?: string | null; source: string;
               level: 'fact' | 'prediction' | 'annotation'; confidence: 'high' | 'medium' | 'low' | 'not_fetched'; note?: string };
@@ -95,7 +96,7 @@ async function getJson(url: string): Promise<any> {
   return j;
 }
 
-type SortKey = 'rank' | 'score' | 'n_drugs' | 'tractable_modalities' | 'n_disease_trials' | 'n_publications' | 'velocity' | 'completeness' | 'tissue_tau' | 'n_patents';
+type SortKey = 'rank' | 'score' | 'n_drugs' | 'tractable_modalities' | 'n_disease_trials' | 'n_publications' | 'velocity' | 'completeness' | 'tissue_tau' | 'n_patents' | 'winner_score';
 type Chip = 'novel_tractable' | 'in_trials' | 'no_precedent' | 'has_drugs' | 'complete' | 'legacy_only' | 'tissue_restricted' | 'not_common_essential' | 'antibody_reachable' | 'trial_stopped';
 
 const CHIPS: { id: Chip; label: string; title: string }[] = [
@@ -206,11 +207,11 @@ export const DashboardView: React.FC<Props> = ({ theme = 'light' }) => {
   const togglePin = (g: string) => setPinned(p => p.includes(g) ? p.filter(x => x !== g) : (p.length >= 4 ? p : [...p, g]));
 
   const exportCsv = () => {
-    const head = ['gene_symbol', 'rank', 'score', 'target_class', 'is_common_essential', 'surface_or_secreted', 'tissue_tau', 'n_drugs', 'tractable_modalities', 'n_disease_trials', 'phase1', 'phase2', 'phase3', 'max_disease_phase', 'n_stopped_trials', 'n_publications', 'velocity', 'n_patents', 'completeness', 'legacy'];
+    const head = ['gene_symbol', 'rank', 'score', 'target_class', 'is_common_essential', 'surface_or_secreted', 'tissue_tau', 'n_drugs', 'tractable_modalities', 'n_disease_trials', 'phase1', 'phase2', 'phase3', 'max_disease_phase', 'n_stopped_trials', 'n_publications', 'velocity', 'n_patents', 'winner_score', 'rwr_score', 'is_seed', 'completeness', 'legacy'];
     const cell = (v: any) => { const s = v == null ? '' : String(v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
     const body = rows.map(r => [r.gene_symbol, r.rank, r.score, r.target_class, r.is_common_essential, r.surface_or_secreted, r.tissue_tau, r.n_drugs, r.tractable_modalities, r.n_disease_trials,
       r.trials_by_phase?.phase1, r.trials_by_phase?.phase2, r.trials_by_phase?.phase3, r.max_disease_phase,
-      r.n_stopped_trials, r.n_publications, r.velocity, r.n_patents, r.completeness.toFixed(3), r.legacy].map(cell).join(','));
+      r.n_stopped_trials, r.n_publications, r.velocity, r.n_patents, r.winner_score, r.rwr_score, r.is_seed, r.completeness.toFixed(3), r.legacy].map(cell).join(','));
     const blob = new Blob([[head.join(','), ...body].join('\n')], { type: 'text/csv;charset=utf-8;' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
@@ -418,6 +419,7 @@ export const DashboardView: React.FC<Props> = ({ theme = 'light' }) => {
                     {sortBtn('tissue_tau', 'Tau')}
                     {sortBtn('n_publications', 'Papers')}
                     {sortBtn('velocity', 'Velocity')}
+                    {sortBtn('winner_score', 'WINNER')}
                     {sortBtn('completeness', 'Evidence')}
                   </tr>
                 </thead>
@@ -446,6 +448,7 @@ export const DashboardView: React.FC<Props> = ({ theme = 'light' }) => {
                         <td style={{ padding: '6px 8px', fontVariantNumeric: 'tabular-nums', color: (r.tissue_tau ?? 0) >= 0.6 ? '#16a34a' : muted, textAlign: 'center' }}>{r.tissue_tau != null ? r.tissue_tau.toFixed(2) : '—'}</td>
                         <td style={{ padding: '6px 8px', fontVariantNumeric: 'tabular-nums', textAlign: 'center' }}>{fmt(r.n_publications)}</td>
                         <td style={{ padding: '6px 8px', fontVariantNumeric: 'tabular-nums', textAlign: 'center' }}>{pctS(r.velocity)}</td>
+                        <td style={{ padding: '6px 8px', fontVariantNumeric: 'tabular-nums', textAlign: 'center' }} title={r.is_seed ? 'Seed gene' : ''}>{r.winner_score != null ? r.winner_score.toFixed(3) : '—'}{r.is_seed ? <span style={{ marginLeft: 3, color: '#d97706', fontWeight: 900 }}>◆</span> : null}</td>
                         <td style={{ padding: '6px 8px', textAlign: 'center' }}>
                           <div title={`${Math.round(r.completeness * 9)} of 9 axes have evidence`} style={{ width: 56, height: 6, background: isDark ? '#111827' : '#f1f5f9', borderRadius: 3, overflow: 'hidden', display: 'inline-block' }}>
                             <div style={{ width: `${r.completeness * 100}%`, height: '100%', background: r.completeness >= 0.8 ? '#16a34a' : r.completeness >= 0.5 ? '#d97706' : '#dc2626' }} />
@@ -482,7 +485,8 @@ export const DashboardView: React.FC<Props> = ({ theme = 'light' }) => {
                       ['Developed drugs', (r: GeneRow) => r.n_drugs], ['Tractable modalities', (r: GeneRow) => r.tractable_modalities],
                       ['Trials in disease', (r: GeneRow) => r.n_disease_trials], ['Max phase', (r: GeneRow) => r.max_disease_phase],
                       ['Publications', (r: GeneRow) => r.n_publications], ['Velocity', (r: GeneRow) => pctS(r.velocity)],
-                      ['Target class', (r: GeneRow) => r.target_class], ['Pan-essential', (r: GeneRow) => r.is_common_essential == null ? null : (r.is_common_essential ? 'yes' : 'no')], ['Tissue tau', (r: GeneRow) => r.tissue_tau?.toFixed(2)], ['Patents', (r: GeneRow) => r.n_patents], ['Evidence axes', (r: GeneRow) => `${Math.round(r.completeness * 9)}/9`],
+                      ['Target class', (r: GeneRow) => r.target_class], ['Pan-essential', (r: GeneRow) => r.is_common_essential == null ? null : (r.is_common_essential ? 'yes' : 'no')], ['Tissue tau', (r: GeneRow) => r.tissue_tau?.toFixed(2)], ['Patents', (r: GeneRow) => r.n_patents],
+                      ['Network (WINNER)', (r: GeneRow) => r.winner_score != null ? r.winner_score.toFixed(3) + (r.is_seed ? ' ◆' : '') : null], ['Evidence axes', (r: GeneRow) => `${Math.round(r.completeness * 9)}/9`],
                     ] as [string, (r: GeneRow) => any][]).map(([label, get]) => (
                       <tr key={label}>
                         <td style={{ padding: '4px 10px', color: muted, borderTop: `1px solid ${border}` }}>{label}</td>

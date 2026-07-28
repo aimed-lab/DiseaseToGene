@@ -614,7 +614,7 @@ function setupRoutes() {
           const g = String(r.gene_symbol).toUpperCase();
           const ev = evByGene[g] || {};
           const drug = ev.druggability, clin = ev.clinical, lit = ev.literature_epmc;
-          const ann = ev.annotation, tis = ev.tissue, pat = ev.patents;
+          const ann = ev.annotation, tis = ev.tissue, pat = ev.patents, net = ev.network;
           const drugLegacy = !!drug && drug.proven_modalities === undefined;
           const clinLegacy = !!clin && clin.n_drugs_in_disease_trials === undefined;
           const axesPresent = ['mutation', 'expression_tvn', 'dependency', 'safety', 'tissue', 'annotation', 'druggability', 'clinical', 'literature_epmc']
@@ -635,6 +635,9 @@ function setupRoutes() {
             tissue_tau: tis?.tau ?? null,
             n_patents: pat?.gene_patents ?? null,
             n_stopped_trials: clin?.n_stopped_trials ?? null,
+            winner_score: net?.winner_score ?? null,
+            rwr_score: net?.rwr_score ?? null,
+            is_seed: net?.is_seed ?? null,
             completeness: axesPresent / 9,
             legacy: drugLegacy || clinLegacy,
           };
