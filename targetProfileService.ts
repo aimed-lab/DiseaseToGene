@@ -69,17 +69,36 @@ export interface TargetProfile {
 // exosome", and calls any mitochondrial protein accessible too — both wrong, and the wrong
 // answer here would suggest an antibody against a target no antibody can reach.
 // So: require a PLASMA-membrane / secreted term, and reject organelle membranes.
-// Also reject "Cytoplasmic side": KRAS is lipid-anchored to the plasma membrane but faces
-// INWARD, so it is not antibody-accessible despite matching "Cell membrane".
 //
-// LIMITATION, stated plainly: OT's location list is a union of sources, so a weak
-// annotation from one dataset can flip this flag (PHGDH is cytosolic yet carries a
-// "Plasma membrane" entry). Treat it as a heuristic shortlist, not a determination —
-// the raw `subcellular_locations` are stored precisely so a reader can check.
-const SURFACE_RE = /(cell|plasma) membrane|cell surface|cell projection|\bsecreted\b|extracellular (space|region|matrix)/i;
-const INTERNAL_RE = /mitochondri|endoplasmic|golgi|nucle|lysosom|peroxisom|endosom|vacuol|exosome|cytoplasmic side/i;
-export const isSurfaceOrSecreted = (locs: string[]): boolean =>
-  locs.some(l => SURFACE_RE.test(l) && !INTERNAL_RE.test(l));
+// TOPOLOGY OVERRIDE (the SRC/KRAS class): a protein can sit AT the plasma membrane yet face
+// the CYTOPLASM, so no antibody can reach it. The old per-string test missed this whenever OT
+// listed the topology on a DIFFERENT entry than the membrane term — e.g. SRC carries both
+// "Cell membrane ; Lipid-anchor" (myristoyl, inward) AND a bare "Plasma membrane", and the
+// bare entry alone flipped the flag true. Fix: after finding a surface term, VETO the whole
+// protein if ANY entry signals a cytoplasm-facing anchor — an explicit "cytoplasmic side", or
+// a lipid-anchor that is neither a (extracellular) GPI anchor nor part of a transmembrane
+// topology (i.e. a peripheral protein tethered on the inner leaflet: SRC family, RAS family,
+// many myristoylated/prenylated kinases). GPI-anchored and single/multi-pass receptors (EGFR,
+// GPCRs) keep their surface flag correctly.
+//
+// LIMITATION, stated plainly: OT's location list is a union of sources, so a weak annotation
+// from one dataset can still flip this flag. Treat it as a heuristic shortlist, not a
+// determination — the raw `subcellular_locations` are stored precisely so a reader can check.
+const SURFACE_RE = /(cell|plasma) membrane|cell surface|cell projection|\bsecreted\b|extracellular (space|region|matrix)|gpi-anchor/i;
+const INTERNAL_RE = /mitochondri|endoplasmic|golgi|nucle|lysosom|peroxisom|endosom|vacuol|exosome/i;
+const TRANSMEMBRANE_RE = /single-pass|multi-pass|transmembrane/i;
+const CYTO_ANCHOR_RE = /cytoplasmic side|lipid-anchor|myristoyl|palmitoyl|prenyl|farnesyl|geranylgeranyl/i;
+export const isSurfaceOrSecreted = (locs: string[]): boolean => {
+  const hasSurface = locs.some(l => SURFACE_RE.test(l) && !INTERNAL_RE.test(l));
+  if (!hasSurface) return false;
+  // Protein-level topology: a membrane-spanning (single/multi-pass) or GPI-anchored protein has
+  // genuine extracellular exposure — keep the surface flag even if it is also palmitoylated.
+  const spanningOrGpi = locs.some(l => TRANSMEMBRANE_RE.test(l) || /gpi/i.test(l));
+  if (spanningOrGpi) return true;
+  // Otherwise it is a PERIPHERAL membrane protein: veto if any entry anchors/orients it toward
+  // the cytoplasm (SRC family, RAS family, myristoylated/prenylated kinases — unreachable).
+  return !locs.some(l => CYTO_ANCHOR_RE.test(l));
+};
 
 export async function fetchTargetProfile(symbol: string): Promise<TargetProfile | null> {
   try {
