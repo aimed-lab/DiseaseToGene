@@ -46,7 +46,7 @@ const OT = 'https://api.platform.opentargets.org/api/v4/graphql';
 const DRY = process.argv.includes('--dry');
 // Order matters for `enrich <id> all`: cheap/local axes first so a failure late in the run
 // costs the least. `annotation` and `patents` are the axes added for the dashboard.
-const AXES = ['expression', 'dependency', 'safety', 'tissue', 'mutation', 'annotation', 'druggability', 'clinical', 'patents', 'literature', 'network'] as const;
+const AXES = ['expression', 'proteomics', 'dependency', 'safety', 'tissue', 'mutation', 'annotation', 'druggability', 'clinical', 'patents', 'literature', 'network'] as const;
 
 // Network axis config (WINNER + RWR over the STRING PPI graph). Bounded to the top-N genes
 // by rank so the (dense) WINNER matrix stays tractable in a batch run. Override via env.
@@ -207,6 +207,22 @@ async function buildAxis(axis: string, genes: string[], diseaseName: string, dis
       const cappedLog2fc = log2fc != null ? Math.max(-EXPR_LOG2FC_CAP, Math.min(EXPR_LOG2FC_CAP, log2fc)) : null;
       const axisCapped = cappedLog2fc != null ? clamp01(Math.abs(cappedLog2fc) / 4) : null;
       rows.push({ gene_symbol: g, evidence_type: 'expression_tvn', source: ex.meta?.source || ref.source_label, value_text: `${up ? 'up' : 'down'} log2FC ${log2fc}${normalFloored ? ' (low-confidence: normal floor)' : ''}`, value_json: { axis: axisCapped, direction: up ? 'pro' : 'con', display: `${up ? 'up' : 'down'} log2FC ${log2fc} (p ${d.p})${normalFloored ? ' · low-confidence' : ''}`, log2fc, log2fc_capped: cappedLog2fc, low_confidence: normalFloored, p: d.p, tumor_median: d.tumor_median, normal_median: d.normal_median, n_tumor: toNum(d.n_tumor), n_normal: toNum(d.n_normal) } }); }
+  } else if (axis === 'proteomics') {
+    // CPTAC tumor-vs-normal protein log2FC — same shape/handling as expression, protein layer.
+    const ref = cohort?.proteomics;
+    if (!ref) { log(`proteomics: no CPTAC cohort for "${diseaseName}" — skipping (add it to data/disease_registry.json)`); return rows; }
+    const px = loadRef(ref.ref_file);
+    if (!px?.genes) { log(`proteomics: ${ref.ref_file} not built yet — run \`node scripts/build_proteomics.mjs ${cohort!.key}\`; skipping`); return rows; }
+    for (const g of genes) {
+      const d = px.genes[g]; if (!d) continue;
+      const log2fc = toNum(d.log2fc);
+      const a = log2fc != null ? clamp01(Math.abs(log2fc) / 3) : null;
+      const up = (log2fc ?? 0) >= 0;
+      rows.push({ gene_symbol: g, evidence_type: 'proteomics', source: px.meta?.source || ref.source_label,
+        value_text: `${up ? 'up' : 'down'} protein log2FC ${log2fc}`,
+        value_json: { axis: a, direction: up ? 'pro' : 'con', display: `${up ? 'up' : 'down'} protein log2FC ${log2fc}${d.p != null ? ` (p ${d.p})` : ''}`, log2fc, p: d.p ?? null, tumor_median: toNum(d.tumor_median), normal_median: toNum(d.normal_median), n_tumor: toNum(d.n_tumor), n_normal: toNum(d.n_normal) } });
+    }
+    log(`  proteomics: ${rows.length} genes from the CPTAC table`);
   } else if (axis === 'dependency') {
     const ref = cohort?.dependency;
     if (!ref) { log(`dependency: no reference cohort for "${diseaseName}" — skipping (add it to data/disease_registry.json)`); return rows; }
@@ -438,7 +454,7 @@ async function status(snapshotId: number) {
   for (const r of ev as any[]) (byType[r.evidence_type] ??= new Set()).add(r.gene_symbol);
   log(`Snapshot #${snapshotId} · ${snap.disease_name} · ${scores.length} genes in RANKING_SCORES`);
   log(`EVIDENCE rows: ${(ev as any[]).length}`);
-  for (const a of ['expression_tvn', 'dependency', 'safety', 'tissue', 'mutation', 'annotation', 'druggability', 'clinical', 'patents', 'literature', 'literature_epmc', 'network'])
+  for (const a of ['expression_tvn', 'proteomics', 'dependency', 'safety', 'tissue', 'mutation', 'annotation', 'druggability', 'clinical', 'patents', 'literature', 'literature_epmc', 'network'])
     log(`  ${a.padEnd(16)} ${byType[a]?.size ?? 0} genes`);
 }
 

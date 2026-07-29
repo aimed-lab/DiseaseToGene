@@ -1,6 +1,7 @@
 import React from 'react';
 import ConstraintPanel from './ConstraintPanel';
 import ExpressionPanel from './ExpressionPanel';
+import ProteomicsPanel from './ProteomicsPanel';
 import DependencyPanel from './DependencyPanel';
 import MutationPanel from './MutationPanel';
 import DruggabilityPanel from './DruggabilityPanel';
@@ -8,6 +9,7 @@ import PocketStructurePanel from './PocketStructurePanel';
 import ModalityPanel from './ModalityPanel';
 import ClinicalPanel from './ClinicalPanel';
 import LiteraturePanel from './LiteraturePanel';
+import NetworkPanel from './NetworkPanel';
 import EvidenceCardsPanel from './EvidenceCardsPanel';
 
 // ── On-demand gene-detail drawer ──────────────────────────────────────────────
@@ -52,9 +54,11 @@ export const GeneDetailDrawer: React.FC<Props> = ({ geneSymbol, diseaseName, the
           <PocketStructurePanel geneSymbol={geneSymbol} currentDisease={diseaseName} theme={theme} />
           <MutationPanel geneSymbol={geneSymbol} currentDisease={diseaseName} theme={theme} />
           <ExpressionPanel geneSymbol={geneSymbol} currentDisease={diseaseName} theme={theme} />
+          <ProteomicsPanel geneSymbol={geneSymbol} currentDisease={diseaseName} theme={theme} />
           <DependencyPanel geneSymbol={geneSymbol} currentDisease={diseaseName} theme={theme} />
           <ConstraintPanel geneSymbol={geneSymbol} currentDisease={diseaseName} theme={theme} />
           <ClinicalPanel geneSymbol={geneSymbol} currentDisease={diseaseName} theme={theme} />
+          <NetworkPanel geneSymbol={geneSymbol} currentDisease={diseaseName} theme={theme} />
           <LiteraturePanel geneSymbol={geneSymbol} currentDisease={diseaseName} theme={theme} />
           <EvidenceCardsPanel geneSymbol={geneSymbol} currentDisease={diseaseName} theme={theme} />
         </div>

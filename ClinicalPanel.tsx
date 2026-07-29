@@ -6,11 +6,18 @@ interface Props {
   theme?: 'dark' | 'light';
 }
 
+interface Trial {
+  id: string | null; url: string | null; phase: number; status: string | null;
+  year: number | null; drug: string | null; why_stopped: string | null; stop_reasons?: string[];
+  sponsor?: string | null; enrollment?: number | null; completion_date?: string | null;
+  n_locations?: number; countries?: string[];
+}
 interface ClinicalData {
   trial_count: number; max_phase: number;              // compat aliases of the two below
   n_drugs_in_disease_trials?: number;
   max_disease_trial_phase?: number;
   drug_names?: string[];
+  trials?: Trial[];
 }
 
 // Clinical axis (Open Targets target->drug->trial graph). Answers "does a drug that hits
@@ -83,6 +90,50 @@ export const ClinicalPanel: React.FC<Props> = ({ geneSymbol, currentDisease = ''
         <div style={{ marginTop: 10, color: text, fontSize: 11, lineHeight: 1.5 }}>
           <span style={{ color: muted, fontWeight: 800, fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Drugs · </span>
           {drugs.slice(0, 8).join(', ')}{drugs.length > 8 ? ` +${drugs.length - 8} more` : ''}
+        </div>
+      )}
+      {Array.isArray(data?.trials) && data!.trials.length > 0 && (
+        <div style={{ marginTop: 12 }}>
+          <div style={{ color: muted, fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 800, marginBottom: 4 }}>
+            Trials in {currentDisease} — each trial’s own phase; a stopped trial shows why
+          </div>
+          <div style={{ maxHeight: 240, overflowY: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+              <thead>
+                <tr style={{ color: muted }}>
+                  {['Trial', 'Phase', 'Status', 'Year', 'Drug', 'Sponsor'].map(h => (
+                    <th key={h} style={{ textAlign: 'left', padding: '3px 6px', fontSize: 9, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: `1px solid ${border}`, whiteSpace: 'nowrap' }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {data!.trials.slice(0, 40).map((t, i) => {
+                  const meta: string[] = [];
+                  if (t.n_locations) meta.push(`${t.n_locations} site${t.n_locations === 1 ? '' : 's'}${t.countries?.length ? ` · ${t.countries.slice(0, 3).join(', ')}${t.countries.length > 3 ? '…' : ''}` : ''}`);
+                  if (t.enrollment) meta.push(`${t.enrollment.toLocaleString()} enrolled`);
+                  if (t.completion_date) meta.push(`est. completion ${String(t.completion_date).slice(0, 4)}`);
+                  return (
+                    <React.Fragment key={t.id || i}>
+                      <tr>
+                        <td style={{ padding: '3px 6px' }}>{t.url ? <a href={t.url} target="_blank" rel="noreferrer" style={{ color: accent, textDecoration: 'none' }}>{(t.id || 'trial').toUpperCase()}</a> : (t.id || '—')}</td>
+                        <td style={{ padding: '3px 6px', fontVariantNumeric: 'tabular-nums' }}>{t.phase ? `P${t.phase}` : '—'}</td>
+                        <td style={{ padding: '3px 6px', color: muted }}>{(t.status || '—').replace(/_/g, ' ').toLowerCase()}</td>
+                        <td style={{ padding: '3px 6px', color: muted, fontVariantNumeric: 'tabular-nums' }}>{t.year ?? '—'}</td>
+                        <td style={{ padding: '3px 6px' }}>{t.drug || '—'}</td>
+                        <td style={{ padding: '3px 6px', color: muted }}>{t.sponsor || '—'}</td>
+                      </tr>
+                      {meta.length > 0 && (
+                        <tr><td colSpan={6} style={{ padding: '0 6px 3px', fontSize: 10, color: muted }}>📍 {meta.join(' · ')}</td></tr>
+                      )}
+                      {t.why_stopped && (
+                        <tr><td colSpan={6} style={{ padding: '0 6px 4px', fontSize: 10, color: '#b45309' }}>⚠ stopped: {t.why_stopped}{t.stop_reasons?.length ? ` (${t.stop_reasons.join(', ')})` : ''}</td></tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
       <div style={{ marginTop: 12, paddingTop: 8, borderTop: `1px solid ${border}`, color: muted, fontSize: 10, lineHeight: 1.5 }}>

@@ -126,7 +126,7 @@ export function buildGeneDossier(input: DossierInput): GeneDossier {
   const s = input.scoreRow || {};
   const mut = ev.mutation, dys = ev.expression_tvn, dep = ev.dependency, saf = ev.safety;
   const drug = ev.druggability, clin = ev.clinical, lit = ev.literature_epmc, pm = ev.literature;
-  const ann = ev.annotation, tis = ev.tissue, pat = ev.patents, net = ev.network;
+  const ann = ev.annotation, tis = ev.tissue, pat = ev.patents, net = ev.network, pro = ev.proteomics;
 
   const otOverall = num(s.get_score);
   const genetic = num(s.genetic_score);
@@ -205,6 +205,15 @@ export function buildGeneDossier(input: DossierInput): GeneDossier {
         { unit: 'log2FC', confidence: dys ? (dys.low_confidence ? 'low' : 'high') : 'not_fetched',
           note: dys?.low_confidence ? 'Low confidence: the gene is not expressed in normal tissue, so the ratio is driven by a near-zero denominator.' : undefined }),
       attr('direction', 'Direction', dys ? (num(dys.log2fc) != null && num(dys.log2fc)! >= 0 ? 'over-expressed' : 'under-expressed') : null, srcOf.expression_tvn || 'UCSC Xena', 'fact'),
+    ],
+  });
+
+  categories.push({
+    key: 'proteomics', label: 'Proteomics', blurb: 'Is the PROTEIN abnormally abundant in the tumour?',
+    attrs: [
+      attr('protein_log2fc', 'Protein tumour vs normal', pro?.log2fc != null ? fx(num(pro.log2fc)!, 2) : null, srcOf.proteomics || 'CPTAC', 'fact',
+        { unit: 'log2FC', note: 'Mass-spec protein abundance, tumour median vs matched normal-adjacent. Agreement with the mRNA expression axis strengthens a target; disagreement is itself informative.' }),
+      attr('protein_direction', 'Protein direction', pro ? (num(pro.log2fc) != null && num(pro.log2fc)! >= 0 ? 'elevated' : 'reduced') : null, srcOf.proteomics || 'CPTAC', 'fact'),
     ],
   });
 

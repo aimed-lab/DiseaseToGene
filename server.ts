@@ -911,7 +911,8 @@ function setupRoutes() {
     //   _ot2 — disease scope fixed: resolve name->ontology id + multi-token hints (a single
     //          first-word hint made "exocrine pancreatic carcinoma" miss trials tagged
     //          "pancreatic adenocarcinoma", silently undercounting SRC 5 -> 4).
-    const key = cacheKey('clinical_ot2', `${gene}::${disease}`);
+    //   _ot3 — per-trial records enriched from ClinicalTrials.gov (year, sponsor, sites)
+    const key = cacheKey('clinical_ot3', `${gene}::${disease}`);
     const cached = await readApiCache(key); if (cached) return res.json(cached.body);
     try {
       const { fetchClinical, resolveDiseaseScope } = await import('./evidenceProviders.js');
@@ -922,6 +923,40 @@ function setupRoutes() {
       await writeApiCache(key, { status: 200, body: { gene, data }, contentType: 'application/json' });
       res.json({ gene, data });
     } catch (e: any) { res.status(502).json({ error: e?.message || 'clinical fetch failed' }); }
+  });
+  // Network axis (WINNER + RWR) — read from the STORED evidence (it is a batch-computed axis,
+  // not a cheap live call). Resolves the disease's latest snapshot and returns that gene's row.
+  app.get("/api/network", async (req, res) => {
+    const gene = String(req.query.gene || '').toUpperCase().trim();
+    const disease = String(req.query.disease || '').trim();
+    if (!gene || !disease) return res.status(400).json({ error: "gene and disease required" });
+    if (!readStoreEnabled()) return res.json({ gene, data: null });
+    try {
+      const svc = await readSvc();
+      const snaps = await svc.listSnapshots();
+      const dq = disease.toLowerCase();
+      const snap = (snaps as any[])
+        .filter(s => { const n = String(s.disease_name || '').toLowerCase(); return n.includes(dq) || dq.includes(n); })
+        .sort((a, b) => Number(b.id) - Number(a.id))[0];
+      if (!snap) return res.json({ gene, data: null });
+      const rows = await svc.evidenceForGene(gene);
+      const net = (rows as any[]).find(r => Number(r.snapshot_id) === Number(snap.id) && r.evidence_type === 'network');
+      const vj = net ? (typeof net.value_json === 'string' ? JSON.parse(net.value_json) : net.value_json) : null;
+      res.json({ gene, snapshot_id: snap.id, data: vj });
+    } catch (e: any) { res.status(502).json({ error: e?.message || 'network fetch failed' }); }
+  });
+  // Proteomics axis — CPTAC tumor-vs-normal protein log2FC. Disease-aware reference file
+  // (built like expression: build_proteomics.py <cohort> → data/proteomics_<cohort>.json).
+  app.get("/api/proteomics", async (req, res) => {
+    const gene = String(req.query.gene || '').toUpperCase().trim();
+    const disease = String(req.query.disease || '').trim();
+    if (!gene || !disease) return res.status(400).json({ error: "gene and disease required" });
+    const { resolveCohort } = await import('./diseaseRegistry.js');
+    const ref = resolveCohort(disease, String(req.query.diseaseId || ''))?.proteomics;
+    if (!ref) return res.json({ gene, data: null });   // no CPTAC cohort for this disease
+    const table = loadRef(ref.ref_file);
+    if (!table) return res.status(503).json({ gene, error: 'Proteomics reference not built yet', notLoaded: true });
+    res.json({ gene, meta: table.meta ?? null, data: table.genes?.[gene] ?? null });
   });
   app.get("/api/literature", async (req, res) => {
     const gene = String(req.query.gene || '').toUpperCase().trim();

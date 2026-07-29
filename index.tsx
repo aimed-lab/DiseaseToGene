@@ -96,6 +96,8 @@ import MutationPanel from './MutationPanel';
 import ConstraintPanel from './ConstraintPanel';
 import ExpressionPanel from './ExpressionPanel';
 import DependencyPanel from './DependencyPanel';
+import ProteomicsPanel from './ProteomicsPanel';
+import NetworkPanel from './NetworkPanel';
 import EvidenceCardsPanel from './EvidenceCardsPanel';
 import FunnelView from './FunnelView';
 import RankingsView from './RankingsView';
@@ -3362,11 +3364,17 @@ const TargetDetailView = ({
             {/* Dysregulation (additive — tumor-vs-normal expression; renders only for pancreatic) */}
             <ExpressionPanel geneSymbol={target.symbol} currentDisease={diseaseName} theme={theme} />
 
+            {/* Proteomics (additive — CPTAC protein abundance via cBioPortal) */}
+            <ProteomicsPanel geneSymbol={target.symbol} currentDisease={diseaseName} theme={theme} />
+
             {/* Dependency (additive — DepMap CRISPR; renders only for pancreatic) */}
             <DependencyPanel geneSymbol={target.symbol} currentDisease={diseaseName} theme={theme} />
 
             {/* Safety / Constraint (additive — gnomAD; disease-independent) */}
             <ConstraintPanel geneSymbol={target.symbol} currentDisease={diseaseName} theme={theme} />
+
+            {/* Network biology (additive — stored WINNER + RWR axis) */}
+            <NetworkPanel geneSymbol={target.symbol} currentDisease={diseaseName} theme={theme} />
 
             {/* Stored Evidence (additive — content store; renders only if cards exist) */}
             <EvidenceCardsPanel geneSymbol={target.symbol} currentDisease={diseaseName} theme={theme} />

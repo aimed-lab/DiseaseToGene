@@ -10,7 +10,8 @@
       "aliases": ["pancrea", "pdac", "paad", "ductal adenocarcinoma"],
       "expression": { "ref_file": "expression_paad.json", "xena_primary_site": "Pancreas", "source_label": "UCSC Xena Toil (TCGA-PAAD vs GTEx pancreas)" },
       "dependency": { "ref_file": "depmap_pancreatic.json", "depmap_lineage": "Pancreas", "source_label": "DepMap CRISPR (Chronos, Pancreas)" },
-      "cbioportal_study": "paad_tcga_pan_can_atlas_2018"
+      "cbioportal_study": "paad_tcga_pan_can_atlas_2018",
+      "proteomics": { "ref_file": "proteomics_pdac.json", "linkedomics_cohort": "CPTAC-PDAC", "source_label": "CPTAC PDAC proteome (tumor vs normal-adjacent, mass-spec)" }
     },
     {
       "key": "gbm",
@@ -19,7 +20,8 @@
       "aliases": ["glioblastoma", "gbm", "glioblastoma multiforme"],
       "expression": { "ref_file": "expression_gbm.json", "xena_primary_site": "Brain", "xena_tcga_disease": "glioblastoma", "source_label": "UCSC Xena Toil (TCGA-GBM vs GTEx brain)" },
       "dependency": { "ref_file": "depmap_gbm.json", "depmap_lineage": "CNS/Brain", "source_label": "DepMap CRISPR (Chronos, CNS/Brain)" },
-      "cbioportal_study": "gbm_tcga_pan_can_atlas_2018"
+      "cbioportal_study": "gbm_tcga_pan_can_atlas_2018",
+      "proteomics": { "ref_file": "proteomics_gbm.json", "linkedomics_cohort": "CPTAC-GBM", "source_label": "CPTAC GBM proteome (tumor vs normal-adjacent, mass-spec)" }
     },
     {
       "key": "brca",
@@ -37,7 +39,8 @@
       "aliases": ["lung adenocarcinoma", "luad"],
       "expression": { "ref_file": "expression_luad.json", "xena_primary_site": "Lung", "xena_tcga_disease": "adenocarcinoma", "source_label": "UCSC Xena Toil (TCGA-LUAD vs GTEx lung)" },
       "dependency": { "ref_file": "depmap_luad.json", "depmap_lineage": "Lung", "source_label": "DepMap CRISPR (Chronos, Lung)" },
-      "cbioportal_study": "luad_tcga_pan_can_atlas_2018"
+      "cbioportal_study": "luad_tcga_pan_can_atlas_2018",
+      "proteomics": { "ref_file": "proteomics_luad.json", "linkedomics_cohort": "CPTAC-LUAD", "source_label": "CPTAC LUAD proteome (tumor vs normal-adjacent, mass-spec)" }
     },
     {
       "key": "coad",
@@ -47,7 +50,8 @@
       "_note": "Expression uses the TCGA-COAD 'Colon' site (rectum/READ tumors are a separate site and are not included). DepMap lineage 'Bowel' covers colorectal lines — verify the OncotreeLineage string in your Model.csv (older releases used 'Colorectal').",
       "expression": { "ref_file": "expression_coad.json", "xena_primary_site": "Colon", "source_label": "UCSC Xena Toil (TCGA-COAD vs GTEx colon)" },
       "dependency": { "ref_file": "depmap_coad.json", "depmap_lineage": "Bowel", "source_label": "DepMap CRISPR (Chronos, Bowel)" },
-      "cbioportal_study": "coadread_tcga_pan_can_atlas_2018"
+      "cbioportal_study": "coadread_tcga_pan_can_atlas_2018",
+      "proteomics": { "ref_file": "proteomics_coad.json", "linkedomics_cohort": "CPTAC-COAD", "source_label": "CPTAC COAD proteome (tumor vs normal-adjacent, mass-spec)" }
     },
     {
       "key": "prad",

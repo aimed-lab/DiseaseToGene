@@ -21,6 +21,7 @@ export interface AxisRef {
   xena_primary_site?: string;   // expression: Xena Toil _primary_site filter (e.g. "Pancreas")
   xena_tcga_disease?: string;   // expression: optional extra TCGA disease filter for sites with >1 project (e.g. "glioblastoma")
   depmap_lineage?: string;      // dependency: DepMap OncotreeLineage filter (e.g. "Pancreas", "CNS/Brain")
+  linkedomics_cohort?: string;  // proteomics: LinkedOmics CPTAC cohort dir (e.g. "CPTAC-PDAC") for build_proteomics.mjs
 }
 
 export interface Cohort {
@@ -30,7 +31,8 @@ export interface Cohort {
   aliases: string[];         // lowercase substrings matched against the OT disease name
   expression?: AxisRef;
   dependency?: AxisRef;
-  cbioportal_study?: string; // informational; mutation axis resolves its own cohort via evidenceProviders
+  proteomics?: AxisRef;           // CPTAC tumor-vs-normal protein log2FC (built like expression)
+  cbioportal_study?: string;      // informational; mutation axis resolves its own cohort via evidenceProviders
 }
 
 let _cohorts: Cohort[] | null = null;
