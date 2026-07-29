@@ -958,6 +958,104 @@ function setupRoutes() {
     if (!table) return res.status(503).json({ gene, error: 'Proteomics reference not built yet', notLoaded: true });
     res.json({ gene, meta: table.meta ?? null, data: table.genes?.[gene] ?? null });
   });
+  // ── Research agent — a multi-step evidence-reasoning loop over the read store ──
+  // The co-pilot's single-shot chat can filter the loaded list; this lets the model PLAN and
+  // call evidence tools across several steps, then synthesise. Same Gemini setup as
+  // /api/ai/gemini-chat, but the tool loop runs server-side against Oracle/ORDS.
+  async function agentSnapshot(disease?: string, snapshotId?: number) {
+    const svc = await readSvc();
+    const snaps: any[] = await svc.listSnapshots();
+    const sorted = [...snaps].sort((a, b) => Number(b.id) - Number(a.id));
+    if (snapshotId) return sorted.find(s => Number(s.id) === Number(snapshotId)) || sorted[0];
+    const dq = String(disease || '').toLowerCase().trim();
+    if (!dq) return sorted[0];
+    return sorted.find(s => { const n = String(s.disease_name || '').toLowerCase(); return n.includes(dq) || dq.includes(n); }) || sorted[0];
+  }
+  const AGENT_TOOLS = [
+    { name: 'list_diseases', description: 'List the cancers loaded in the platform (name, snapshot id, gene count). Call first if unsure which disease is available.', parameters: { type: 'OBJECT', properties: {} } },
+    { name: 'rank_targets', description: 'Top-ranked targets for a disease (Open Targets overall association) with component scores. Use for "top targets" questions.', parameters: { type: 'OBJECT', properties: { disease: { type: 'STRING' }, top_n: { type: 'NUMBER' } } } },
+    { name: 'get_gene_evidence', description: 'All stored evidence for ONE gene: mutation, expression, proteomics, dependency, safety, tissue, druggability, clinical, literature, network, annotation.', parameters: { type: 'OBJECT', properties: { gene: { type: 'STRING' }, disease: { type: 'STRING' } }, required: ['gene'] } },
+    { name: 'get_clinical_trials', description: 'Per-trial clinical records for a gene: NCT id, phase, status, year, sponsor, why-stopped.', parameters: { type: 'OBJECT', properties: { gene: { type: 'STRING' }, disease: { type: 'STRING' } }, required: ['gene'] } },
+    { name: 'find_novel_tractable', description: 'Druggable targets with NO developed drug and NO disease trial yet — the discovery query.', parameters: { type: 'OBJECT', properties: { disease: { type: 'STRING' }, limit: { type: 'NUMBER' } } } },
+  ];
+  const jparse = (v: any) => { try { return typeof v === 'string' ? JSON.parse(v) : v; } catch { return null; } };
+  async function execAgentTool(name: string, args: any, ctx: { disease?: string; snapshotId?: number }): Promise<any> {
+    const svc = await readSvc();
+    const snap = await agentSnapshot(args?.disease || ctx.disease, ctx.snapshotId);
+    if (!snap) return { error: 'no snapshot loaded' };
+    if (name === 'list_diseases') {
+      const snaps: any[] = await svc.listSnapshots();
+      const byD = new Map<string, any>();
+      for (const s of snaps) { const p = byD.get(s.disease_id); if (!p || Number(s.id) > Number(p.id)) byD.set(s.disease_id, s); }
+      return { diseases: [...byD.values()].map(s => ({ disease: s.disease_name, snapshot_id: s.id, genes: s.gene_count })) };
+    }
+    if (name === 'rank_targets') {
+      const { scores } = await loadSnapshotCached(Number(snap.id));
+      const n = Math.max(1, Math.min(50, Number(args?.top_n) || 15));
+      const top = [...(scores as any[])].sort((a, b) => (a.rank ?? 1e9) - (b.rank ?? 1e9)).slice(0, n)
+        .map(r => ({ gene: r.gene_symbol, rank: r.rank, ot_assoc: r.get_score ?? r.overall_score, genetic: r.genetic_score, expression: r.expression_score, target: r.target_score, literature: r.literature_score }));
+      return { disease: snap.disease_name, snapshot_id: snap.id, targets: top };
+    }
+    if (name === 'get_gene_evidence') {
+      const gene = String(args?.gene || '').toUpperCase();
+      const rows = (await svc.evidenceForGene(gene)).filter((r: any) => Number(r.snapshot_id) === Number(snap.id));
+      if (!rows.length) return { gene, disease: snap.disease_name, evidence: null, note: 'no stored evidence for this gene in this snapshot' };
+      const ev: any = {};
+      for (const r of rows) { const j = jparse(r.value_json); ev[r.evidence_type] = (j && (j.display || j.value_text)) || r.value_text || j; }
+      return { gene, disease: snap.disease_name, evidence: ev };
+    }
+    if (name === 'get_clinical_trials') {
+      const gene = String(args?.gene || '').toUpperCase();
+      const row = (await svc.evidenceForGene(gene)).find((r: any) => Number(r.snapshot_id) === Number(snap.id) && r.evidence_type === 'clinical');
+      const cl = row ? jparse(row.value_json) : null;
+      if (!cl) return { gene, trials: [], note: 'no clinical precedent in this disease (a neutral novelty signal)' };
+      return { gene, n_drugs: cl.n_drugs_in_disease_trials, max_phase: cl.max_disease_trial_phase, trials: (cl.trials || []).slice(0, 15).map((t: any) => ({ nct: t.id, phase: t.phase, status: t.status, year: t.year, drug: t.drug, sponsor: t.sponsor, why_stopped: t.why_stopped })) };
+    }
+    if (name === 'find_novel_tractable') {
+      const { scores, evidence } = await loadSnapshotCached(Number(snap.id));
+      const drug = new Map<string, any>(), clin = new Map<string, any>();
+      for (const r of evidence as any[]) { const g = String(r.gene_symbol).toUpperCase(); const j = jparse(r.value_json); if (r.evidence_type === 'druggability' && j) drug.set(g, j); else if (r.evidence_type === 'clinical' && j) clin.set(g, j); }
+      const rankOf = new Map((scores as any[]).map(r => [String(r.gene_symbol).toUpperCase(), r.rank]));
+      const hits: any[] = [];
+      for (const [g, d] of drug) { const nD = d.total_compounds ?? 0, tract = d.tractable_modalities ?? 0; const c = clin.get(g); const nT = c ? (c.n_disease_trials ?? c.n_drugs_in_disease_trials ?? 0) : 0; if (nD === 0 && nT === 0 && tract > 0) hits.push({ gene: g, rank: rankOf.get(g) ?? null, tractable_modalities: tract }); }
+      hits.sort((a, b) => (a.rank ?? 1e9) - (b.rank ?? 1e9));
+      const lim = Math.max(1, Math.min(50, Number(args?.limit) || 25));
+      return { disease: snap.disease_name, found: hits.length, targets: hits.slice(0, lim) };
+    }
+    return { error: `unknown tool ${name}` };
+  }
+  app.post("/api/ai/agent", async (req, res) => {
+    const { question, disease, snapshotId } = req.body || {};
+    if (!question) return res.status(400).json({ error: "question required" });
+    const gkey = process.env.GEMINI_API_KEY;
+    if (!gkey) return res.status(503).json({ error: "GEMINI_API_KEY not configured" });
+    const sys = `You are the Disease2Target research agent. Answer research questions about cancer targets by CALLING TOOLS to gather evidence — in as many steps as needed — then synthesising.
+Rules: prefer tools over guessing; call several tools when a question spans sources; cite gene names and numbers from tool results; clearly separate FACTS (mutation, expression, proteomics, dependency, clinical, literature) from PREDICTIONS (Open Targets score, WINNER network, tractability); be concise and end with a short ranked answer.${disease ? `\nCurrent disease context: ${disease}.` : ''}`;
+    const contents: any[] = [{ role: 'user', parts: [{ text: String(question) }] }];
+    const trace: any[] = [];
+    try {
+      let answer = '';
+      for (let step = 0; step < 8; step++) {
+        const body = { contents, systemInstruction: { parts: [{ text: sys }] }, tools: [{ functionDeclarations: AGENT_TOOLS }] };
+        const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${gkey}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        const d: any = await r.json().catch(() => ({}));
+        if (!r.ok || d.error) return res.status(502).json({ error: `Gemini: ${d.error?.message || r.status}`, trace });
+        const parts = d.candidates?.[0]?.content?.parts || [];
+        const calls = parts.filter((pp: any) => pp.functionCall).map((pp: any) => pp.functionCall);
+        const text = parts.find((pp: any) => pp.text)?.text?.trim();
+        if (!calls.length) { answer = text || '(no answer produced)'; break; }
+        contents.push({ role: 'model', parts });
+        const respParts: any[] = [];
+        for (const c of calls) {
+          let result: any; try { result = await execAgentTool(c.name, c.args || {}, { disease, snapshotId }); } catch (e: any) { result = { error: String(e?.message || e) }; }
+          trace.push({ tool: c.name, args: c.args || {} });
+          respParts.push({ functionResponse: { name: c.name, response: { result } } });
+        }
+        contents.push({ role: 'user', parts: respParts });
+      }
+      res.json({ answer: answer || '(stopped after max reasoning steps)', trace });
+    } catch (e: any) { res.status(502).json({ error: e?.message || 'agent error', trace }); }
+  });
   app.get("/api/literature", async (req, res) => {
     const gene = String(req.query.gene || '').toUpperCase().trim();
     const disease = String(req.query.disease || '').trim();

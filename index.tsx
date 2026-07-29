@@ -5395,6 +5395,28 @@ CRITICAL RULES:
       return;
     }
 
+    // Research agent — "/research …" or "/ask …" routes to the multi-step evidence loop
+    // (server-side tool reasoning) instead of the single-shot list-manipulation chat.
+    const agentMatch = chatInput.match(/^\/(research|ask)\s+([\s\S]+)/i);
+    if (agentMatch) {
+      const q = agentMatch[2].trim();
+      setMessages(prev => [...prev, { role: 'user', content: chatInput, timestamp: new Date() }]);
+      setChatInput(""); setIsChatting(true);
+      try {
+        const resp = await authenticatedFetch('/api/ai/agent', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ question: q, disease: researchState.activeDisease?.name || '' }),
+        });
+        const j = await resp.json();
+        if (!resp.ok) throw new Error(j.error || `agent failed (${resp.status})`);
+        const used = Array.isArray(j.trace) && j.trace.length ? `\n\n_🔬 tools used: ${[...new Set(j.trace.map((t: any) => t.tool))].join(', ')}_` : '';
+        setMessages(prev => [...prev, { role: 'assistant', content: (j.answer || 'No answer.') + used, timestamp: new Date() }]);
+      } catch (e: any) {
+        setMessages(prev => [...prev, { role: 'assistant', content: `Research agent error: ${e.message}`, timestamp: new Date() }]);
+      } finally { setIsChatting(false); }
+      return;
+    }
+
     const userMsg: Message = { role: 'user', content: chatInput, timestamp: new Date() };
     const currentMessages = [...messages, userMsg];
     setMessages(currentMessages); setChatInput(""); setIsChatting(true);
