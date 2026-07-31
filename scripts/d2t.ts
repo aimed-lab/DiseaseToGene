@@ -58,6 +58,9 @@ const log = (m: string) => console.log(`[${new Date().toISOString().slice(11, 19
 const toNum = (v: any): number | null => (Number.isFinite(Number(v)) ? Number(v) : null);
 const clamp01 = (n: number) => Math.max(0, Math.min(1, n));
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+// Stable id fragment for a KG node_key from a free-text label (drug/pathway/tissue name).
+const slug = (s: any) => String(s ?? '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 120);
+const parseJson = (s: any) => { if (s == null) return null; if (typeof s === 'object') return s; try { return JSON.parse(String(s)); } catch { return null; } };
 
 // #4 expression guardrails. The reference is log2(TPM+0.001); genes NOT expressed in normal
 // tissue sit at the pseudocount floor (normal_median = log2(0.001) = -9.966), so any tumour
@@ -502,6 +505,156 @@ async function dossier(snapshotId: number) {
   log('Done.');
 }
 
+// ════════════════════════════ KG (knowledge graph) ════════════════════════════
+// Project a snapshot's EVIDENCE + RANKING_SCORES into a materialised property graph
+// (KG_NODES + KG_EDGES). Genes/diseases/drugs/trials/pathways/tissues/papers/variants
+// become nodes; the relationships buried in value_json become typed edges. The one
+// genuinely missing piece — the STRING PPI edges (computed-then-discarded by the
+// network axis) — is fetched fresh here and PERSISTED into KG_EDGES, so the graph is
+// no longer ephemeral. Idempotent per snapshot. Bounded to the top-N ranked genes so
+// the graph stays tractable and readable.
+async function buildGraph(snapshotId: number) {
+  const svc = await oracle();
+  const snap = await svc.getSnapshot(snapshotId);
+  if (!snap) throw new Error(`Snapshot #${snapshotId} not found`);
+  const diseaseId: string = snap.disease_id;
+  const diseaseName: string = snap.disease_name;
+  const GENE_N = Number(process.env.KG_GENE_N) || 300;     // graph = top-N ranked genes + their relationships
+  const NET_N = Number(process.env.KG_NETWORK_N) || GENE_N; // STRING PPI over the top-N genes
+
+  const scores = await svc.listRankingScores(snapshotId);
+  const ev = await svc.snapshotEvidence(snapshotId);
+  log(`Snapshot #${snapshotId} · ${diseaseName} · ${scores.length} score rows · ${(ev as any[]).length} evidence rows`);
+
+  // Dedupe scores by symbol (keep best rank), take the top-N as the gene node set.
+  const seenGene = new Set<string>();
+  const ranked: any[] = [];
+  for (const s of scores as any[]) { const g = String(s.gene_symbol).toUpperCase(); if (seenGene.has(g)) continue; seenGene.add(g); ranked.push({ ...s, gene_symbol: g }); }
+  const topRows = ranked.slice(0, GENE_N);
+  const geneSet = new Set(topRows.map(r => r.gene_symbol));
+  log(`  node set: top ${geneSet.size} genes by rank (of ${ranked.length})`);
+
+  const nodes = new Map<string, any>();
+  const edges: any[] = [];
+  const nk = {
+    gene: (g: string) => `gene:${g}`, disease: (d: string) => `disease:${d}`,
+    drug: (d: string) => `drug:${slug(d)}`, trial: (t: string) => `trial:${t}`,
+    pathway: (p: string) => `pathway:${slug(p)}`, tissue: (t: string) => `tissue:${slug(t)}`,
+    paper: (id: string) => `paper:${id}`, variant: (g: string, c: string) => `variant:${g}:${slug(c)}`,
+  };
+  const addNode = (key: string, type: string, label: any, props?: any) => {
+    const ex = nodes.get(key);
+    if (!ex) { nodes.set(key, { node_key: key, node_type: type, label: label != null ? String(label) : key, props: props || {} }); }
+    else if (props) { ex.props = { ...ex.props, ...props }; if ((!ex.label || ex.label === key) && label) ex.label = String(label); }
+  };
+
+  // Disease node + gene nodes (with their association edge to the disease).
+  const dKey = nk.disease(diseaseId);
+  addNode(dKey, 'disease', diseaseName, { disease_id: diseaseId });
+  for (const s of topRows) {
+    const g = s.gene_symbol;
+    addNode(nk.gene(g), 'gene', g, { rank: toNum(s.rank), get_score: toNum(s.get_score), genetic_score: toNum(s.genetic_score), expression_score: toNum(s.expression_score) });
+    if (s.get_score != null) edges.push({ src_key: nk.gene(g), dst_key: dKey, rel_type: 'associated_with', weight: toNum(s.get_score), confidence: 'fact', source: 'Open Targets association', props: { rank: toNum(s.rank) } });
+  }
+
+  // Walk every evidence row for the top-N genes and project its relationships.
+  for (const row of ev as any[]) {
+    const g = String(row.gene_symbol).toUpperCase();
+    if (!geneSet.has(g)) continue;
+    const vj = parseJson(row.value_json);
+    if (!vj) continue;
+    const gk = nk.gene(g);
+    const et = row.evidence_type;
+    if (et === 'expression_tvn' || et === 'proteomics' || et === 'mutation') {
+      edges.push({ src_key: gk, dst_key: dKey, rel_type: 'dysregulated_in', weight: toNum(vj.axis), confidence: 'fact', source: row.source, props: { modality: et, direction: vj.direction, log2fc: vj.log2fc ?? null, frequency: vj.frequency ?? null } });
+      if (et === 'mutation' && Array.isArray(vj.top_variants)) {
+        for (const v of vj.top_variants.slice(0, 5)) {
+          if (!v?.change) continue;
+          const vkey = nk.variant(g, v.change);
+          addNode(vkey, 'variant', `${g} ${v.change}`, { gene: g, change: v.change, count: v.count ?? null, fraction: v.fraction ?? null });
+          edges.push({ src_key: gk, dst_key: vkey, rel_type: 'has_variant', weight: toNum(v.fraction), confidence: 'fact', source: row.source, props: { count: v.count ?? null } });
+        }
+      }
+    } else if (et === 'annotation') {
+      for (const p of (vj.pathways || []).slice(0, 15)) { if (!p) continue; const pk = nk.pathway(p); addNode(pk, 'pathway', p); edges.push({ src_key: gk, dst_key: pk, rel_type: 'in_pathway', confidence: 'fact', source: 'Open Targets (Reactome)', props: {} }); }
+      for (const par of (vj.paralogs || []).slice(0, 10)) { const P = String(par).toUpperCase(); if (!P || P === g) continue; const pk = nk.gene(P); if (!nodes.has(pk)) addNode(pk, 'gene', P, { peripheral: true }); edges.push({ src_key: gk, dst_key: pk, rel_type: 'paralog_of', confidence: 'fact', source: 'Open Targets homology', props: {} }); }
+      addNode(gk, 'gene', g, { target_class: vj.target_class ?? null, approved_name: vj.approved_name ?? null, uniprot_id: vj.uniprot_id ?? null, ensembl_id: vj.ensembl_id ?? null, surface_or_secreted: vj.surface_or_secreted ?? null });
+    } else if (et === 'druggability') {
+      for (const d of (vj.drugs || []).slice(0, 15)) { if (!d?.name) continue; const dk = nk.drug(d.name); addNode(dk, 'drug', d.name, { modality: d.modality ?? null, stage: d.stage ?? null, approved: d.approved ?? null, family: d.family ?? null }); edges.push({ src_key: gk, dst_key: dk, rel_type: 'targeted_by', confidence: 'fact', source: 'Open Targets', props: { modality: d.modality ?? null, stage: d.stage ?? null } }); }
+    } else if (et === 'clinical') {
+      for (const t of (vj.trials || []).slice(0, 20)) {
+        if (!t?.id) continue;
+        const tk = nk.trial(String(t.id));
+        addNode(tk, 'trial', String(t.id), { phase: t.phase ?? null, status: t.status ?? null, title: t.title ?? null, year: t.year ?? null, sponsor: t.sponsor ?? null, url: t.url ?? null });
+        if (t.drug) { const dk = nk.drug(t.drug); addNode(dk, 'drug', t.drug); edges.push({ src_key: dk, dst_key: tk, rel_type: 'tested_in', confidence: 'fact', source: 'ClinicalTrials.gov', props: { phase: t.phase ?? null } }); edges.push({ src_key: gk, dst_key: dk, rel_type: 'targeted_by', confidence: 'fact', source: 'Open Targets', props: {} }); }
+        edges.push({ src_key: tk, dst_key: dKey, rel_type: 'for', confidence: 'fact', source: 'ClinicalTrials.gov', props: { phase: t.phase ?? null } });
+      }
+    } else if (et === 'tissue') {
+      if (vj.max_tissue) { const tk = nk.tissue(vj.max_tissue); addNode(tk, 'tissue', vj.max_tissue); edges.push({ src_key: gk, dst_key: tk, rel_type: 'peaks_in', weight: toNum(vj.tau), confidence: 'fact', source: 'GTEx v8', props: { tau: vj.tau ?? null, max_tpm: vj.max_tpm ?? null } }); }
+    } else if (et === 'literature_epmc') {
+      for (const p of (vj.top_papers || []).slice(0, 5)) { if (!p?.id) continue; const pk = nk.paper(`PMID${p.id}`); addNode(pk, 'paper', p.title ? String(p.title).slice(0, 160) : `PMID${p.id}`, { pmid: p.id, journal: p.journal ?? null, year: p.year ?? null, source: p.source ?? null }); edges.push({ src_key: gk, dst_key: pk, rel_type: 'mentioned_in', confidence: 'fact', source: 'Europe PMC', props: { year: p.year ?? null } }); edges.push({ src_key: pk, dst_key: dKey, rel_type: 'studied_in', confidence: 'fact', source: 'Europe PMC', props: {} }); }
+    }
+  }
+
+  // The missing piece: STRING PPI edges (persist them this time). Both endpoints must be
+  // graph nodes so the edge is renderable. Deduped (undirected).
+  const netGenes = topRows.slice(0, NET_N).map(r => r.gene_symbol);
+  log(`  fetching STRING PPI edges for top ${netGenes.length} genes…`);
+  const stringEdges = await fetchStringEdges(netGenes);
+  log(`  STRING returned ${stringEdges.length} raw edges`);
+  const seenPpi = new Set<string>();
+  let ppi = 0;
+  for (const e of stringEdges) {
+    const a = String(e.preferredName_A || e.gene_a || '').toUpperCase();
+    const b = String(e.preferredName_B || e.gene_b || '').toUpperCase();
+    if (!a || !b || a === b || !geneSet.has(a) || !geneSet.has(b)) continue;
+    const key = a < b ? `${a}|${b}` : `${b}|${a}`;
+    if (seenPpi.has(key)) continue; seenPpi.add(key);
+    const score = Number(e.score) || 0;
+    edges.push({ src_key: nk.gene(a), dst_key: nk.gene(b), rel_type: 'interacts_with', weight: score > 1 ? +(score / 1000).toFixed(3) : score, confidence: 'fact', source: `STRING v12 (score≥${STRING_MIN_SCORE})`, props: { string_score: score } });
+    ppi++;
+  }
+  log(`  ${ppi} STRING PPI edges kept (both endpoints in the graph)`);
+
+  // Degree + drop any edge whose endpoint didn't materialise as a node (safety),
+  // and dedupe by (src, dst, rel) — multiple drug/trial records can emit the same
+  // relationship (e.g. KRAS→sotorasib from several formulations). Keep the first.
+  const nodeKeys = new Set(nodes.keys());
+  const edgeSeen = new Set<string>();
+  const cleanEdges = edges.filter(e => {
+    if (!nodeKeys.has(e.src_key) || !nodeKeys.has(e.dst_key)) return false;
+    const k = `${e.src_key}${e.dst_key}${e.rel_type}`;
+    if (edgeSeen.has(k)) return false; edgeSeen.add(k); return true;
+  });
+  const deg = new Map<string, number>();
+  for (const e of cleanEdges) { deg.set(e.src_key, (deg.get(e.src_key) || 0) + 1); deg.set(e.dst_key, (deg.get(e.dst_key) || 0) + 1); }
+  const nodeList = [...nodes.values()].map(n => ({ ...n, degree: deg.get(n.node_key) || 0 }));
+  log(`Graph: ${nodeList.length} nodes · ${cleanEdges.length} edges`);
+
+  if (DRY) { log(`--dry: would write ${nodeList.length} nodes / ${cleanEdges.length} edges. sample node: ${JSON.stringify(nodeList[0])?.slice(0, 160)}`); return; }
+
+  // Write chunked (one transaction of ~10k row-inserts can time out over VPN — same as dossiers).
+  for (let i = 0; i < nodeList.length; i += 1000) {
+    const chunk = nodeList.slice(i, i + 1000);
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try { await svc.saveKgNodes(snapshotId, diseaseId, chunk, i === 0); log(`  ✔ nodes ${Math.min(i + 1000, nodeList.length)}/${nodeList.length}`); break; }
+      catch (e: any) { const m = String(e?.message || e).slice(0, 140); if (attempt < 3) { log(`  node write failed (${attempt}/3): ${m} — retry`); await sleep(6000 * attempt); } else { throw new Error(`nodes NOT saved: ${m}`); } }
+    }
+  }
+  for (let i = 0; i < cleanEdges.length; i += 1000) {
+    const chunk = cleanEdges.slice(i, i + 1000);
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try { await svc.saveKgEdges(snapshotId, diseaseId, chunk, 'cli', i === 0); log(`  ✔ edges ${Math.min(i + 1000, cleanEdges.length)}/${cleanEdges.length}`); break; }
+      catch (e: any) { const m = String(e?.message || e).slice(0, 140); if (attempt < 3) { log(`  edge write failed (${attempt}/3): ${m} — retry`); await sleep(6000 * attempt); } else { throw new Error(`edges NOT saved: ${m}`); } }
+    }
+  }
+  const stats = await svc.kgStats(snapshotId);
+  log(`✔ KG built for #${snapshotId}`);
+  log(`  nodes: ${Object.entries(stats.nodes).map(([k, v]) => `${k} ${v}`).join(' · ')}`);
+  log(`  edges: ${Object.entries(stats.edges).map(([k, v]) => `${k} ${v}`).join(' · ')}`);
+  log(`  Next: open the Knowledge Graph page (needs the server restarted) or export with \`kg-export ${snapshotId}\`.`);
+}
+
 // ════════════════════════════ main ════════════════════════════
 (async () => {
   const [cmd, a, b] = process.argv.slice(2).filter(x => x !== '--dry');
@@ -515,8 +668,9 @@ async function dossier(snapshotId: number) {
     else if (cmd === 'enrich') { if (!a || !b) throw new Error('usage: enrich <snapshotId> <axis|all>'); await enrich(snapId(a), b); }
     else if (cmd === 'status') { if (!a) throw new Error('usage: status <snapshotId>'); await status(snapId(a)); }
     else if (cmd === 'dossier') { if (!a) throw new Error('usage: dossier <snapshotId>  (run after enrich; needs GENE_DOSSIER table)'); await dossier(snapId(a)); }
+    else if (cmd === 'kg') { if (!a) throw new Error('usage: kg <snapshotId>  (projects EVIDENCE→KG_NODES/KG_EDGES; needs the kg_tables.sql tables)'); await buildGraph(snapId(a)); }
     else if (cmd === 'list') { await list(); }
-    else { console.log('Commands:\n  list                             show all snapshots + their ids\n  harvest "<disease>" [geneCount]  create a snapshot\n  enrich <snapshotId> <axis|all>   (axes: ' + AXES.join(', ') + ')\n  status <snapshotId>              per-axis coverage\n  add --dry to any command to skip the Oracle write'); }
+    else { console.log('Commands:\n  list                             show all snapshots + their ids\n  harvest "<disease>" [geneCount]  create a snapshot\n  enrich <snapshotId> <axis|all>   (axes: ' + AXES.join(', ') + ')\n  dossier <snapshotId>             build the dashboard cards\n  kg <snapshotId>                  project the snapshot into a knowledge graph (KG_NODES/KG_EDGES)\n  status <snapshotId>              per-axis coverage\n  add --dry to any command to skip the Oracle write'); }
   } catch (e: any) { console.error('ERROR:', e?.message || e); process.exit(1); }
   process.exit(0);
 })();

@@ -561,3 +561,120 @@ async function logAudit(conn: oracledb.Connection, e: { actor: string; action: s
     { actor: e.actor?.slice(0, 200) ?? null, action: e.action, entity: e.entity, entity_id: e.entity_id, disease_id: e.disease_id, details: clob(e.details) }
   );
 }
+
+// ── KNOWLEDGE GRAPH (kg_nodes + kg_edges — see docs/sql/kg_tables.sql) ─────────
+// A materialised property graph PROJECTED from a snapshot's EVIDENCE + RANKING_SCORES
+// by `scripts/d2t.ts kg <id>`. Idempotent per snapshot: a rebuild deletes the
+// snapshot's rows first (edges then nodes, FK-safe), then re-inserts. The whole
+// (bounded) graph is served in ONE read (kgGraph) and explored client-side.
+export interface KgNodeInput {
+  node_key: string;               // 'gene:KRAS', 'drug:sotorasib', 'trial:NCT…'
+  node_type: string;              // gene | disease | drug | trial | pathway | tissue | paper | variant
+  label?: string | null;
+  degree?: number;
+  props?: unknown;
+}
+export interface KgEdgeInput {
+  src_key: string;
+  dst_key: string;
+  rel_type: string;
+  weight?: number | null;
+  confidence?: string | null;     // fact (measured) | prediction (model-derived)
+  source?: string | null;
+  props?: unknown;
+}
+
+// Chunk-friendly writers (row-by-row inserts of a whole graph in ONE transaction can
+// time out over VPN — same lesson as saveDossiers). The projector clears once on the
+// first node chunk, then appends nodes and edges chunk by chunk.
+export async function saveKgNodes(snapshotId: number, diseaseId: string, nodes: KgNodeInput[], clearFirst = true): Promise<{ count: number }> {
+  const conn = await (await getPool()).getConnection();
+  try {
+    if (clearFirst) {
+      // Clear the whole projected graph for this snapshot before the first chunk.
+      await conn.execute(`DELETE FROM ${T('kg_edges')} WHERE snapshot_id = :s`, { s: snapshotId });
+      await conn.execute(`DELETE FROM ${T('kg_nodes')} WHERE snapshot_id = :s`, { s: snapshotId });
+    }
+    for (const n of nodes) {
+      await conn.execute(
+        `INSERT INTO ${T('kg_nodes')} (snapshot_id, disease_id, node_key, node_type, label, degree, props_json)
+         VALUES (:snapshot_id,:disease_id,:node_key,:node_type,:label,:degree,:props_json)`,
+        {
+          snapshot_id: snapshotId, disease_id: String(diseaseId).slice(0, 100),
+          node_key: String(n.node_key).slice(0, 200), node_type: String(n.node_type).slice(0, 30),
+          label: n.label != null ? String(n.label).slice(0, 400) : null,
+          degree: Number.isFinite(n.degree as number) ? n.degree : 0,
+          props_json: clob(n.props),
+        }
+      );
+    }
+    await conn.commit();
+    return { count: nodes.length };
+  } catch (e) {
+    try { await conn.rollback(); } catch { /* ignore */ }
+    throw e;
+  } finally { await conn.close(); }
+}
+
+export async function saveKgEdges(snapshotId: number, diseaseId: string, edges: KgEdgeInput[], actor?: string, logIt = false): Promise<{ count: number }> {
+  const conn = await (await getPool()).getConnection();
+  try {
+    for (const e of edges) {
+      await conn.execute(
+        `INSERT INTO ${T('kg_edges')} (snapshot_id, disease_id, src_key, dst_key, rel_type, weight, confidence, source, props_json)
+         VALUES (:snapshot_id,:disease_id,:src_key,:dst_key,:rel_type,:weight,:confidence,:source,:props_json)`,
+        {
+          snapshot_id: snapshotId, disease_id: String(diseaseId).slice(0, 100),
+          src_key: String(e.src_key).slice(0, 200), dst_key: String(e.dst_key).slice(0, 200),
+          rel_type: String(e.rel_type).slice(0, 40),
+          weight: (typeof e.weight === 'number' && isFinite(e.weight)) ? e.weight : null,
+          confidence: e.confidence ? String(e.confidence).slice(0, 20) : null,
+          source: e.source ? String(e.source).slice(0, 200) : null,
+          props_json: clob(e.props),
+        }
+      );
+    }
+    if (logIt) await logAudit(conn, { actor: actor ?? 'cli', action: 'kg_built', entity: 'kg_edges', entity_id: String(snapshotId), disease_id: diseaseId, details: { edges: edges.length } });
+    await conn.commit();
+    return { count: edges.length };
+  } catch (e) {
+    try { await conn.rollback(); } catch { /* ignore */ }
+    throw e;
+  } finally { await conn.close(); }
+}
+
+// The whole projected graph for a snapshot, in one read. Bounded by the projector,
+// so it is safe to ship to the browser and explore client-side.
+export async function kgGraph(snapshotId: number): Promise<{ nodes: any[]; edges: any[] }> {
+  const conn = await (await getPool()).getConnection();
+  try {
+    const nr = await conn.execute(
+      `SELECT node_key AS "key", node_type AS "type", label AS "label", degree AS "degree", props_json AS "props"
+       FROM ${T('kg_nodes')} WHERE snapshot_id = :s`,
+      { s: snapshotId }, { outFormat: oracledb.OUT_FORMAT_OBJECT }
+    );
+    const er = await conn.execute(
+      `SELECT src_key AS "source", dst_key AS "target", rel_type AS "rel", weight AS "weight",
+              confidence AS "confidence", source AS "src", props_json AS "props"
+       FROM ${T('kg_edges')} WHERE snapshot_id = :s`,
+      { s: snapshotId }, { outFormat: oracledb.OUT_FORMAT_OBJECT }
+    );
+    const nodes = (nr.rows as any[]).map((r) => ({ ...r, props: safeParse(r.props) }));
+    const edges = (er.rows as any[]).map((r) => ({ ...r, props: safeParse(r.props) }));
+    return { nodes, edges };
+  } finally { await conn.close(); }
+}
+
+// Quick per-type counts without pulling the CLOBs.
+export async function kgStats(snapshotId: number): Promise<{ nodes: Record<string, number>; edges: Record<string, number>; nodeTotal: number; edgeTotal: number }> {
+  const conn = await (await getPool()).getConnection();
+  try {
+    const nr = await conn.execute(`SELECT node_type AS "t", COUNT(*) AS "c" FROM ${T('kg_nodes')} WHERE snapshot_id = :s GROUP BY node_type`, { s: snapshotId }, { outFormat: oracledb.OUT_FORMAT_OBJECT });
+    const er = await conn.execute(`SELECT rel_type AS "t", COUNT(*) AS "c" FROM ${T('kg_edges')} WHERE snapshot_id = :s GROUP BY rel_type`, { s: snapshotId }, { outFormat: oracledb.OUT_FORMAT_OBJECT });
+    const nodes: Record<string, number> = {}, edges: Record<string, number> = {};
+    let nodeTotal = 0, edgeTotal = 0;
+    for (const r of nr.rows as any[]) { nodes[r.t] = Number(r.c); nodeTotal += Number(r.c); }
+    for (const r of er.rows as any[]) { edges[r.t] = Number(r.c); edgeTotal += Number(r.c); }
+    return { nodes, edges, nodeTotal, edgeTotal };
+  } finally { await conn.close(); }
+}

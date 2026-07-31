@@ -106,3 +106,28 @@ export async function evidenceForGene(gene: string): Promise<any[]> {
   const rows = await ordsGetAll(`evidence/gene/${encodeURIComponent(gene)}`);
   return rows.map((r: any) => ({ ...r, value_json: safeParse(r.value_json) ?? r.value_json }));
 }
+
+// ── Knowledge Graph — mirrors oracleService.kgGraph / kgStats one-for-one so
+// /api/graph works over ORDS with no VPN (needs docs/sql/kg_ords_module.sql run once).
+export async function kgGraph(snapshotId: number): Promise<{ nodes: any[]; edges: any[] }> {
+  const [nodes, edges] = await Promise.all([
+    ordsGetAll(`kg/${snapshotId}/nodes`),
+    ordsGetAll(`kg/${snapshotId}/edges`),
+  ]);
+  return {
+    nodes: nodes.map((r: any) => ({ ...r, props: safeParse(r.props) })),
+    edges: edges.map((r: any) => ({ ...r, props: safeParse(r.props) })),
+  };
+}
+
+export async function kgStats(snapshotId: number): Promise<{ nodes: Record<string, number>; edges: Record<string, number>; nodeTotal: number; edgeTotal: number }> {
+  const rows = await ordsGetAll(`kg/${snapshotId}/stats`);
+  const nodes: Record<string, number> = {}, edges: Record<string, number> = {};
+  let nodeTotal = 0, edgeTotal = 0;
+  for (const r of rows) {
+    const c = Number(r.c) || 0;
+    if (r.kind === 'node') { nodes[r.t] = c; nodeTotal += c; }
+    else if (r.kind === 'edge') { edges[r.t] = c; edgeTotal += c; }
+  }
+  return { nodes, edges, nodeTotal, edgeTotal };
+}

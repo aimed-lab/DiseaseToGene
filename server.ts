@@ -945,6 +945,41 @@ function setupRoutes() {
       res.json({ gene, snapshot_id: snap.id, data: vj });
     } catch (e: any) { res.status(502).json({ error: e?.message || 'network fetch failed' }); }
   });
+  // ── Knowledge Graph (KG_NODES / KG_EDGES, projected by `d2t.ts kg <id>`) ──────
+  // The unified, queryable graph: genes/diseases/drugs/trials/pathways/tissues/papers/
+  // variants as nodes, the evidence relationships (incl. persisted STRING PPI) as edges.
+  // Reads the internal Oracle service (the new tables aren't on the ORDS bridge yet).
+  // Resolve ?snapshot=<id> directly, or ?disease=<name> → that disease's newest snapshot.
+  async function resolveKgSnapshot(svc: any, snapshotQ: string, diseaseQ: string): Promise<any | null> {
+    const snaps: any[] = await svc.listSnapshots();
+    const sorted = [...snaps].sort((a, b) => Number(b.id) - Number(a.id));
+    if (snapshotQ && /^\d+$/.test(snapshotQ)) return sorted.find(s => Number(s.id) === Number(snapshotQ)) || null;
+    if (diseaseQ) {
+      const dq = diseaseQ.toLowerCase();
+      return sorted.find(s => { const n = String(s.disease_name || '').toLowerCase(); return n.includes(dq) || dq.includes(n); }) || null;
+    }
+    return sorted[0] || null;   // default: newest snapshot
+  }
+  app.get("/api/graph/stats", async (req, res) => {
+    if (!readStoreEnabled()) return res.status(503).json({ error: "Oracle store disabled" });
+    try {
+      const svc = await readSvc();
+      const snap = await resolveKgSnapshot(svc, String(req.query.snapshot || ''), String(req.query.disease || ''));
+      if (!snap) return res.status(404).json({ error: "no snapshot found" });
+      const stats = await svc.kgStats(Number(snap.id));
+      res.json({ snapshot_id: snap.id, disease_name: snap.disease_name, disease_id: snap.disease_id, ...stats });
+    } catch (e: any) { res.status(502).json({ error: e?.message || 'kg stats failed' }); }
+  });
+  app.get("/api/graph", async (req, res) => {
+    if (!readStoreEnabled()) return res.status(503).json({ error: "Oracle store disabled" });
+    try {
+      const svc = await readSvc();
+      const snap = await resolveKgSnapshot(svc, String(req.query.snapshot || ''), String(req.query.disease || ''));
+      if (!snap) return res.status(404).json({ error: "no snapshot found" });
+      const [{ nodes, edges }, stats] = await Promise.all([svc.kgGraph(Number(snap.id)), svc.kgStats(Number(snap.id))]);
+      res.json({ snapshot_id: snap.id, disease_name: snap.disease_name, disease_id: snap.disease_id, stats, nodes, edges });
+    } catch (e: any) { res.status(502).json({ error: e?.message || 'kg fetch failed' }); }
+  });
   // Proteomics axis — CPTAC tumor-vs-normal protein log2FC. Disease-aware reference file
   // (built like expression: build_proteomics.py <cohort> → data/proteomics_<cohort>.json).
   app.get("/api/proteomics", async (req, res) => {
