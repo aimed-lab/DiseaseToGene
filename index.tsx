@@ -2090,7 +2090,7 @@ const CohortFilterSidebar = ({ theme, targets, activeDisease, onScoreRangesChang
   const isDark = theme === 'dark';
 
   // ── nav state ────────────────────────────────────────────────────────────
-  const [isExpanded, setIsExpanded] = useState(true);
+  const [isExpanded, setIsExpanded] = useState(false);   // collapsed by default so the graph/targets get full width; click a nav icon or the chevron to open
   const [activeNavLocal, setActiveNavLocal] = useState<string>('cohort');
   const activeNav    = activeNavProp    ?? activeNavLocal;
   const setActiveNav = onActiveNavChange ?? setActiveNavLocal;

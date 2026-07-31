@@ -40,6 +40,7 @@ export default function KnowledgeGraphView({ theme, diseaseName }: { theme: Them
   const [focus, setFocus] = useState<string | null>(null);
   const [selected, setSelected] = useState<KgNode | null>(null);
   const [search, setSearch] = useState('');
+  const [geneLimit, setGeneLimit] = useState<number | 'all'>(100);   // show the top-N genes by rank (declutters the hairball)
 
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -79,23 +80,33 @@ export default function KnowledgeGraphView({ theme, diseaseName }: { theme: Them
     if (!data) return { nodes: [] as KgNode[], links: [] as KgEdge[] };
     const focusSet = focus ? new Set<string>([focus, ...(adj.get(focus) ?? [])]) : null;
     const nodeByKey = new Map(data.nodes.map(n => [n.key, n]));
+    // Gene budget: keep only the top-N genes by rank (peripheral, rank-less paralog nodes drop
+    // out first). Non-gene nodes are unaffected here; they still render only if they stay
+    // connected to a visible gene. The focused gene is always allowed.
+    const geneRank = (n: KgNode) => (typeof n.props?.rank === 'number' ? n.props.rank : Number.POSITIVE_INFINITY);
+    // While focused, the ego network already bounds the view — don't also apply the gene budget
+    // (otherwise a focused gene's higher-rank neighbours would vanish).
+    const allowedGenes: Set<string> | null = (geneLimit === 'all' || focus) ? null
+      : new Set(data.nodes.filter(n => n.type === 'gene').sort((a, b) => geneRank(a) - geneRank(b)).slice(0, geneLimit).map(n => n.key));
+    const geneOK = (key: string, n?: KgNode) => { const node = n ?? nodeByKey.get(key); if (!node) return false; return !(node.type === 'gene' && allowedGenes && !allowedGenes.has(key) && key !== focus); };
     const links = data.edges.filter(e => {
       if (!visRels.has(e.rel)) return false;
       const s = typeof e.source === 'string' ? e.source : e.source.key;
       const t = typeof e.target === 'string' ? e.target : e.target.key;
       const sn = nodeByKey.get(s), tn = nodeByKey.get(t);
       if (!sn || !tn || !visTypes.has(sn.type) || !visTypes.has(tn.type)) return false;
+      if (!geneOK(s, sn) || !geneOK(t, tn)) return false;
       if (focusSet && !(focusSet.has(s) && focusSet.has(t))) return false;
       return true;
     });
     const connected = new Set<string>();
     for (const e of links) { connected.add(typeof e.source === 'string' ? e.source : e.source.key); connected.add(typeof e.target === 'string' ? e.target : e.target.key); }
-    // Render nodes of visible types that are connected (or the disease hub, or the focus).
-    const nodes = data.nodes.filter(n => visTypes.has(n.type) && (connected.has(n.key) || n.type === 'disease' || n.key === focus) && (!focusSet || focusSet.has(n.key)));
+    // Render nodes of visible types that survive the gene budget and are connected (or the disease hub, or the focus).
+    const nodes = data.nodes.filter(n => visTypes.has(n.type) && geneOK(n.key, n) && (connected.has(n.key) || n.type === 'disease' || n.key === focus) && (!focusSet || focusSet.has(n.key)));
     // seed persisted positions so filtering doesn't scramble the layout
     for (const n of nodes) { const p = posRef.current.get(n.key); if (p) { n.x = p.x; n.y = p.y; } }
     return { nodes, links: links.map(e => ({ ...e, source: typeof e.source === 'string' ? e.source : e.source.key, target: typeof e.target === 'string' ? e.target : e.target.key })) };
-  }, [data, visTypes, visRels, focus, adj]);
+  }, [data, visTypes, visRels, focus, adj, geneLimit]);
 
   const radius = useCallback((n: KgNode) => Math.max(2.5, Math.min(16, 3 + Math.sqrt(n.degree || 1))), []);
 
@@ -262,6 +273,18 @@ export default function KnowledgeGraphView({ theme, diseaseName }: { theme: Them
         </div>
         <span className="text-[11px] text-slate-500">{data.stats.nodeTotal.toLocaleString()} nodes · {data.stats.edgeTotal.toLocaleString()} edges · showing {view.nodes.length}/{view.links.length}</span>
         <div className="flex-1" />
+        <div className={`flex items-center gap-1.5 rounded-md border px-2 py-1 ${card}`} title="Limit the graph to the top-N genes by rank — the fastest way to cut the hairball">
+          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Genes</span>
+          <select value={String(geneLimit)} onChange={e => setGeneLimit(e.target.value === 'all' ? 'all' : Number(e.target.value))}
+            className={`bg-transparent text-xs outline-none cursor-pointer ${isDark ? 'text-white' : 'text-slate-900'}`}>
+            <option value="25">Top 25</option>
+            <option value="50">Top 50</option>
+            <option value="100">Top 100</option>
+            <option value="200">Top 200</option>
+            <option value="300">Top 300</option>
+            <option value="all">All ({(data.stats.nodes.gene ?? 0).toLocaleString()})</option>
+          </select>
+        </div>
         <div className={`flex items-center gap-1 rounded-md border px-2 ${card}`}>
           <Search className="w-3.5 h-3.5 text-slate-400" />
           <input value={search} onChange={e => setSearch(e.target.value)} onKeyDown={e => e.key === 'Enter' && runSearch()} placeholder="Find a gene…" className={`bg-transparent text-xs py-1.5 w-32 outline-none ${isDark ? 'text-white placeholder:text-slate-600' : 'text-slate-900 placeholder:text-slate-400'}`} />
