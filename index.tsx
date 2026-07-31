@@ -102,7 +102,7 @@ import NetworkPanel from './NetworkPanel';
 import EvidenceCardsPanel from './EvidenceCardsPanel';
 import FunnelView from './FunnelView';
 import RankingsView from './RankingsView';
-import DashboardView from './DashboardView';
+import DashboardView, { type DashboardCommand } from './DashboardView';
 import KnowledgeGraphView from './KnowledgeGraphView';
 import { glossaryPromptBlock } from './dashboardGlossary';
 import JobsView from './JobsView';
@@ -3763,6 +3763,7 @@ const App = () => {
 
   const [messages, setMessages] = useState<Message[]>([{ role: 'assistant', content: "DiseaseToTarget Ready. Targeting breakthroughs in Alzheimer's and other complex diseases.", timestamp: new Date() }]);
   const [chatInput, setChatInput] = useState("");
+  const [dashboardCmd, setDashboardCmd] = useState<DashboardCommand | null>(null);   // co-pilot → DashboardView control channel
   const [isChatting, setIsChatting] = useState(false);
   const [isLeftSidebarOpen, setIsLeftSidebarOpen] = useState(true);
   const [scoreRangeFilter, setScoreRangeFilter] = useState<Record<string, [number, number]>>({});
@@ -5324,10 +5325,53 @@ CRITICAL RULES:
 
           return `Loaded ${updatedNewGenes.length} more targets for ${researchState.activeDisease.name}.`;
         }
+        case 'focus_gene': {
+          const sym = String(args.symbol || '').toUpperCase();
+          const t = researchState.targets.find(g => g.symbol.toUpperCase() === sym);
+          if (!t) return `${args.symbol} isn't in the current target list. Load its disease first (e.g. "load pancreatic cancer"), then ask again.`;
+          setViewMode('list');
+          setResearchState(prev => ({ ...prev, focusSymbol: t.symbol }));
+          return `Opened **${t.symbol}**'s detail view.`;
+        }
+        case 'set_weights': {
+          const w = { ...researchState.weights };
+          if (typeof args.genetic === 'number') w.genetic = args.genetic;
+          if (typeof args.expression === 'number') w.expression = args.expression;
+          if (typeof args.target === 'number') w.target = args.target;
+          if (typeof args.velocity === 'number') w.velocity = args.velocity;
+          const updated = calculatePriorityScores(researchState.targets, w);
+          setResearchState(prev => ({ ...prev, weights: w, targets: updated }));
+          return `GET weights updated — Genetic ${(w.genetic * 100).toFixed(0)}% · Expression ${(w.expression * 100).toFixed(0)}% · Target ${(w.target * 100).toFixed(0)}% · Velocity ${(w.velocity * 100).toFixed(0)}%. Rescored ${updated.length} genes.`;
+        }
+        case 'apply_filter': {
+          // Singular — fired by the green filter-suggestion buttons ({label, scoreType, threshold, operator:'gt'|'lt'}).
+          const op = args.operator === 'lt' ? '<' : args.operator === 'gt' ? '>' : (args.operator || '>');
+          const cond: any = { field: args.scoreType || args.field, operator: op, value: args.threshold ?? args.value };
+          setResearchState(prev => ({ ...prev, filters: [...prev.filters, cond] }));
+          return `Applied filter: ${args.label || cond.field} (${cond.field} ${op} ${cond.value}).`;
+        }
+        // ── Oracle Dashboard (DashboardView) control — switch to it, then send a command ──
+        case 'dashboard_search': {
+          setViewMode('dashboard'); setDashboardCmd({ q: String(args.query || '') });
+          return `Filtered the dashboard to genes matching "${args.query}".`;
+        }
+        case 'dashboard_filter': {
+          const chips = Array.isArray(args.chips) ? (args.chips as any[]) : undefined;
+          setViewMode('dashboard'); setDashboardCmd({ chips: chips as any, toggleChip: args.toggle as any, reset: !!args.reset });
+          return `Dashboard filter updated${chips ? `: ${chips.join(', ')}` : args.toggle ? `: ${args.toggle}` : args.reset ? ' (cleared)' : ''}.`;
+        }
+        case 'dashboard_sort': {
+          setViewMode('dashboard'); setDashboardCmd({ sortKey: args.column as any, sortDir: args.direction as any });
+          return `Sorted the dashboard by ${args.column}${args.direction ? ` (${args.direction})` : ''}.`;
+        }
+        case 'dashboard_open_gene': {
+          setViewMode('dashboard'); setDashboardCmd({ openGene: String(args.symbol || '').toUpperCase() });
+          return `Opened **${args.symbol}** in the dashboard.`;
+        }
         default: return "Acknowledged.";
       }
     } catch (err) { return "Operation error."; } finally { setLoading(false); }
-  }, [researchState.activeDisease, researchState.currentPage, researchState.targets]);
+  }, [researchState.activeDisease, researchState.currentPage, researchState.targets, researchState.weights, researchState.filters]);
 
   const handleTerminalCommand = (input: string): string | null => {
     const cmd = input.toLowerCase().trim();
@@ -5385,8 +5429,8 @@ CRITICAL RULES:
     return null;
   };
 
-  const handleChat = async (e: React.FormEvent) => {
-    e.preventDefault(); if (!chatInput.trim() || isChatting) return;
+  const handleChat = async (e?: React.FormEvent) => {
+    e?.preventDefault(); if (!chatInput.trim() || isChatting) return;
     
     const terminalResponse = handleTerminalCommand(chatInput);
     if (terminalResponse) {
@@ -5428,7 +5472,13 @@ CRITICAL RULES:
         { name: 'search_diseases', parameters: { type: Type.OBJECT, properties: { query: { type: Type.STRING } }, required: ['query'] } },
         { name: 'get_genes', parameters: { type: Type.OBJECT, properties: { id: { type: Type.STRING }, name: { type: Type.STRING } }, required: ['id', 'name'] } },
         { name: 'load_more', parameters: { type: Type.OBJECT, properties: {}, required: [] } },
-        { name: 'update_view', parameters: { type: Type.OBJECT, properties: { mode: { type: Type.STRING, enum: ['dashboard', 'list', 'funnel', 'rankings', 'enrichment', 'raw', 'pubtator'] } }, required: ['mode'] } },
+        { name: 'update_view', parameters: { type: Type.OBJECT, properties: { mode: { type: Type.STRING, enum: ['dashboard', 'list', 'funnel', 'rankings', 'graph', 'enrichment', 'raw', 'pubtator'] } }, required: ['mode'] } },
+        { name: 'focus_gene', parameters: { type: Type.OBJECT, properties: { symbol: { type: Type.STRING } }, required: ['symbol'] } },
+        { name: 'set_weights', parameters: { type: Type.OBJECT, properties: { genetic: { type: Type.NUMBER }, expression: { type: Type.NUMBER }, target: { type: Type.NUMBER }, velocity: { type: Type.NUMBER } } } },
+        { name: 'dashboard_search', parameters: { type: Type.OBJECT, properties: { query: { type: Type.STRING } }, required: ['query'] } },
+        { name: 'dashboard_filter', parameters: { type: Type.OBJECT, properties: { chips: { type: Type.ARRAY, items: { type: Type.STRING, enum: ['novel_tractable', 'in_trials', 'no_precedent', 'has_drugs', 'complete', 'tissue_restricted', 'not_common_essential', 'antibody_reachable', 'trial_stopped', 'legacy_only'] } }, toggle: { type: Type.STRING, enum: ['novel_tractable', 'in_trials', 'no_precedent', 'has_drugs', 'complete', 'tissue_restricted', 'not_common_essential', 'antibody_reachable', 'trial_stopped', 'legacy_only'] }, reset: { type: Type.BOOLEAN } } } },
+        { name: 'dashboard_sort', parameters: { type: Type.OBJECT, properties: { column: { type: Type.STRING, enum: ['rank', 'score', 'n_drugs', 'tractable_modalities', 'n_disease_trials', 'n_publications', 'velocity', 'completeness', 'tissue_tau', 'n_patents', 'winner_score'] }, direction: { type: Type.STRING, enum: ['asc', 'desc'] } }, required: ['column'] } },
+        { name: 'dashboard_open_gene', parameters: { type: Type.OBJECT, properties: { symbol: { type: Type.STRING } }, required: ['symbol'] } },
         { name: 'get_target_list', parameters: { type: Type.OBJECT, properties: { limit: { type: Type.NUMBER } } } },
         { name: 'get_active_filters', parameters: { type: Type.OBJECT, properties: {} } },
         { name: 'apply_filters', parameters: { type: Type.OBJECT, properties: { conditions: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { field: { type: Type.STRING }, operator: { type: Type.STRING, enum: ['>', '<', '>=', '<=', '=', '!=', 'between', 'contains', 'not_contains'] }, value: { type: Type.NUMBER }, value2: { type: Type.NUMBER }, boolValue: { type: Type.BOOLEAN }, stringValue: { type: Type.STRING } }, required: ['field', 'operator'] } }, logic: { type: Type.STRING, enum: ['AND', 'OR'] } }, required: ['conditions'] } },
@@ -5492,6 +5542,18 @@ CRITICAL RULES:
       - Do not ask unnecessary clarification questions.
       - Always work in the context of the current Target List and its active filters.
 
+      Additional actions you can take (call the tool, don't just describe it):
+      - 'focus_gene' { symbol } — open a specific gene's detail view when the user asks to see/open/inspect one gene.
+      - 'set_weights' { genetic, expression, target, velocity } — change the GET scoring weights (0-1 each) and rescore. Use when the user says e.g. "weight genetics higher" or "prioritise expression".
+      - 'update_view' { mode } — switch the main view. 'graph' opens the interactive Knowledge Graph (genes, drugs, trials, PPI); 'rankings' the ranking dashboard; 'funnel' the prioritisation funnel; 'dashboard' the data-quality dashboard.
+      - When you name specific genes in an answer, list them plainly by symbol so they can be surfaced as clickable chips.
+
+      Driving the DASHBOARD (the Oracle data-quality explorer) — use these when the user's intent is about the dashboard, or to search/filter a large snapshot visually. They auto-switch to the dashboard:
+      - 'dashboard_search' { query } — type a gene symbol into the dashboard search box (substring match).
+      - 'dashboard_filter' { chips[] | toggle | reset } — apply the dashboard's evidence chips. Chip meanings: novel_tractable = druggable but no drug/trial yet; in_trials = has a disease trial; no_precedent = no disease trial; has_drugs = has a developed drug; complete = full evidence coverage; tissue_restricted = GTEx tau ≥ 0.6; not_common_essential = excludes pan-essential genes; antibody_reachable = surface/secreted; trial_stopped = a disease trial was halted; legacy_only = pre-fix rows. Pass chips[] to set the whole set, toggle to flip one, reset:true to clear.
+      - 'dashboard_sort' { column, direction } — sort the dashboard grid. Columns: rank, score, n_drugs, tractable_modalities, n_disease_trials, n_publications, velocity, completeness, tissue_tau, n_patents, winner_score.
+      - 'dashboard_open_gene' { symbol } — open a gene's dossier panel in the dashboard.
+
       DASHBOARD REFERENCE — the meaning of every dashboard term, column, abbreviation, range, formula and data source:
       When the user asks what a term/column/metric/abbreviation means, or asks for its RANGE, FORMULA, DATA SOURCE, or evidence level, answer ONLY from this reference. Quote the range and formula verbatim when present, and always name the exact source. If a value has a caveat, include it. Never invent a range, formula or source; if a term is not in this reference, say so plainly rather than guessing. These are explanatory questions — answer them directly in prose, no tool call needed.
 ${glossaryPromptBlock()}`;
@@ -5548,10 +5610,42 @@ ${glossaryPromptBlock()}`;
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setMessages(prev => [...prev, { role: 'assistant', content: `Error: ${msg}`, timestamp: new Date() }]);
-    } finally { 
-      setIsChatting(false); 
+    } finally {
+      setIsChatting(false);
     }
   };
+
+  // ── Co-pilot: send a suggestion chip as if the user typed it ──
+  // (setChatInput then flag; an effect fires handleChat once state has updated.)
+  const [pendingAutoSend, setPendingAutoSend] = useState<string | null>(null);
+  useEffect(() => {
+    if (pendingAutoSend !== null && chatInput === pendingAutoSend && !isChatting) { setPendingAutoSend(null); handleChat(); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingAutoSend, chatInput, isChatting]);
+  const runSuggestion = (text: string) => { if (isChatting) return; setIsLeftSidebarOpen(true); setChatInput(text); setPendingAutoSend(text); };
+
+  // Contextual "what to ask" chips — adapt to disease loaded / focused gene / current view.
+  const chatSuggestions = useMemo<string[]>(() => {
+    const dz = researchState.activeDisease?.name;
+    if (!dz || researchState.targets.length === 0) return ['What diseases are available?', 'Load pancreatic cancer', 'What can you do?'];
+    if (researchState.focusSymbol) {
+      const g = researchState.focusSymbol;
+      return [`Explain ${g}'s evidence`, `Is ${g} druggable?`, `Open ${g} in the knowledge graph`, 'Back to the full target list'];
+    }
+    if (viewMode === 'graph') return ['Filter to druggable targets', 'Show the top 10 targets', 'Open the ranking dashboard'];
+    return ['Show the top 10 by GET score', 'Filter to genetic score > 0.5', 'Weight genetics higher and rescore', 'Open the knowledge graph', '/research best novel targets with no drug yet'];
+  }, [researchState.activeDisease, researchState.focusSymbol, researchState.targets.length, viewMode]);
+
+  // Clickable gene chips: surface any LOADED target symbols named in an assistant message.
+  const loadedSymbolSet = useMemo(() => new Set(researchState.targets.map(t => t.symbol)), [researchState.targets]);
+  const extractGeneChips = useCallback((content: string): string[] => {
+    if (!content || loadedSymbolSet.size === 0) return [];
+    const out: string[] = []; const seen = new Set<string>();
+    for (const tok of content.match(/\b[A-Z][A-Z0-9]{1,9}\b/g) || []) {
+      if (loadedSymbolSet.has(tok) && !seen.has(tok)) { seen.add(tok); out.push(tok); if (out.length >= 8) break; }
+    }
+    return out;
+  }, [loadedSymbolSet]);
 
   // While Supabase is checking the existing session, show a neutral loader
   if (authLoading) return (
@@ -5628,6 +5722,19 @@ ${glossaryPromptBlock()}`;
                     <div className="markdown-body prose prose-sm prose-neutral dark:prose-invert max-w-none text-slate-950 dark:text-neutral-200">
                       <Markdown>{m.content}</Markdown>
                     </div>
+                    {m.role === 'assistant' && !m.toolCall && (() => {
+                      const chips = extractGeneChips(m.content);
+                      return chips.length ? (
+                        <div className="mt-2.5 flex flex-wrap gap-1.5">
+                          {chips.map(g => (
+                            <button key={g} onClick={() => handleToolExecution('focus_gene', { symbol: g })} title={`Open ${g}`}
+                              className={`px-2 py-0.5 rounded-md text-[11px] font-bold border transition-all ${theme === 'dark' ? 'bg-blue-500/10 border-blue-500/30 text-blue-300 hover:bg-blue-600 hover:text-white' : 'bg-blue-50 border-blue-200 text-blue-700 hover:bg-blue-600 hover:text-white'}`}>
+                              {g}
+                            </button>
+                          ))}
+                        </div>
+                      ) : null;
+                    })()}
                     {m.options && (
                       <div className="mt-3 space-y-2">
                         {m.options.map(o => (
@@ -5657,6 +5764,17 @@ ${glossaryPromptBlock()}`;
               {isChatting && (<div className="flex items-center gap-2 text-blue-600 px-2"><Loader2 className="w-3.5 h-3.5 animate-spin" /><span className="text-[10px] font-bold uppercase tracking-widest">Synthesizing...</span></div>)}
            </div>
            <form onSubmit={handleChat} className={`p-4 border-t ${theme === 'dark' ? 'bg-[#0b111c] border-slate-800' : 'bg-white border-slate-200'}`}>
+             {chatSuggestions.length > 0 && !isChatting && (
+               <div className="flex items-center gap-1.5 mb-2.5 overflow-x-auto custom-scrollbar-x pb-1">
+                 <span className={`text-[9px] font-black uppercase tracking-widest shrink-0 ${theme === 'dark' ? 'text-slate-500' : 'text-slate-400'}`}>Try</span>
+                 {chatSuggestions.map((s, idx) => (
+                   <button key={idx} type="button" onClick={() => runSuggestion(s)} title={s}
+                     className={`shrink-0 px-2.5 py-1 rounded-full text-[11px] font-semibold border transition-all whitespace-nowrap ${theme === 'dark' ? 'bg-slate-800/60 border-slate-700 text-slate-300 hover:bg-blue-600 hover:border-blue-600 hover:text-white' : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-blue-600 hover:border-blue-600 hover:text-white'}`}>
+                     {s.length > 34 ? s.slice(0, 33) + '…' : s}
+                   </button>
+                 ))}
+               </div>
+             )}
              <div className="relative flex gap-2">
                <input 
                  type="file" 
@@ -5809,7 +5927,7 @@ ${glossaryPromptBlock()}`;
                   )}
                   {viewMode === 'dashboard' && (
                     <div className="h-full overflow-hidden">
-                      <DashboardView theme={theme} />
+                      <DashboardView theme={theme} command={dashboardCmd} />
                     </div>
                   )}
                   {viewMode === 'funnel' && (

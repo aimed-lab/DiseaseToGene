@@ -18,7 +18,19 @@ import { fetchSnapshots, authenticatedFetch, type RankingSnapshotMeta } from './
 //   3. DOSSIER + COMPARE   a UniProt-style entry for one gene, or up to 4 pinned genes
 //      side by side on the headline numbers.
 
-interface Props { theme?: 'dark' | 'light' }
+// A chat-driven command applied to this dashboard (search / filter / sort / open a gene).
+// The parent passes a NEW object each time so the effect re-fires even for identical asks.
+export interface DashboardCommand {
+  q?: string;
+  chips?: Chip[];           // replace the whole chip set
+  toggleChip?: Chip;        // flip one chip
+  sortKey?: SortKey;
+  sortDir?: 'asc' | 'desc';
+  openGene?: string;
+  snapshotId?: number;
+  reset?: boolean;
+}
+interface Props { theme?: 'dark' | 'light'; command?: DashboardCommand | null }
 
 type Axis = { axis: string; genes: number; pct: number };
 type Overview = {
@@ -112,7 +124,7 @@ const CHIPS: { id: Chip; label: string; title: string }[] = [
   { id: 'legacy_only', label: 'Legacy rows', title: 'Evidence written before the 2026-07 fixes — counts are not comparable. Re-enrich.' },
 ];
 
-export const DashboardView: React.FC<Props> = ({ theme = 'light' }) => {
+export const DashboardView: React.FC<Props> = ({ theme = 'light', command = null }) => {
   const isDark = theme === 'dark';
   const [snapshots, setSnapshots] = useState<RankingSnapshotMeta[]>([]);
   const [snapId, setSnapId] = useState('');
@@ -205,6 +217,19 @@ export const DashboardView: React.FC<Props> = ({ theme = 'light' }) => {
       .catch(e => { setErr(String(e?.message || e)); setDosLoading(false); });
   };
   const togglePin = (g: string) => setPinned(p => p.includes(g) ? p.filter(x => x !== g) : (p.length >= 4 ? p : [...p, g]));
+
+  // ── Apply a chat-driven command (from the co-pilot's dashboard_* tools) ──
+  useEffect(() => {
+    if (!command) return;
+    if (command.reset) { setQ(''); setChips(new Set()); setAxisFilter(null); setSort({ key: 'rank', dir: 'asc' }); }
+    if (command.snapshotId != null) setSnapId(String(command.snapshotId));
+    if (command.q != null) setQ(command.q);
+    if (command.chips) setChips(new Set(command.chips));
+    if (command.toggleChip) toggleChip(command.toggleChip);
+    if (command.sortKey) setSort({ key: command.sortKey, dir: command.sortDir || (command.sortKey === 'rank' ? 'asc' : 'desc') });
+    if (command.openGene) openDossier(command.openGene);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [command]);
 
   const exportCsv = () => {
     const head = ['gene_symbol', 'rank', 'score', 'target_class', 'is_common_essential', 'surface_or_secreted', 'tissue_tau', 'n_drugs', 'tractable_modalities', 'n_disease_trials', 'phase1', 'phase2', 'phase3', 'max_disease_phase', 'n_stopped_trials', 'n_publications', 'velocity', 'n_patents', 'winner_score', 'rwr_score', 'is_seed', 'completeness', 'legacy'];
