@@ -30,6 +30,7 @@ import {
   ArrowRight,
   Share2,
   Network,
+  Trophy,
   Sun,
   Moon,
   BarChart3,
@@ -104,6 +105,7 @@ import FunnelView from './FunnelView';
 import RankingsView from './RankingsView';
 import DashboardView, { type DashboardCommand } from './DashboardView';
 import KnowledgeGraphView from './KnowledgeGraphView';
+import RankingBoardView from './RankingBoardView';
 import { glossaryPromptBlock } from './dashboardGlossary';
 import JobsView from './JobsView';
 import { getCbioMutations } from './cbioportalService';
@@ -764,7 +766,7 @@ const TabNavigation = ({
   const btnCls = (active: boolean) => `h-9 px-3 xl:px-4 rounded-md text-[11px] font-semibold transition-all flex items-center gap-2 whitespace-nowrap ${active ? (isDark ? 'bg-slate-800 text-white' : 'bg-slate-950 text-white') : (isDark ? 'text-slate-300 hover:text-white hover:bg-slate-800' : 'text-slate-900 hover:text-slate-950 hover:bg-slate-100')}`;
   const iconCls = (active: boolean) => `w-3.5 h-3.5 ${active ? 'text-white' : (isDark ? 'text-slate-400' : 'text-slate-700')}`;
 
-  const primary  = [ {id:'dashboard',i:LayoutDashboard,l:'Dashboard'}, {id:'list',i:List,l:'Targets'}, {id:'funnel',i:Filter,l:'Funnel'}, {id:'rankings',i:Layers,l:'Rankings'}, {id:'graph',i:Network,l:'Graph'} ];
+  const primary  = [ {id:'board',i:Trophy,l:'Board'}, {id:'dashboard',i:LayoutDashboard,l:'Dashboard'}, {id:'list',i:List,l:'Targets'}, {id:'funnel',i:Filter,l:'Funnel'}, {id:'rankings',i:Layers,l:'Rankings'}, {id:'graph',i:Network,l:'Graph'} ];
   const trailing = [ {id:'enrichment',i:BarChart3,l:'Enrichment'}, {id:'jobs',i:Cpu,l:'Jobs'} ];
   const flatBtn = (t: { id: string; i: any; l: string }) => {
     const active = viewMode === t.id;
@@ -5472,7 +5474,7 @@ CRITICAL RULES:
         { name: 'search_diseases', parameters: { type: Type.OBJECT, properties: { query: { type: Type.STRING } }, required: ['query'] } },
         { name: 'get_genes', parameters: { type: Type.OBJECT, properties: { id: { type: Type.STRING }, name: { type: Type.STRING } }, required: ['id', 'name'] } },
         { name: 'load_more', parameters: { type: Type.OBJECT, properties: {}, required: [] } },
-        { name: 'update_view', parameters: { type: Type.OBJECT, properties: { mode: { type: Type.STRING, enum: ['dashboard', 'list', 'funnel', 'rankings', 'graph', 'enrichment', 'raw', 'pubtator'] } }, required: ['mode'] } },
+        { name: 'update_view', parameters: { type: Type.OBJECT, properties: { mode: { type: Type.STRING, enum: ['board', 'dashboard', 'list', 'funnel', 'rankings', 'graph', 'enrichment', 'raw', 'pubtator'] } }, required: ['mode'] } },
         { name: 'focus_gene', parameters: { type: Type.OBJECT, properties: { symbol: { type: Type.STRING } }, required: ['symbol'] } },
         { name: 'set_weights', parameters: { type: Type.OBJECT, properties: { genetic: { type: Type.NUMBER }, expression: { type: Type.NUMBER }, target: { type: Type.NUMBER }, velocity: { type: Type.NUMBER } } } },
         { name: 'dashboard_search', parameters: { type: Type.OBJECT, properties: { query: { type: Type.STRING } }, required: ['query'] } },
@@ -5545,7 +5547,7 @@ CRITICAL RULES:
       Additional actions you can take (call the tool, don't just describe it):
       - 'focus_gene' { symbol } — open a specific gene's detail view when the user asks to see/open/inspect one gene.
       - 'set_weights' { genetic, expression, target, velocity } — change the GET scoring weights (0-1 each) and rescore. Use when the user says e.g. "weight genetics higher" or "prioritise expression".
-      - 'update_view' { mode } — switch the main view. 'graph' opens the interactive Knowledge Graph (genes, drugs, trials, PPI); 'rankings' the ranking dashboard; 'funnel' the prioritisation funnel; 'dashboard' the data-quality dashboard.
+      - 'update_view' { mode } — switch the main view. 'board' opens the Target Ranking Board (US-News-style: targets ranked by a weighted sum of 8 criteria, with a MODALITY selector that re-weights and reshuffles — use this when the user asks "is X the best target", "rank targets", or picks a modality like antibody/siRNA); 'graph' the Knowledge Graph; 'rankings' the ranking dashboard; 'funnel' the prioritisation funnel; 'dashboard' the data-quality dashboard.
       - When you name specific genes in an answer, list them plainly by symbol so they can be surfaced as clickable chips.
 
       Driving the DASHBOARD (the Oracle data-quality explorer) — use these when the user's intent is about the dashboard, or to search/filter a large snapshot visually. They auto-switch to the dashboard:
@@ -5891,7 +5893,7 @@ ${glossaryPromptBlock()}`;
                     onShowScoreInfo={setActiveScoreInfo}
                   />
                 </div>
-              ) : researchState.targets.length === 0 && !['dashboard', 'raw', 'paper', 'pubtator', 'funnel', 'rankings', 'jobs', 'graph'].includes(viewMode) ? (<div className="h-full flex flex-col items-center justify-center p-20 text-center animate-in zoom-in duration-500"><Search className="w-16 h-16 text-blue-500 mb-8 opacity-30" /><h2 className={`text-xl font-bold mb-2 tracking-tight ${theme === 'dark' ? 'text-neutral-200' : 'text-slate-950'}`}>System Ready for Research Focus</h2><p className={`text-sm max-w-sm leading-relaxed ${theme === 'dark' ? 'text-neutral-500' : 'text-slate-700'}`}>Search for a therapeutic area or disease in the terminal to begin multi-modal target discovery.</p></div>) : (viewMode === 'raw') && !activeCancerType ? (<div className="h-full flex flex-col items-center justify-center p-12 text-center"><div className="p-5 rounded-full bg-blue-50 dark:bg-blue-900/20 mb-6"><AlertCircle className="w-12 h-12 text-blue-600" /></div><h3 className="text-xl font-bold mb-2 text-neutral-800 dark:text-neutral-200">Optimized Context Required</h3><p className="text-sm max-w-md text-neutral-600 dark:text-neutral-500 leading-relaxed">Cohort analytics are currently specifically tuned for high-resolution TCGA (e.g. BRCA, KIRC, BLCA) studies.</p></div>) : (
+              ) : researchState.targets.length === 0 && !['dashboard', 'raw', 'paper', 'pubtator', 'funnel', 'rankings', 'jobs', 'graph', 'board'].includes(viewMode) ? (<div className="h-full flex flex-col items-center justify-center p-20 text-center animate-in zoom-in duration-500"><Search className="w-16 h-16 text-blue-500 mb-8 opacity-30" /><h2 className={`text-xl font-bold mb-2 tracking-tight ${theme === 'dark' ? 'text-neutral-200' : 'text-slate-950'}`}>System Ready for Research Focus</h2><p className={`text-sm max-w-sm leading-relaxed ${theme === 'dark' ? 'text-neutral-500' : 'text-slate-700'}`}>Search for a therapeutic area or disease in the terminal to begin multi-modal target discovery.</p></div>) : (viewMode === 'raw') && !activeCancerType ? (<div className="h-full flex flex-col items-center justify-center p-12 text-center"><div className="p-5 rounded-full bg-blue-50 dark:bg-blue-900/20 mb-6"><AlertCircle className="w-12 h-12 text-blue-600" /></div><h3 className="text-xl font-bold mb-2 text-neutral-800 dark:text-neutral-200">Optimized Context Required</h3><p className="text-sm max-w-md text-neutral-600 dark:text-neutral-500 leading-relaxed">Cohort analytics are currently specifically tuned for high-resolution TCGA (e.g. BRCA, KIRC, BLCA) studies.</p></div>) : (
                 <div className={`h-full rounded-2xl border overflow-hidden shadow-xl shadow-slate-950/5 ${theme === 'dark' ? 'bg-[#0b111c]/95 border-slate-800/80' : 'bg-white/95 border-slate-200'}`}>
                   {viewMode === 'pubtator' && (
                     <PubTatorView
@@ -5951,6 +5953,11 @@ ${glossaryPromptBlock()}`;
                   {viewMode === 'graph' && (
                     <div className="h-full overflow-hidden">
                       <KnowledgeGraphView theme={theme} diseaseName={researchState.activeDisease?.name} />
+                    </div>
+                  )}
+                  {viewMode === 'board' && (
+                    <div className="h-full overflow-hidden">
+                      <RankingBoardView theme={theme} diseaseName={researchState.activeDisease?.name} />
                     </div>
                   )}
                   {viewMode === 'list' && (

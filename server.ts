@@ -615,6 +615,7 @@ function setupRoutes() {
           const ev = evByGene[g] || {};
           const drug = ev.druggability, clin = ev.clinical, lit = ev.literature_epmc;
           const ann = ev.annotation, tis = ev.tissue, pat = ev.patents, net = ev.network;
+          const mut = ev.mutation, expr = ev.expression_tvn, prot = ev.proteomics, dep = ev.dependency, saf = ev.safety;
           const drugLegacy = !!drug && drug.proven_modalities === undefined;
           const clinLegacy = !!clin && clin.n_drugs_in_disease_trials === undefined;
           const axesPresent = ['mutation', 'expression_tvn', 'dependency', 'safety', 'tissue', 'annotation', 'druggability', 'clinical', 'literature_epmc']
@@ -638,6 +639,18 @@ function setupRoutes() {
             winner_score: net?.winner_score ?? null,
             rwr_score: net?.rwr_score ?? null,
             is_seed: net?.is_seed ?? null,
+            // ── raw per-criterion signals for the Ranking Board (weighted-sum-of-8) ──
+            genetic_score: r.genetic_score ?? null,
+            mutation_freq: mut?.frequency ?? null,
+            expr_log2fc: expr?.log2fc ?? null,
+            expr_low_conf: expr?.low_confidence ?? false,   // normal-floor artifact (inflated |log2FC|)
+            prot_log2fc: prot?.log2fc ?? null,
+            chronos: dep?.mean ?? null,
+            loeuf: saf?.loeuf ?? null,
+            druggability_score: drug?.score ?? null,
+            proven_modalities: drug?.proven_modalities ?? null,
+            tractability: drug?.tractability ?? null,
+            n_safety_liabilities: ann?.n_safety_liabilities ?? null,
             completeness: axesPresent / 9,
             legacy: drugLegacy || clinLegacy,
           };
@@ -979,6 +992,23 @@ function setupRoutes() {
       const [{ nodes, edges }, stats] = await Promise.all([svc.kgGraph(Number(snap.id)), svc.kgStats(Number(snap.id))]);
       res.json({ snapshot_id: snap.id, disease_name: snap.disease_name, disease_id: snap.disease_id, stats, nodes, edges });
     } catch (e: any) { res.status(502).json({ error: e?.message || 'kg fetch failed' }); }
+  });
+  // Live STRING network neighbours for ONE gene — powers the Ranking Board's "better
+  // neighbours" recommender (the RWR/Amazon "you may also like"). One STRING call, no store.
+  app.get("/api/graph/neighbors", async (req, res) => {
+    const gene = String(req.query.gene || '').toUpperCase().trim();
+    if (!gene) return res.status(400).json({ error: "gene required" });
+    try {
+      const minScore = Number(process.env.STRING_MIN_SCORE) || 400;
+      const url = `https://string-db.org/api/json/interaction_partners?identifiers=${encodeURIComponent(gene)}&species=9606&required_score=${minScore}&limit=60&caller_identity=diseasetotarget_app`;
+      const r = await fetch(url);
+      if (!r.ok) return res.json({ gene, neighbors: [] });
+      const rows: any[] = await r.json().catch(() => []);
+      const neighbors = (Array.isArray(rows) ? rows : [])
+        .map(x => ({ symbol: String(x.preferredName_B || '').toUpperCase(), score: Number(x.score) || 0 }))
+        .filter(n => n.symbol && n.symbol !== gene);
+      res.json({ gene, neighbors });
+    } catch (e: any) { res.status(502).json({ error: e?.message || 'neighbors fetch failed' }); }
   });
   // Proteomics axis — CPTAC tumor-vs-normal protein log2FC. Disease-aware reference file
   // (built like expression: build_proteomics.py <cohort> → data/proteomics_<cohort>.json).
