@@ -29,6 +29,8 @@ import * as fs from 'node:fs';
 import { WEIGHTS, DEFAULT_ELIGIBILITY, type ScoreWeights, type EligibilityConfig } from '../funnelEngine.ts';
 import { evaluate, ablation, crossValidatedFit, negativeControl, AXES, type AxisKey } from './benchmark.ts';
 import { buildUniverse, axisCoverage, type ScoreRow, type EvidenceRow } from './adapter.ts';
+import { buildBoardRows } from './boardAdapter.ts';
+import { evaluateBoard } from './board.ts';
 import { fetchKnownDrugTargets, resolveDiseaseId, loadGoldFromFile } from './goldset.ts';
 import { formatReport } from './report.ts';
 
@@ -105,6 +107,23 @@ async function cmdRun(source: SnapshotData) {
     console.log(`Gold set: ${goldSymbols.size} known drug targets (${kd.knownDrugRows} known-drug rows).`);
   }
   if (goldSymbols.size === 0) { console.error('Gold set is empty — cannot grade. Check the disease id or provide --gold.'); process.exit(2); }
+
+  // ── BOARD MODE (--board): grade rankingBoard.buildBoard per modality, same gold set + metrics.
+  if (flag('--board')) {
+    const rows = buildBoardRows(scores, evidence);
+    const goldInRows = rows.reduce((a, r) => a + (goldSymbols.has(String(r.gene_symbol).toUpperCase()) ? 1 : 0), 0);
+    const res = evaluateBoard(rows, goldSymbols, { leaky: true });
+    console.log(`\n═══ TARGET RANKING BOARD — target-recovery grade ═══`);
+    console.log(`Disease: ${goldName} · gold set ${goldSymbols.size} (${goldInRows} present in ${rows.length} genes)`);
+    console.log(`Headline holds out: ${res.holdout.join(', ')} (leakage guard — tractability ≈ the "known drug" label)\n`);
+    console.log(`  modality          ROC-AUC   AvgPrec   EF@5%   EF@1%`);
+    for (const r of res.rows) console.log(`  ${r.modality.padEnd(16)}  ${r.auc.toFixed(3)}     ${r.ap.toFixed(3)}     ${r.ef5.toFixed(2)}    ${r.ef1.toFixed(2)}`);
+    if (res.leaky) { console.log(`\n  (leaky upper bound, tractability IN — do NOT quote as the grade)`); for (const r of res.leaky) console.log(`  ${r.modality.padEnd(16)}  ${r.auc.toFixed(3)}     ${r.ap.toFixed(3)}     ${r.ef5.toFixed(2)}    ${r.ef1.toFixed(2)}`); }
+    console.log(`\n  0.5 = random · higher = the Board concentrates known targets near the top.`);
+    const outPath = opt('--out');
+    if (outPath) { fs.writeFileSync(outPath, JSON.stringify({ meta, goldName, goldSize: goldSymbols.size, goldInRows, board: res }, null, 2)); console.log(`\nWrote → ${outPath}`); }
+    return;
+  }
 
   // 2) UNIVERSE — real engine input, reproducing the app's read contract.
   const u = buildUniverse(scores, evidence, goldSymbols);

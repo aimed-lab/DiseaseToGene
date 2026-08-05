@@ -28,6 +28,14 @@ value is printed only as a **leaky upper bound** — never quote it as the resul
 npx tsx --env-file=.env benchmark/run.ts 84
 ```
 
+**Grade the Target Ranking Board** instead of the funnel (`--board`) — same gold set +
+metrics, per modality, tractability held out. This is the number to quote for the Board:
+```
+npx tsx --env-file=.env benchmark/run.ts 102 --board --disease "pancreatic cancer"
+```
+(Board reads its rows via `boardAdapter.ts` → `rankingBoard.buildBoard`, so it grades the
+engine the Board actually runs. #102 small-molecule headline: ROC-AUC ≈ 0.82, tractability held out.)
+
 **Off VPN** (export once on VPN, then grade anywhere — no Oracle needed):
 ```
 npx tsx --env-file=.env benchmark/run.ts export 84 snapshot84.json   # on VPN
