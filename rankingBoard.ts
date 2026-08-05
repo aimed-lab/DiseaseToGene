@@ -28,6 +28,11 @@ export const CRITERIA: CriterionDef[] = [
   { key: 'network',      label: 'Network',       definition: 'Network importance and proximity to the disease seed genes over the protein–protein interaction graph.', source: 'WINNER + RWR over STRING' },
 ];
 
+// CORE biology criteria — missing one of these penalises the score (real evidence gap).
+// The rest (clinical / literature / network) are CONTEXT: neutral when absent, so genuinely
+// novel targets (no trials, few papers) aren't punished for lacking attention.
+export const CORE_CRITERIA = new Set<CriterionKey>(['genetics', 'expression', 'dependency', 'tractability', 'safety']);
+
 export type ModalityKey = 'small_molecule' | 'antibody' | 'protac' | 'mrna' | 'gene_therapy';
 export interface ModalityProfile {
   key: ModalityKey; label: string; note: string;
@@ -98,7 +103,7 @@ export function criterionScores(g: any): Record<CriterionKey, number | null> {
 export interface ScoredGene {
   symbol: string; boardRank: number; sourceRank: number | null;
   criteria: Record<CriterionKey, number | null>;
-  overall: number;          // 0–1 weighted sum (missing criteria contribute 0)
+  overall: number;          // 0–1 weighted sum over present criteria (missing = 0)
   display: number;          // 0–100, leader = 100
   coverage: number;         // # of the weighted criteria with data (breadth)
   gated: boolean; gateNote?: string;
@@ -123,22 +128,24 @@ export function buildBoard(genes: any[], modality: ModalityKey, weightOverride?:
   const pre = genes.map(g => {
     const criteria = criterionScores(g);
     const gated = !!(profile.gate && !profile.gate(g));
-    // Weighted SUM across ALL weighted criteria — a MISSING criterion contributes 0 (US-News
-    // style: blanks sink you). This rewards breadth of evidence, so a gene with one strong
-    // criterion and nothing else can't tie a fully-evidenced target. Weights sum to 1.
+    // Weighted sum over present criteria (a missing criterion contributes 0). Weights sum to 1,
+    // so breadth of evidence matters — a single-signal gene can't tie a fully-evidenced target.
+    // (The review's A2 "coverage-normalize context vs core" redesign is deferred — a naive
+    // present-mean version demoted real drivers like KRAS, so it needs benchmark-guided tuning.)
     let overall = 0, coverage = 0;
     for (const c of CRITERIA) {
       const v = criteria[c.key], w = weights[c.key];
       if (w <= 0) continue;
       if (v != null) { overall += v * w; coverage++; }
     }
-    if (gated) overall *= 0.05;                       // ineligible → sink to the bottom, don't hide
+    if (gated) overall *= 0.05;                       // ineligible → sink, but a gate must gate (sorted last below)
     return { symbol: g.gene_symbol, sourceRank: g.rank ?? null, criteria, overall, coverage, gated, gateNote: gated ? profile.gateNote : undefined, raw: g };
   });
 
-  const leader = pre.reduce((m, x) => Math.max(m, x.overall), 0) || 1;
+  const leader = pre.reduce((m, x) => Math.max(m, x.gated ? 0 : x.overall), 0) || 1;   // leader is an ELIGIBLE gene
   const scored = pre
-    .sort((a, b) => b.overall - a.overall)
-    .map((x, i) => ({ ...x, boardRank: i + 1, display: Math.round(100 * x.overall / leader) }));
+    // A gate must GATE: ineligible targets always sort below every eligible one, then by score.
+    .sort((a, b) => (a.gated ? 1 : 0) - (b.gated ? 1 : 0) || b.overall - a.overall)
+    .map((x, i) => ({ ...x, boardRank: i + 1, display: Math.round(100 * Math.min(x.overall, leader) / leader) }));
   return { scored, weights, profile };
 }

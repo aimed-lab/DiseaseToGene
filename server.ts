@@ -646,6 +646,7 @@ function setupRoutes() {
             expr_low_conf: expr?.low_confidence ?? false,   // normal-floor artifact (inflated |log2FC|)
             prot_log2fc: prot?.log2fc ?? null,
             chronos: dep?.mean ?? null,
+            frac_dependent: dep?.frac_dependent ?? null,
             loeuf: saf?.loeuf ?? null,
             druggability_score: drug?.score ?? null,
             proven_modalities: drug?.proven_modalities ?? null,
