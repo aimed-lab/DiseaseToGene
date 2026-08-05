@@ -5812,16 +5812,20 @@ ${glossaryPromptBlock()}`;
         <CohortFilterSidebar theme={theme} targets={researchState.targets} activeDisease={researchState.activeDisease} onScoreRangesChange={setScoreRangeFilter} onRankRangesChange={setRankRangeFilter} visibleCols={visibleColumns} onVisibleColsChange={setVisibleColumns} visibleBioTissues={visibleBioTissues} onVisibleBioTissuesChange={setVisibleBioTissues} currentUser={currentUser} globalWeights={globalWeights} onWeightsSave={handleWeightsSave} onAssessRun={handleAssessRun} activeNav={sidebarNav} onActiveNavChange={setSidebarNav} />
         {!isLeftSidebarOpen && (<button onClick={() => setIsLeftSidebarOpen(true)} className="absolute right-4 bottom-4 z-20 p-2.5 rounded-full bg-blue-600 text-white shadow-xl hover:scale-110 transition-transform"><MessageSquare className="w-5 h-5" /></button>)}
         <section className="order-1 flex-1 flex flex-col overflow-hidden relative min-w-0">
-           <Breadcrumbs 
-             activeDisease={researchState.activeDisease} 
+           {/* Breadcrumbs are only useful for the gene/disease drill-down views; the full-page
+               views (Board, Graph, Dashboard, Rankings, Funnel, Jobs) have their own headers,
+               so the bar is hidden there to reclaim the space. */}
+           {!['board', 'graph', 'dashboard', 'rankings', 'funnel', 'jobs'].includes(viewMode) && (
+           <Breadcrumbs
+             activeDisease={researchState.activeDisease}
              focusSymbol={researchState.focusSymbol}
              focusSubPage={focusSubPage}
              theme={theme}
              onNavigate={(level) => {
                if (level === 'home') {
-                 setResearchState(p => ({ 
-                   ...p, 
-                   focusSymbol: null 
+                 setResearchState(p => ({
+                   ...p,
+                   focusSymbol: null
                  }));
                  setFocusSubPage('main');
                  setViewMode('list');
@@ -5833,6 +5837,7 @@ ${glossaryPromptBlock()}`;
                }
              }}
            />
+           )}
            <div className={`flex-1 overflow-hidden relative ${theme === 'dark' ? 'bg-transparent text-neutral-200' : 'bg-transparent text-neutral-900'}`}>
               {loading && (<div className="absolute inset-0 bg-neutral-900/40 backdrop-blur-[2px] z-50 flex flex-col items-center justify-center gap-4 rounded-xl"><Loader2 className="w-8 h-8 animate-spin text-blue-500" /><p className="text-[11px] font-bold uppercase text-white tracking-widest">{loadingMessage}</p></div>)}
               

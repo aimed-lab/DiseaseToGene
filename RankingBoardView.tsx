@@ -11,10 +11,6 @@ import { fetchSnapshots, authenticatedFetch, type RankingSnapshotMeta } from './
 import { CRITERIA, MODALITY_PROFILES, buildBoard, normaliseWeights, type CriterionKey, type ModalityKey, type ScoredGene } from './rankingBoard';
 import type { Theme } from './types';
 
-const CRIT_COLOR: Record<CriterionKey, string> = {
-  genetics: '#6366f1', expression: '#ec4899', dependency: '#f59e0b', tractability: '#22c55e',
-  safety: '#14b8a6', clinical: '#a855f7', literature: '#64748b', network: '#3b82f6',
-};
 const MODALITY_ORDER: ModalityKey[] = ['small_molecule', 'antibody', 'protac', 'mrna', 'gene_therapy'];
 
 async function getJson(url: string): Promise<any> {
@@ -28,6 +24,9 @@ async function getJson(url: string): Promise<any> {
 
 export default function RankingBoardView({ theme, diseaseName }: { theme: Theme; diseaseName?: string }) {
   const isDark = theme === 'dark';
+  // One calm accent for every criterion bar — the shade deepens with the score, so value
+  // still reads at a glance without an 8-colour rainbow.
+  const barBg = (v: number) => isDark ? `rgba(96,165,250,${(0.35 + 0.6 * v).toFixed(3)})` : `rgba(37,99,235,${(0.28 + 0.62 * v).toFixed(3)})`;
   const [snapshots, setSnapshots] = useState<RankingSnapshotMeta[]>([]);
   const [snapId, setSnapId] = useState('');
   const [genes, setGenes] = useState<any[]>([]);
@@ -42,6 +41,7 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
   const [pinned, setPinned] = useState<string | null>(null);
   const [neighborSet, setNeighborSet] = useState<Set<string>>(new Set());
   const [neighborsLoading, setNeighborsLoading] = useState(false);
+  const [liveConnectivity, setLiveConnectivity] = useState<number | null>(null);   // fallback network signal from the same neighbours call
 
   // ── load snapshots, then the disease's gene set ──
   useEffect(() => {
@@ -74,11 +74,19 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
 
   // ── RWR recommender: live STRING neighbours of the selected target ──
   useEffect(() => {
-    if (!selectedSym) { setNeighborSet(new Set()); return; }
+    if (!selectedSym) { setNeighborSet(new Set()); setLiveConnectivity(null); return; }
     let alive = true; setNeighborsLoading(true);
     getJson(`/api/graph/neighbors?gene=${encodeURIComponent(selectedSym)}`)
-      .then(j => { if (alive) { setNeighborSet(new Set((j.neighbors || []).map((n: any) => String(n.symbol).toUpperCase()))); setNeighborsLoading(false); } })
-      .catch(() => { if (alive) { setNeighborSet(new Set()); setNeighborsLoading(false); } });
+      .then(j => {
+        if (!alive) return;
+        const nbs = j.neighbors || [];
+        setNeighborSet(new Set(nbs.map((n: any) => String(n.symbol).toUpperCase())));
+        // fallback network signal: connectivity from the SAME call (no extra request) — a rough
+        // proxy for centrality for genes outside the top-2000 WINNER set. Not fed into the overall.
+        setLiveConnectivity(nbs.length ? Math.max(0, Math.min(1, nbs.length / 50)) : 0);
+        setNeighborsLoading(false);
+      })
+      .catch(() => { if (alive) { setNeighborSet(new Set()); setLiveConnectivity(null); setNeighborsLoading(false); } });
     return () => { alive = false; };
   }, [selectedSym]);
 
@@ -154,7 +162,7 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
           <div className={`grid grid-cols-2 md:grid-cols-4 gap-x-4 gap-y-2 p-3 rounded-lg border ${card}`}>
             {CRITERIA.map(c => (
               <div key={c.key} className="flex flex-col gap-0.5">
-                <div className="flex justify-between items-center text-[10px]"><span className="font-semibold" style={{ color: CRIT_COLOR[c.key] }}>{c.label}</span><span className="text-slate-500 tabular-nums">{Math.round(effWeights[c.key] * 100)}%</span></div>
+                <div className="flex justify-between items-center text-[10px]"><span className="font-semibold text-slate-600 dark:text-slate-300">{c.label}</span><span className="text-slate-500 tabular-nums">{Math.round(effWeights[c.key] * 100)}%</span></div>
                 <input type="range" min={0} max={40} value={Math.round((rawWeights[c.key] || 0) * 100)} onChange={e => setWeight(c.key, Number(e.target.value))} className="w-full accent-blue-600 h-1" />
               </div>
             ))}
@@ -171,7 +179,7 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
               <tr className={`${isDark ? 'text-slate-400 border-slate-800' : 'text-slate-500 border-slate-200'} border-b`}>
                 <th className="text-left font-bold px-3 py-2 w-12">#</th>
                 <th className="text-left font-bold px-2 py-2">Target</th>
-                {CRITERIA.map(c => <th key={c.key} title={`${c.label}: ${c.definition}`} className="text-center font-semibold px-1 py-2 w-[68px]"><span style={{ color: CRIT_COLOR[c.key] }}>{c.label}</span></th>)}
+                {CRITERIA.map(c => <th key={c.key} title={`${c.label}: ${c.definition}`} className="text-center font-semibold px-1 py-2 w-[68px]">{c.label}</th>)}
                 <th className="text-right font-bold px-3 py-2 w-24">Overall</th>
               </tr>
             </thead>
@@ -193,7 +201,7 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
                     {CRITERIA.map(c => { const v = s.criteria[c.key]; return (
                       <td key={c.key} className="px-1 py-1.5">
                         <div className={`h-1.5 rounded-full ${isDark ? 'bg-slate-800' : 'bg-slate-100'}`} title={v == null ? 'no data' : `${c.label}: ${(v * 100).toFixed(0)}`}>
-                          {v != null && <div className="h-1.5 rounded-full" style={{ width: `${Math.max(3, v * 100)}%`, background: CRIT_COLOR[c.key] }} />}
+                          {v != null && <div className="h-1.5 rounded-full" style={{ width: `${Math.max(3, v * 100)}%`, background: barBg(v) }} />}
                         </div>
                       </td>
                     ); })}
@@ -242,16 +250,26 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
                 <div className={`rounded-lg border p-2.5 text-[11px] ${card} text-emerald-600 dark:text-emerald-400`}>✓ No network neighbour outranks {selected.symbol} — it's the strongest target in its neighbourhood.</div>
               ) : null}
               <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">Score by criterion</p>
-              {CRITERIA.map(c => { const v = selected.criteria[c.key]; const w = effWeights[c.key]; return (
+              {CRITERIA.map(c => {
+                const v = selected.criteria[c.key]; const w = effWeights[c.key];
+                // Network fallback: no stored WINNER (gene outside the top-2000 set) → show live
+                // connectivity from the neighbours we already fetched. Labeled, and NOT in the overall.
+                const isLiveNet = c.key === 'network' && v == null && liveConnectivity != null;
+                const shownV = isLiveNet ? liveConnectivity : v;
+                return (
                 <div key={c.key} className={`rounded-lg border p-2.5 ${card}`}>
                   <div className="flex justify-between items-baseline mb-1">
-                    <span className="text-[12px] font-bold" style={{ color: CRIT_COLOR[c.key] }}>{c.label}</span>
-                    <span className="text-[11px] tabular-nums">{v == null ? <span className="text-slate-400">no data</span> : <span className={isDark ? 'text-white' : 'text-slate-900'}>{(v * 100).toFixed(0)}/100</span>} <span className="text-slate-400">· wt {Math.round(w * 100)}%</span></span>
+                    <span className={`text-[12px] font-bold ${isDark ? 'text-slate-200' : 'text-slate-700'}`}>{c.label}</span>
+                    <span className="text-[11px] tabular-nums">
+                      {shownV == null ? <span className="text-slate-400">no data</span>
+                        : isLiveNet ? <span className="text-slate-500">~{(shownV * 100).toFixed(0)} · live</span>
+                        : <span className={isDark ? 'text-white' : 'text-slate-900'}>{(shownV * 100).toFixed(0)}/100</span>} <span className="text-slate-400">· wt {Math.round(w * 100)}%</span></span>
                   </div>
-                  <div className={`h-1.5 rounded-full mb-1.5 ${isDark ? 'bg-slate-800' : 'bg-slate-100'}`}>{v != null && <div className="h-1.5 rounded-full" style={{ width: `${Math.max(3, v * 100)}%`, background: CRIT_COLOR[c.key] }} />}</div>
+                  <div className={`h-1.5 rounded-full mb-1.5 ${isDark ? 'bg-slate-800' : 'bg-slate-100'}`}>{shownV != null && <div className="h-1.5 rounded-full" style={{ width: `${Math.max(3, shownV * 100)}%`, background: isLiveNet ? (isDark ? 'rgba(148,163,184,0.5)' : 'rgba(100,116,139,0.45)') : barBg(shownV) }} />}</div>
                   <p className="text-[10px] text-slate-500 leading-snug">{c.definition}</p>
                   <p className="text-[9px] text-slate-400 mt-1">Source: {c.source}</p>
-                  {evidenceLine(c.key, selected.raw) && <p className="text-[10px] mt-1.5 font-medium" style={{ color: CRIT_COLOR[c.key] }}>{evidenceLine(c.key, selected.raw)}</p>}
+                  {isLiveNet && <p className="text-[9px] text-slate-400 mt-1 italic">Live connectivity ({neighborSet.size} STRING partners) — outside the top-2000 WINNER set, shown for context, not counted in the overall.</p>}
+                  {!isLiveNet && evidenceLine(c.key, selected.raw) && <p className={`text-[10px] mt-1.5 font-medium ${isDark ? 'text-blue-300' : 'text-blue-700'}`}>{evidenceLine(c.key, selected.raw)}</p>}
                 </div>
               ); })}
             </div>
