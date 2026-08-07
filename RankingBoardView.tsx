@@ -6,12 +6,21 @@
 // Reads /api/dashboard/genes (no new endpoint); all scoring is client-side via
 // rankingBoard.ts.
 import React, { useEffect, useMemo, useState } from 'react';
-import { Loader2, Trophy, Search, X, Sliders, RotateCcw, Award } from 'lucide-react';
+import { Loader2, Trophy, Search, X, Sliders, RotateCcw, Award, ChevronDown, BookOpen } from 'lucide-react';
 import { fetchSnapshots, authenticatedFetch, type RankingSnapshotMeta } from './supabase';
-import { CRITERIA, MODALITY_PROFILES, buildBoard, normaliseWeights, type CriterionKey, type ModalityKey, type ScoredGene } from './rankingBoard';
+import MethodologyView from './MethodologyView';
+import { CRITERIA, MODALITY_PROFILES, buildBoard, normaliseWeights, criterionBreakdown, type CriterionKey, type ModalityKey, type ScoredGene, type SubMetric, type CriterionBreakdown } from './rankingBoard';
 import type { Theme } from './types';
 
 const MODALITY_ORDER: ModalityKey[] = ['small_molecule', 'antibody', 'protac', 'mrna', 'gene_therapy'];
+
+// A weight vector (fractions summing to 1) → integer 0–100 points for the budget UI.
+// The default profiles are authored as integer-percent summing to 100, so this is exact.
+function pointsOfWeights(w: Record<CriterionKey, number>): Record<CriterionKey, number> {
+  const o = {} as Record<CriterionKey, number>;
+  for (const c of CRITERIA) o[c.key] = Math.round((w[c.key] || 0) * 100);
+  return o;
+}
 
 async function getJson(url: string): Promise<any> {
   const r = await authenticatedFetch(url);
@@ -34,9 +43,12 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
   const [error, setError] = useState<string | null>(null);
 
   const [modality, setModality] = useState<ModalityKey>('small_molecule');
-  const [weightOverride, setWeightOverride] = useState<Record<CriterionKey, number> | null>(null);
+  const [weightOverride, setWeightOverride] = useState<Record<CriterionKey, number> | null>(null);   // APPLIED weights (drives the board)
+  const [draft, setDraft] = useState<Record<CriterionKey, number>>(() => pointsOfWeights(MODALITY_PROFILES.small_molecule.weights));   // 100-point budget being edited
   const [showWeights, setShowWeights] = useState(false);
+  const [showMethodology, setShowMethodology] = useState(false);
   const [selectedSym, setSelectedSym] = useState<string | null>(null);
+  const [expandedCrit, setExpandedCrit] = useState<CriterionKey | null>(null);   // which criterion tile is drilled into
   const [query, setQuery] = useState('');
   const [pinned, setPinned] = useState<string | null>(null);
   const [neighborSet, setNeighborSet] = useState<Set<string>>(new Set());
@@ -63,10 +75,14 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
     return () => { alive = false; };
   }, [snapId]);
 
-  // switching modality resets to that modality's default weights
-  useEffect(() => { setWeightOverride(null); }, [modality]);
+  // switching modality resets to that modality's default weights (both applied and the draft budget)
+  useEffect(() => { setWeightOverride(null); setDraft(pointsOfWeights(MODALITY_PROFILES[modality].weights)); }, [modality]);
 
   const board = useMemo(() => buildBoard(genes, modality, weightOverride || undefined), [genes, modality, weightOverride]);
+  // Within-category (0–1) standing: an absolute criterion score scaled by the field leader in
+  // that column, so the strongest gene fills its bar. DISPLAY only — the overall score is unchanged.
+  const relOf = (v: number | null | undefined, key: CriterionKey): number | null =>
+    v == null || !isFinite(v) ? null : Math.max(0, Math.min(1, v / (board.criterionMax[key] || 1)));
   const rawWeights = weightOverride || MODALITY_PROFILES[modality].weights;
   const effWeights = useMemo(() => normaliseWeights(rawWeights), [rawWeights]);
   // selected target derived from its symbol, so the report card stays in sync when the modality re-ranks
@@ -106,8 +122,11 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
   const pinnedGene = useMemo(() => pinned ? board.scored.find(s => s.symbol === pinned) : null, [board, pinned]);
   const shown = useMemo(() => {
     const top = board.scored.slice(0, 150);
-    if (pinnedGene && !top.some(s => s.symbol === pinnedGene.symbol)) top.push(pinnedGene);
-    return top;
+    // A searched target floats to the TOP (with its true rank shown), so it's never buried at the
+    // bottom of the list — whether it ranked inside the top 150 or far below it.
+    if (!pinnedGene) return top;
+    const rest = top.filter(s => s.symbol !== pinnedGene.symbol);
+    return [pinnedGene, ...rest].slice(0, 150);
   }, [board, pinnedGene]);
 
   const runFind = () => {
@@ -115,9 +134,25 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
     const hit = board.scored.find(s => s.symbol.toUpperCase() === q) || board.scored.find(s => s.symbol.toUpperCase().includes(q));
     if (hit) { setPinned(hit.symbol); setSelectedSym(hit.symbol); }
   };
-  const setWeight = (k: CriterionKey, v: number) => {
-    const base = { ...(weightOverride || MODALITY_PROFILES[modality].weights) };
-    base[k] = v / 100; setWeightOverride(base);
+  // ── 100-point weight budget ──────────────────────────────────────────────
+  const draftTotal = CRITERIA.reduce((s, c) => s + (draft[c.key] || 0), 0);
+  const draftValid = draftTotal === 100;
+  const appliedPoints = pointsOfWeights(weightOverride || MODALITY_PROFILES[modality].weights);
+  const dirty = CRITERIA.some(c => (draft[c.key] || 0) !== (appliedPoints[c.key] || 0));
+  const setDraftPoint = (k: CriterionKey, v: number) => setDraft(d => ({ ...d, [k]: Math.max(0, Math.min(100, Math.round(v))) }));
+  // Apply is the SAVE step — only allowed when the budget totals exactly 100.
+  const applyWeights = () => { if (!draftValid) return; const w = {} as Record<CriterionKey, number>; for (const c of CRITERIA) w[c.key] = (draft[c.key] || 0) / 100; setWeightOverride(w); };
+  const resetWeights = () => { setWeightOverride(null); setDraft(pointsOfWeights(MODALITY_PROFILES[modality].weights)); };
+  // Proportionally snap the draft so it totals exactly 100 (integer, remainder to the largest slices).
+  const rebalanceWeights = () => {
+    const t = draftTotal;
+    if (t <= 0) { setDraft(pointsOfWeights(MODALITY_PROFILES[modality].weights)); return; }
+    const scaled = {} as Record<CriterionKey, number>; let acc = 0;
+    for (const c of CRITERIA) { scaled[c.key] = Math.round((draft[c.key] || 0) / t * 100); acc += scaled[c.key]; }
+    let diff = 100 - acc;
+    const order = [...CRITERIA].sort((a, b) => (scaled[b.key] - scaled[a.key]));
+    for (let i = 0; diff !== 0 && i < order.length; i++) { const k = order[i].key; const nv = scaled[k] + (diff > 0 ? 1 : -1); if (nv >= 0) { scaled[k] = nv; diff += diff > 0 ? -1 : 1; } }
+    setDraft(scaled);
   };
 
   const card = isDark ? 'bg-slate-900 border-slate-700' : 'bg-white border-slate-200';
@@ -145,6 +180,7 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
             <input value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => e.key === 'Enter' && runFind()} placeholder="Is my target…?" className={`bg-transparent text-xs py-1.5 w-32 outline-none ${isDark ? 'text-white placeholder:text-slate-600' : 'text-slate-900 placeholder:text-slate-400'}`} />
           </div>
           <button onClick={() => setShowWeights(v => !v)} className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border text-[11px] font-semibold ${card} ${isDark ? 'text-slate-200' : 'text-slate-700'}`}><Sliders className="w-3.5 h-3.5" /> Weights</button>
+          <button onClick={() => setShowMethodology(true)} title="How the board scores and ranks targets" className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border text-[11px] font-semibold ${card} ${isDark ? 'text-slate-200' : 'text-slate-700'}`}><BookOpen className="w-3.5 h-3.5" /> Methodology</button>
         </div>
         {/* modality selector — the lever */}
         <div className="flex items-center gap-1.5 flex-wrap">
@@ -157,16 +193,42 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
           ))}
           <span className="text-[11px] text-slate-500 ml-1 hidden lg:inline">— {MODALITY_PROFILES[modality].note}</span>
         </div>
-        {/* weight sliders (adjustable) */}
+        {/* weight budget — 100 points allocated across the 8 criteria; must total 100 to apply */}
         {showWeights && (
-          <div className={`grid grid-cols-2 md:grid-cols-4 gap-x-4 gap-y-2 p-3 rounded-lg border ${card}`}>
-            {CRITERIA.map(c => (
-              <div key={c.key} className="flex flex-col gap-0.5">
-                <div className="flex justify-between items-center text-[10px]"><span className="font-semibold text-slate-600 dark:text-slate-300">{c.label}</span><span className="text-slate-500 tabular-nums">{Math.round(effWeights[c.key] * 100)}%</span></div>
-                <input type="range" min={0} max={40} value={Math.round((rawWeights[c.key] || 0) * 100)} onChange={e => setWeight(c.key, Number(e.target.value))} className="w-full accent-blue-600 h-1" />
+          <div className={`p-3 rounded-lg border ${card} space-y-2.5`}>
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">Weight budget — allocate 100 points</span>
+              <div className="flex items-center gap-2">
+                <span className={`text-[12px] font-black tabular-nums ${draftValid ? 'text-emerald-500' : 'text-amber-500'}`}>{draftTotal} / 100{draftValid ? ' ✓' : ''}</span>
+                {/* budget meter */}
+                <div className={`w-24 h-1.5 rounded-full overflow-hidden ${isDark ? 'bg-slate-800' : 'bg-slate-200'}`} title={`${draftTotal} of 100 points allocated`}>
+                  <div className="h-1.5 rounded-full transition-all" style={{ width: `${Math.min(100, draftTotal)}%`, background: draftValid ? '#10b981' : (draftTotal > 100 ? '#ef4444' : '#f59e0b') }} />
+                </div>
               </div>
-            ))}
-            <button onClick={() => setWeightOverride(null)} className="col-span-2 md:col-span-4 flex items-center justify-center gap-1.5 text-[11px] font-semibold text-slate-500 hover:text-blue-600"><RotateCcw className="w-3 h-3" /> Reset to {MODALITY_PROFILES[modality].label} defaults</button>
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-x-4 gap-y-2">
+              {CRITERIA.map(c => (
+                <div key={c.key} className="flex flex-col gap-0.5">
+                  <div className="flex justify-between items-center text-[10px]"><span className="font-semibold text-slate-600 dark:text-slate-300">{c.label}</span><span className="text-slate-500 tabular-nums">{draft[c.key] || 0} pt</span></div>
+                  <input type="range" min={0} max={60} value={draft[c.key] || 0} onChange={e => setDraftPoint(c.key, Number(e.target.value))} className="w-full accent-blue-600 h-1" />
+                </div>
+              ))}
+            </div>
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <p className="text-[10px] min-h-[1rem]">
+                {!draftValid ? <span className="text-amber-500 font-medium">{draftTotal > 100 ? `Remove ${draftTotal - 100}` : `Add ${100 - draftTotal}`} point{Math.abs(draftTotal - 100) === 1 ? '' : 's'} to reach 100 — or rebalance.</span>
+                  : dirty ? <span className="text-blue-500 font-medium">Ready to apply.</span>
+                  : <span className="text-emerald-500 font-medium">✓ Applied — the board reflects these weights.</span>}
+              </p>
+              <div className="flex items-center gap-1.5">
+                {!draftValid && <button onClick={rebalanceWeights} className={`text-[11px] font-semibold px-2.5 py-1 rounded-md border ${isDark ? 'border-slate-700 text-slate-300 hover:border-blue-500' : 'border-slate-200 text-slate-600 hover:border-blue-500'}`}>Rebalance to 100</button>}
+                <button onClick={resetWeights} className={`flex items-center gap-1 text-[11px] font-semibold px-2.5 py-1 rounded-md border ${isDark ? 'border-slate-700 text-slate-300 hover:border-blue-500' : 'border-slate-200 text-slate-600 hover:border-blue-500'}`}><RotateCcw className="w-3 h-3" /> Defaults</button>
+                <button onClick={applyWeights} disabled={!draftValid || !dirty}
+                  className={`text-[11px] font-bold px-3 py-1 rounded-md border transition-colors ${draftValid && dirty ? 'bg-blue-600 border-blue-600 text-white hover:bg-blue-700' : (isDark ? 'bg-slate-800 border-slate-700 text-slate-500 cursor-not-allowed' : 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed')}`}>
+                  Apply weights
+                </button>
+              </div>
+            </div>
           </div>
         )}
       </div>
@@ -198,10 +260,10 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
                       {isPinned && <span className="ml-1.5 text-[9px] font-bold uppercase text-blue-500">your target</span>}
                       {s.gated && <span className="ml-1.5 text-[9px] text-slate-400" title={s.gateNote}>· gated</span>}
                     </td>
-                    {CRITERIA.map(c => { const v = s.criteria[c.key]; return (
+                    {CRITERIA.map(c => { const v = s.criteria[c.key]; const rel = relOf(v, c.key); return (
                       <td key={c.key} className="px-1 py-1.5">
-                        <div className={`h-1.5 rounded-full ${isDark ? 'bg-slate-800' : 'bg-slate-100'}`} title={v == null ? 'no data' : `${c.label}: ${(v * 100).toFixed(0)}`}>
-                          {v != null && <div className="h-1.5 rounded-full" style={{ width: `${Math.max(3, v * 100)}%`, background: barBg(v) }} />}
+                        <div className={`h-1.5 rounded-full ${isDark ? 'bg-slate-800' : 'bg-slate-100'}`} title={v == null || rel == null ? 'no data' : `${c.label}: ${(rel * 100).toFixed(0)}/100 vs field (absolute ${(v * 100).toFixed(0)})`}>
+                          {rel != null && <div className="h-1.5 rounded-full" style={{ width: `${Math.max(3, rel * 100)}%`, background: barBg(rel) }} />}
                         </div>
                       </td>
                     ); })}
@@ -249,49 +311,97 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
               ) : neighborSet.size > 0 ? (
                 <div className={`rounded-lg border p-2.5 text-[11px] ${card} text-emerald-600 dark:text-emerald-400`}>✓ No network neighbour outranks {selected.symbol} — it's the strongest target in its neighbourhood.</div>
               ) : null}
-              <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">Score by criterion</p>
+              <div className="flex items-baseline justify-between gap-2">
+                <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">Score by criterion</p>
+                <span className="text-[9px] text-slate-400">bars = standing vs. field (best = 100)</span>
+              </div>
               {CRITERIA.map(c => {
                 const v = selected.criteria[c.key]; const w = effWeights[c.key];
                 // Network fallback: no stored WINNER (gene outside the top-2000 set) → show live
                 // connectivity from the neighbours we already fetched. Labeled, and NOT in the overall.
                 const isLiveNet = c.key === 'network' && v == null && liveConnectivity != null;
-                const shownV = isLiveNet ? liveConnectivity : v;
+                // Within-category standing (leader = 100) drives the bar + headline; the drill-down
+                // keeps the absolute values. Live-net keeps its own proxy (no field basis).
+                const rel = relOf(v, c.key);
+                const barV = isLiveNet ? liveConnectivity : rel;
+                const open = expandedCrit === c.key;
                 return (
-                <div key={c.key} className={`rounded-lg border p-2.5 ${card}`}>
-                  <div className="flex justify-between items-baseline mb-1">
-                    <span className={`text-[12px] font-bold ${isDark ? 'text-slate-200' : 'text-slate-700'}`}>{c.label}</span>
-                    <span className="text-[11px] tabular-nums">
-                      {shownV == null ? <span className="text-slate-400">no data</span>
-                        : isLiveNet ? <span className="text-slate-500">~{(shownV * 100).toFixed(0)} · live</span>
-                        : <span className={isDark ? 'text-white' : 'text-slate-900'}>{(shownV * 100).toFixed(0)}/100</span>} <span className="text-slate-400">· wt {Math.round(w * 100)}%</span></span>
-                  </div>
-                  <div className={`h-1.5 rounded-full mb-1.5 ${isDark ? 'bg-slate-800' : 'bg-slate-100'}`}>{shownV != null && <div className="h-1.5 rounded-full" style={{ width: `${Math.max(3, shownV * 100)}%`, background: isLiveNet ? (isDark ? 'rgba(148,163,184,0.5)' : 'rgba(100,116,139,0.45)') : barBg(shownV) }} />}</div>
-                  <p className="text-[10px] text-slate-500 leading-snug">{c.definition}</p>
-                  <p className="text-[9px] text-slate-400 mt-1">Source: {c.source}</p>
-                  {isLiveNet && <p className="text-[9px] text-slate-400 mt-1 italic">Live connectivity ({neighborSet.size} STRING partners) — outside the top-2000 WINNER set, shown for context, not counted in the overall.</p>}
-                  {!isLiveNet && evidenceLine(c.key, selected.raw) && <p className={`text-[10px] mt-1.5 font-medium ${isDark ? 'text-blue-300' : 'text-blue-700'}`}>{evidenceLine(c.key, selected.raw)}</p>}
+                <div key={c.key} className={`rounded-lg border ${card} ${open ? (isDark ? 'ring-1 ring-blue-500/50' : 'ring-1 ring-blue-300') : ''}`}>
+                  {/* clickable header — toggles the deep dive */}
+                  <button onClick={() => setExpandedCrit(open ? null : c.key)}
+                    className={`w-full text-left p-2.5 rounded-lg transition-colors ${isDark ? 'hover:bg-slate-800/50' : 'hover:bg-slate-50'}`}>
+                    <div className="flex justify-between items-baseline mb-1 gap-2">
+                      <span className={`text-[12px] font-bold flex items-center gap-1 ${isDark ? 'text-slate-200' : 'text-slate-700'}`}>
+                        <ChevronDown className={`w-3 h-3 text-slate-400 transition-transform ${open ? '' : '-rotate-90'}`} />{c.label}
+                      </span>
+                      <span className="text-[11px] tabular-nums whitespace-nowrap">
+                        {v == null && !isLiveNet ? <span className="text-slate-400">no data</span>
+                          : isLiveNet ? <span className="text-slate-500">~{((barV ?? 0) * 100).toFixed(0)} · live</span>
+                          : <span className={isDark ? 'text-white' : 'text-slate-900'}>{((rel ?? 0) * 100).toFixed(0)}<span className="text-slate-400 font-normal"> vs field</span></span>} <span className="text-slate-400">· wt {Math.round(w * 100)}%</span></span>
+                    </div>
+                    <div className={`h-1.5 rounded-full ${isDark ? 'bg-slate-800' : 'bg-slate-100'}`}>{barV != null && <div className="h-1.5 rounded-full" style={{ width: `${Math.max(3, barV * 100)}%`, background: isLiveNet ? (isDark ? 'rgba(148,163,184,0.5)' : 'rgba(100,116,139,0.45)') : barBg(barV) }} />}</div>
+                    {!open && <p className="text-[9px] text-slate-400 mt-1.5">{c.definition.length > 70 ? c.definition.slice(0, 68) + '…' : c.definition} <span className="text-blue-500 font-semibold">· details</span></p>}
+                  </button>
+                  {open && (
+                    <div className={`px-2.5 pb-2.5 pt-0.5 border-t ${isDark ? 'border-slate-800' : 'border-slate-100'}`}>
+                      <p className="text-[10px] text-slate-500 leading-snug mt-2">{c.definition}</p>
+                      <p className="text-[9px] text-slate-400 mt-1">Source: {c.source}</p>
+                      {isLiveNet ? (
+                        <p className="text-[9px] text-slate-400 mt-2 italic">Live connectivity ({neighborSet.size} STRING partners) — this gene is outside the top-2000 WINNER set, so the stored network score is unavailable. Shown for context, not counted in the overall.</p>
+                      ) : (
+                        <DeepDive breakdown={criterionBreakdown(c.key, selected.raw)} isDark={isDark} barBg={barBg} />
+                      )}
+                    </div>
+                  )}
                 </div>
               ); })}
             </div>
           </div>
         )}
       </div>
+
+      {showMethodology && <MethodologyView isDark={isDark} onClose={() => setShowMethodology(false)} />}
     </div>
   );
 }
 
-// The concrete evidence value behind each criterion for this gene (the "what supports the score").
-function evidenceLine(key: CriterionKey, g: any): string | null {
-  const n = (x: any, d = 2) => (x == null ? null : Number(x).toFixed(d));
-  switch (key) {
-    case 'genetics': return [g.genetic_score != null ? `OT genetic ${n(g.genetic_score)}` : null, g.mutation_freq != null ? `${Math.round(g.mutation_freq * 100)}% mutated` : null].filter(Boolean).join(' · ') || null;
-    case 'expression': return [g.expr_log2fc != null ? `mRNA log2FC ${n(g.expr_log2fc)}` : null, g.prot_log2fc != null ? `protein log2FC ${n(g.prot_log2fc)}` : null].filter(Boolean).join(' · ') || null;
-    case 'dependency': return g.chronos != null ? `DepMap Chronos ${n(g.chronos)}` : null;
-    case 'tractability': return [g.druggability_score != null ? `OT ${n(g.druggability_score)}` : null, g.tractable_modalities != null ? `${g.tractable_modalities} tractable modalities` : null].filter(Boolean).join(' · ') || null;
-    case 'safety': return [g.loeuf != null ? `LOEUF ${n(g.loeuf)}` : null, g.is_common_essential ? 'pan-essential' : null, g.n_safety_liabilities ? `${g.n_safety_liabilities} liabilities` : null].filter(Boolean).join(' · ') || null;
-    case 'clinical': return g.max_disease_phase ? `max Phase ${g.max_disease_phase} · ${g.n_disease_trials ?? 0} trials` : (g.n_disease_trials ? `${g.n_disease_trials} trials` : null);
-    case 'literature': return g.velocity != null ? `velocity ${Math.round(g.velocity * 100)}% · ${g.n_publications ?? 0} papers` : null;
-    case 'network': return g.winner_score != null ? `WINNER ${n(g.winner_score)}${g.is_seed ? ' · seed' : ''}` : null;
-  }
-  return null;
+// The per-criterion deep dive — every underlying metric with its raw value, how it
+// participates (weighted term / multiplicative factor / context), a bar for the exact
+// 0–1 contribution the score uses, and a fact-vs-prediction tag. Fed by criterionBreakdown().
+function DeepDive({ breakdown, isDark, barBg }: { breakdown: CriterionBreakdown; isDark: boolean; barBg: (v: number) => string }) {
+  const roleChip = (m: SubMetric) => {
+    if (m.role === 'term') return `${m.weightPct}% of score`;
+    if (m.role === 'factor') return 'multiplier';
+    return 'context';
+  };
+  return (
+    <div className="mt-2.5 space-y-2">
+      <div className={`text-[9px] leading-snug rounded-md px-2 py-1.5 ${isDark ? 'bg-slate-800/60 text-slate-400' : 'bg-slate-100 text-slate-500'}`}>
+        <span className="font-black uppercase tracking-wider text-[8px] mr-1">How it combines</span>{breakdown.formula}
+        <span className="italic"> Values below are absolute (the tile bar shows standing vs. the field).</span>
+      </div>
+      {breakdown.metrics.map((m, i) => {
+        const dim = m.value == null;
+        return (
+          <div key={i} className={`rounded-md p-2 ${isDark ? 'bg-slate-800/40' : 'bg-slate-50'} ${dim ? 'opacity-55' : ''}`}>
+            <div className="flex items-center justify-between gap-2">
+              <span className={`text-[11px] font-semibold ${isDark ? 'text-slate-200' : 'text-slate-700'}`}>{m.label}</span>
+              <span className={`text-[11px] tabular-nums font-bold whitespace-nowrap ${dim ? 'text-slate-400 font-normal' : (isDark ? 'text-white' : 'text-slate-900')}`}>{m.value ?? '—'}</span>
+            </div>
+            <div className="flex items-center gap-1 mt-1">
+              <span className={`text-[8px] font-bold uppercase tracking-wide px-1 py-px rounded ${m.role === 'context' ? (isDark ? 'bg-slate-700 text-slate-400' : 'bg-slate-200 text-slate-500') : (isDark ? 'bg-blue-950 text-blue-300' : 'bg-blue-100 text-blue-700')}`}>{roleChip(m)}</span>
+              <span className={`text-[8px] font-bold uppercase tracking-wide px-1 py-px rounded ${m.kind === 'fact' ? (isDark ? 'bg-emerald-950 text-emerald-400' : 'bg-emerald-100 text-emerald-700') : (isDark ? 'bg-violet-950 text-violet-300' : 'bg-violet-100 text-violet-700')}`}>{m.kind}</span>
+            </div>
+            {m.sub != null && (
+              <div className="flex items-center gap-1.5 mt-1.5">
+                <div className={`flex-1 h-1 rounded-full ${isDark ? 'bg-slate-800' : 'bg-slate-200'}`}><div className="h-1 rounded-full" style={{ width: `${Math.max(3, m.sub * 100)}%`, background: barBg(m.sub) }} /></div>
+                <span className="text-[9px] text-slate-500 tabular-nums w-8 text-right">{(m.sub * 100).toFixed(0)}</span>
+              </div>
+            )}
+            {m.note && <p className="text-[9px] text-slate-500 leading-snug mt-1.5">{m.note}</p>}
+          </div>
+        );
+      })}
+    </div>
+  );
 }
