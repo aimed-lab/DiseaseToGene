@@ -18,7 +18,11 @@
 // If no client id/secret is set, endpoints are called unauthenticated (public read-only ORDS).
 
 const MODULE = 'd2t'; // must match ORDS DEFINE_MODULE p_base_path ('/d2t/') — see docs/ORDS_Setup.md
-const PAGE = 500;     // page size for paginated pulls (evidence is large)
+// ORDS honours up to 10k rows/page (it clamps larger requests to 10k). A fully-enriched
+// snapshot's evidence is ~50k+ rows, so we fetch big pages AND fan the later pages out in
+// parallel waves — measured ~39s → ~8s for #102's 53k-row evidence pull.
+const PAGE = 10000;       // rows per page (ORDS server-side max)
+const PAGE_CONCURRENCY = 6; // parallel page requests per wave
 
 const baseUrl = () => (process.env.ORDS_BASE_URL || '').replace(/\/+$/, '');
 export const ordsEnabled = (): boolean => process.env.USE_ORDS === '1' && !!process.env.ORDS_BASE_URL;
@@ -55,16 +59,32 @@ async function ordsGet(path: string, params: Record<string, any> = {}): Promise<
   return r.json();
 }
 
-// Collect every row of a paginated ORDS query (follows hasMore/offset).
+// One page fetch with a single retry (a transient blip on one parallel page
+// shouldn't sink the whole pull).
+async function ordsPage(path: string, params: Record<string, any>, offset: number): Promise<any[]> {
+  const call = () => ordsGet(path, { ...params, limit: PAGE, offset }).then(j => (Array.isArray(j.items) ? j.items : []));
+  try { return await call(); } catch { return await call(); }
+}
+
+// Collect every row of a paginated ORDS query. Fetch page 0 to learn whether there's
+// more, then fan out the remaining pages in parallel waves instead of walking them one
+// at a time — the sequential walk was the dashboard's dominant cold-load latency.
 async function ordsGetAll(path: string, params: Record<string, any> = {}): Promise<any[]> {
-  const all: any[] = [];
-  let offset = 0;
+  const first = await ordsGet(path, { ...params, limit: PAGE, offset: 0 });
+  const firstItems: any[] = Array.isArray(first.items) ? first.items : [];
+  const all: any[] = [...firstItems];
+  // A short page (or no hasMore) means we already have everything.
+  if (!first.hasMore || firstItems.length < PAGE) return all;
+
+  let offset = firstItems.length;
   for (;;) {
-    const j = await ordsGet(path, { ...params, limit: PAGE, offset });
-    const items: any[] = Array.isArray(j.items) ? j.items : [];
-    all.push(...items);
-    if (!j.hasMore || items.length === 0) break;
-    offset += items.length;
+    const offsets = Array.from({ length: PAGE_CONCURRENCY }, (_, i) => offset + i * PAGE);
+    const waves = await Promise.all(offsets.map(o => ordsPage(path, params, o)));
+    let ended = false;
+    for (const items of waves) { all.push(...items); if (items.length < PAGE) ended = true; }
+    if (ended) break;
+    offset += PAGE_CONCURRENCY * PAGE;
+    if (offset > 5_000_000) break; // safety backstop against an unbounded loop
   }
   return all;
 }
