@@ -87,7 +87,8 @@ import {
   Filter,
   Settings,
   SlidersHorizontal,
-  LayoutDashboard
+  LayoutDashboard,
+  Eye
 } from 'lucide-react';
 
 import PaperExtractor from './PaperExtractor';
@@ -742,14 +743,22 @@ const RESEARCH_GROUP = [
   { id: 'raw',      i: Database, l: 'Cohorts'    },
 ];
 
+// Views a NON-admin (researcher) may use. Everything else (Funnel, Rankings, the
+// Research menu, Enrichment, Jobs, …) is admin-only — hidden from the nav AND blocked
+// by a guard in App, so a researcher can't reach it via the co-pilot or a restored
+// session. Nothing is deleted; admins keep the full app.
+const RESEARCHER_VIEWS = new Set<string>(['board', 'dashboard', 'list', 'graph']);
+
 const TabNavigation = ({
   viewMode,
   onViewModeChange,
-  theme
+  theme,
+  isAdmin,
 }: {
   viewMode: ViewMode;
   onViewModeChange: (mode: ViewMode) => void;
-  theme: Theme
+  theme: Theme;
+  isAdmin: boolean;   // effective admin (false when an admin is previewing as researcher)
 }) => {
   const isDark = theme === 'dark';
   const [researchOpen, setResearchOpen] = useState(false);
@@ -768,7 +777,9 @@ const TabNavigation = ({
   const btnCls = (active: boolean) => `h-9 px-3 xl:px-4 rounded-md text-[11px] font-semibold transition-all flex items-center gap-2 whitespace-nowrap ${active ? (isDark ? 'bg-slate-800 text-white' : 'bg-slate-950 text-white') : (isDark ? 'text-slate-300 hover:text-white hover:bg-slate-800' : 'text-slate-900 hover:text-slate-950 hover:bg-slate-100')}`;
   const iconCls = (active: boolean) => `w-3.5 h-3.5 ${active ? 'text-white' : (isDark ? 'text-slate-400' : 'text-slate-700')}`;
 
-  const primary  = [ {id:'board',i:Trophy,l:'Board'}, {id:'dashboard',i:LayoutDashboard,l:'Dashboard'}, {id:'list',i:List,l:'Targets'}, {id:'funnel',i:Filter,l:'Funnel'}, {id:'rankings',i:Layers,l:'Rankings'}, {id:'graph',i:Network,l:'Graph'} ];
+  const primaryAll = [ {id:'board',i:Trophy,l:'Board'}, {id:'dashboard',i:LayoutDashboard,l:'Dashboard'}, {id:'list',i:List,l:'Targets'}, {id:'funnel',i:Filter,l:'Funnel'}, {id:'rankings',i:Layers,l:'Rankings'}, {id:'graph',i:Network,l:'Graph'} ];
+  // Researchers see only their allow-listed tabs; admins see everything.
+  const primary  = isAdmin ? primaryAll : primaryAll.filter(t => RESEARCHER_VIEWS.has(t.id));
   const trailing = [ {id:'enrichment',i:BarChart3,l:'Enrichment'}, {id:'jobs',i:Cpu,l:'Jobs'} ];
   const flatBtn = (t: { id: string; i: any; l: string }) => {
     const active = viewMode === t.id;
@@ -784,7 +795,8 @@ const TabNavigation = ({
     <nav className="hidden lg:flex flex-1 items-center justify-start gap-1 min-w-0 px-6">
       {primary.map(flatBtn)}
 
-      {/* Research ▾ — Literature · Papers · Cohorts */}
+      {/* Research ▾ — Literature · Papers · Cohorts (admin only) */}
+      {isAdmin && (
       <div ref={researchRef} className="relative">
         <button
           onClick={() => setResearchOpen(o => !o)}
@@ -815,8 +827,9 @@ const TabNavigation = ({
           </div>
         )}
       </div>
+      )}
 
-      {trailing.map(flatBtn)}
+      {isAdmin && trailing.map(flatBtn)}
       {/* New Dashboard tab slots in here, on the same line. */}
     </nav>
   );
@@ -991,15 +1004,17 @@ type AdminUser = {
 };
 
 const ProfileDropdown = ({
-  currentUser, theme, onSignOut, globalWeights,
+  currentUser, theme, onSignOut, globalWeights, previewAsResearcher, onTogglePreview,
 }: {
   currentUser: UserSession;
   theme: Theme;
   onSignOut: () => void;
   globalWeights: { genetic: number; expression: number; target: number };
+  previewAsResearcher?: boolean;
+  onTogglePreview?: () => void;
 }) => {
   const isDark  = theme === 'dark';
-  const isAdmin = currentUser.role === 'admin';
+  const isAdmin = currentUser.role === 'admin';   // real role (independent of preview mode)
   const initials = (currentUser.username || '?').slice(0, 2).toUpperCase();
 
   // mini-menu open / which full-page is open
@@ -1234,6 +1249,17 @@ const ProfileDropdown = ({
           <ChevronRight className="w-3 h-3 ml-auto opacity-40" />
         </button>
       ))}
+      {/* Admin-only: preview the limited researcher experience (local, this session) */}
+      {isAdmin && onTogglePreview && (
+        <div className={`border-t ${isDark ? 'border-slate-800' : 'border-slate-100'}`}>
+          <button onClick={() => { setMenuOpen(false); onTogglePreview(); }}
+            className={`w-full flex items-center gap-2.5 px-3 py-2.5 text-[12px] font-semibold transition-colors ${previewAsResearcher ? (isDark ? 'text-amber-400 hover:bg-amber-500/10' : 'text-amber-600 hover:bg-amber-50') : (isDark ? 'hover:bg-slate-800 text-slate-300' : 'hover:bg-slate-50 text-slate-700')}`}>
+            <Eye className="w-3.5 h-3.5 shrink-0 opacity-70" />
+            {previewAsResearcher ? 'Exit researcher preview' : 'View as researcher'}
+            {previewAsResearcher && <span className="ml-auto text-[9px] font-black uppercase tracking-wider">on</span>}
+          </button>
+        </div>
+      )}
       <div className={`border-t ${isDark ? 'border-slate-800' : 'border-slate-100'}`}>
         <button onClick={() => { setMenuOpen(false); onSignOut(); }}
           className={`w-full flex items-center gap-2.5 px-3 py-2.5 text-[12px] font-semibold transition-colors text-rose-500 ${isDark ? 'hover:bg-rose-500/10' : 'hover:bg-rose-50'}`}>
@@ -3412,6 +3438,12 @@ const App = () => {
   const [authLoading, setAuthLoading] = useState(true);
   const isAuthenticated = !!currentUser;
 
+  // ── Role gating: researchers get a limited nav; admins get everything. An admin can
+  // temporarily "view as researcher" to preview that experience (local, this session only). ──
+  const isAdmin = currentUser?.role === 'admin';
+  const [previewAsResearcher, setPreviewAsResearcher] = useState(false);
+  const effectiveIsAdmin = isAdmin && !previewAsResearcher;
+
   // Fetch role from DB in the background and patch currentUser if it differs.
   // Called AFTER we already let the user in — never blocks the UI.
   const syncRole = async (userId: string) => {
@@ -3487,6 +3519,12 @@ const App = () => {
   };
 
   const [viewMode, setViewMode] = useState<ViewMode>('list');
+  // Role guard: if a researcher (or an admin previewing as one) lands on an admin-only
+  // view — via the co-pilot, a restored session, or a stale link — snap back to the Board.
+  // This is the real choke point; hiding nav buttons alone wouldn't be enough.
+  useEffect(() => {
+    if (!effectiveIsAdmin && !RESEARCHER_VIEWS.has(viewMode)) setViewMode('board');
+  }, [effectiveIsAdmin, viewMode]);
   const [sidebarNav, setSidebarNav] = useState<string>('cohort');
   const OT_PAGE_SIZE = 15;
 
@@ -5695,15 +5733,22 @@ ${glossaryPromptBlock()}`;
             <p className="hidden md:block text-[11px] font-medium text-slate-500 dark:text-slate-400">Therapeutic target discovery and evidence ranking</p>
           </div>
         </div>
-        <TabNavigation 
-          viewMode={viewMode} 
+        <TabNavigation
+          viewMode={viewMode}
           onViewModeChange={(mode) => {
             setViewMode(mode);
             setResearchState(p => ({ ...p, focusSymbol: null }));
-          }} 
-          theme={theme} 
+          }}
+          theme={theme}
+          isAdmin={effectiveIsAdmin}
         />
         <div className="flex items-center gap-2 shrink-0">
+          {previewAsResearcher && (
+            <button onClick={() => setPreviewAsResearcher(false)} title="You're previewing the researcher view — click to exit"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[10px] font-black uppercase tracking-wider bg-amber-500/10 border-amber-500/30 text-amber-600 dark:text-amber-400 hover:bg-amber-500/20 transition-colors">
+              <Eye className="w-3.5 h-3.5" /> <span className="hidden sm:inline">Researcher view ·</span> Exit
+            </button>
+          )}
           <button onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')} className="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">
             {theme === 'dark' ? <Sun className="w-4 h-4 text-slate-300" /> : <Moon className="w-4 h-4 text-slate-900" />}
           </button>
@@ -5713,6 +5758,8 @@ ${glossaryPromptBlock()}`;
               theme={theme}
               onSignOut={handleSignOut}
               globalWeights={globalWeights}
+              previewAsResearcher={previewAsResearcher}
+              onTogglePreview={() => setPreviewAsResearcher(v => !v)}
             />
           )}
         </div>
