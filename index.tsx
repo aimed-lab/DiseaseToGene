@@ -106,6 +106,8 @@ import RankingsView from './RankingsView';
 import DashboardView, { type DashboardCommand } from './DashboardView';
 import KnowledgeGraphView from './KnowledgeGraphView';
 import RankingBoardView from './RankingBoardView';
+import MethodologyView from './MethodologyView';
+import { navigate, isMethodologyPath } from './nav';
 import { glossaryPromptBlock } from './dashboardGlossary';
 import JobsView from './JobsView';
 import { getCbioMutations } from './cbioportalService';
@@ -3397,6 +3399,14 @@ const TargetDetailView = ({
 const App = () => {
   const [theme, setTheme] = useState<Theme>('light');
 
+  // ── Client-side route (pushState, no router lib) — powers shareable URLs like /Methodologies ──
+  const [routePath, setRoutePath] = useState<string>(() => window.location.pathname);
+  useEffect(() => {
+    const onPop = () => setRoutePath(window.location.pathname);
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
+
   // ── Auth state (Supabase) ────────────────────────────────────────────────
   const [currentUser, setCurrentUser] = useState<UserSession | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -5648,6 +5658,10 @@ ${glossaryPromptBlock()}`;
     }
     return out;
   }, [loadedSymbolSet]);
+
+  // Standalone /Methodologies route — pure documentation (no user data / API calls),
+  // so it renders BEFORE the auth gate: the URL is publicly shareable without a login.
+  if (isMethodologyPath(routePath)) return <MethodologyView isDark={theme === 'dark'} onClose={() => navigate('/')} />;
 
   // While Supabase is checking the existing session, show a neutral loader
   if (authLoading) return (

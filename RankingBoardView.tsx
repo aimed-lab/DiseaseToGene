@@ -8,7 +8,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Loader2, Trophy, Search, X, Sliders, RotateCcw, Award, ChevronDown, BookOpen } from 'lucide-react';
 import { fetchSnapshots, authenticatedFetch, type RankingSnapshotMeta } from './supabase';
-import MethodologyView from './MethodologyView';
+import { navigate } from './nav';
 import { CRITERIA, MODALITY_PROFILES, buildBoard, normaliseWeights, criterionBreakdown, type CriterionKey, type ModalityKey, type ScoredGene, type SubMetric, type CriterionBreakdown } from './rankingBoard';
 import type { Theme } from './types';
 
@@ -46,7 +46,6 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
   const [weightOverride, setWeightOverride] = useState<Record<CriterionKey, number> | null>(null);   // APPLIED weights (drives the board)
   const [draft, setDraft] = useState<Record<CriterionKey, number>>(() => pointsOfWeights(MODALITY_PROFILES.small_molecule.weights));   // 100-point budget being edited
   const [showWeights, setShowWeights] = useState(false);
-  const [showMethodology, setShowMethodology] = useState(false);
   const [selectedSym, setSelectedSym] = useState<string | null>(null);
   const [expandedCrit, setExpandedCrit] = useState<CriterionKey | null>(null);   // which criterion tile is drilled into
   const [query, setQuery] = useState('');
@@ -180,7 +179,7 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
             <input value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => e.key === 'Enter' && runFind()} placeholder="Is my target…?" className={`bg-transparent text-xs py-1.5 w-32 outline-none ${isDark ? 'text-white placeholder:text-slate-600' : 'text-slate-900 placeholder:text-slate-400'}`} />
           </div>
           <button onClick={() => setShowWeights(v => !v)} className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border text-[11px] font-semibold ${card} ${isDark ? 'text-slate-200' : 'text-slate-700'}`}><Sliders className="w-3.5 h-3.5" /> Weights</button>
-          <button onClick={() => setShowMethodology(true)} title="How the board scores and ranks targets" className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border text-[11px] font-semibold ${card} ${isDark ? 'text-slate-200' : 'text-slate-700'}`}><BookOpen className="w-3.5 h-3.5" /> Methodology</button>
+          <button onClick={() => navigate('/Methodologies')} title="How the board scores and ranks targets — opens /Methodologies" className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border text-[11px] font-semibold ${card} ${isDark ? 'text-slate-200' : 'text-slate-700'}`}><BookOpen className="w-3.5 h-3.5" /> Methodology</button>
         </div>
         {/* modality selector — the lever */}
         <div className="flex items-center gap-1.5 flex-wrap">
@@ -359,8 +358,6 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
           </div>
         )}
       </div>
-
-      {showMethodology && <MethodologyView isDark={isDark} onClose={() => setShowMethodology(false)} />}
     </div>
   );
 }
