@@ -777,7 +777,7 @@ const TabNavigation = ({
   const btnCls = (active: boolean) => `h-9 px-3 xl:px-4 rounded-md text-[11px] font-semibold transition-all flex items-center gap-2 whitespace-nowrap ${active ? (isDark ? 'bg-slate-800 text-white' : 'bg-slate-950 text-white') : (isDark ? 'text-slate-300 hover:text-white hover:bg-slate-800' : 'text-slate-900 hover:text-slate-950 hover:bg-slate-100')}`;
   const iconCls = (active: boolean) => `w-3.5 h-3.5 ${active ? 'text-white' : (isDark ? 'text-slate-400' : 'text-slate-700')}`;
 
-  const primaryAll = [ {id:'board',i:Trophy,l:'Board'}, {id:'dashboard',i:LayoutDashboard,l:'Dashboard'}, {id:'list',i:List,l:'Targets'}, {id:'funnel',i:Filter,l:'Funnel'}, {id:'rankings',i:Layers,l:'Rankings'}, {id:'graph',i:Network,l:'Graph'} ];
+  const primaryAll = [ {id:'board',i:Trophy,l:'Ranking'}, {id:'dashboard',i:LayoutDashboard,l:'Evidence'}, {id:'list',i:List,l:'Targets'}, {id:'funnel',i:Filter,l:'Funnel'}, {id:'rankings',i:Layers,l:'Rankings'}, {id:'graph',i:Network,l:'Graph'} ];
   // Researchers see only their allow-listed tabs; admins see everything.
   const primary  = isAdmin ? primaryAll : primaryAll.filter(t => RESEARCHER_VIEWS.has(t.id));
   const trailing = [ {id:'enrichment',i:BarChart3,l:'Enrichment'}, {id:'jobs',i:Cpu,l:'Jobs'} ];
@@ -5595,7 +5595,7 @@ CRITICAL RULES:
       Additional actions you can take (call the tool, don't just describe it):
       - 'focus_gene' { symbol } — open a specific gene's detail view when the user asks to see/open/inspect one gene.
       - 'set_weights' { genetic, expression, target, velocity } — change the GET scoring weights (0-1 each) and rescore. Use when the user says e.g. "weight genetics higher" or "prioritise expression".
-      - 'update_view' { mode } — switch the main view. 'board' opens the Target Ranking Board (US-News-style: targets ranked by a weighted sum of 8 criteria, with a MODALITY selector that re-weights and reshuffles — use this when the user asks "is X the best target", "rank targets", or picks a modality like antibody/siRNA); 'graph' the Knowledge Graph; 'rankings' the ranking dashboard; 'funnel' the prioritisation funnel; 'dashboard' the data-quality dashboard.
+      - 'update_view' { mode } — switch the main view. 'board' opens the Target Ranking Board (US-News-style: targets ranked by a weighted sum of 8 criteria — use this when the user asks "is X the best target" or "rank targets". Only the small-molecule modality is currently shown; antibody/PROTAC/RNA/gene-therapy are in development, so don't offer them); 'graph' the Knowledge Graph; 'rankings' the ranking dashboard; 'funnel' the prioritisation funnel; 'dashboard' the data-quality dashboard.
       - When you name specific genes in an answer, list them plainly by symbol so they can be surfaced as clickable chips.
 
       Driving the DASHBOARD (the Oracle data-quality explorer) — use these when the user's intent is about the dashboard, or to search/filter a large snapshot visually. They auto-switch to the dashboard:
