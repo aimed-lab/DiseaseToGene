@@ -9,16 +9,26 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Loader2, Trophy, Search, X, Sliders, RotateCcw, Award, ChevronDown, BookOpen } from 'lucide-react';
 import { fetchSnapshots, authenticatedFetch, type RankingSnapshotMeta } from './supabase';
 import { navigate } from './nav';
-import { CRITERIA, MODALITY_PROFILES, buildBoard, normaliseWeights, criterionBreakdown, type CriterionKey, type ModalityKey, type ScoredGene, type SubMetric, type CriterionBreakdown } from './rankingBoard';
+import { CRITERIA, MODALITY_PROFILES, buildBoard, criterionBreakdown, type CriterionKey, type ModalityKey, type ScoredGene, type SubMetric, type CriterionBreakdown } from './rankingBoard';
 import type { Theme } from './types';
 
-const MODALITY_ORDER: ModalityKey[] = ['small_molecule', 'antibody', 'protac', 'mrna', 'gene_therapy'];
+// Only READY modalities are offered. The others (antibody/PROTAC/RNA/gene therapy) are
+// deferred until they have modality-specific criteria — see rankingBoard.ts `ready`.
+const MODALITY_ORDER: ModalityKey[] = (['small_molecule', 'antibody', 'protac', 'mrna', 'gene_therapy'] as ModalityKey[])
+  .filter(m => MODALITY_PROFILES[m].ready);
 
-// A weight vector (fractions summing to 1) → integer 0–100 points for the budget UI.
-// The default profiles are authored as integer-percent summing to 100, so this is exact.
-function pointsOfWeights(w: Record<CriterionKey, number>): Record<CriterionKey, number> {
-  const o = {} as Record<CriterionKey, number>;
-  for (const c of CRITERIA) o[c.key] = Math.round((w[c.key] || 0) * 100);
+const ALL_KEYS = CRITERIA.map(c => c.key);
+
+// A weight vector → integer points summing to 100, renormalised over the ACTIVE criteria only
+// (so a snapshot missing an axis — e.g. dependency for Alzheimer's — spreads its budget across the
+// criteria that actually have data, and the total still reads 100).
+function pointsOfWeights(w: Record<CriterionKey, number>, active: CriterionKey[] = ALL_KEYS): Record<CriterionKey, number> {
+  const sum = active.reduce((s, k) => s + Math.max(0, w[k] || 0), 0) || 1;
+  const o = {} as Record<CriterionKey, number>; let acc = 0;
+  for (const c of CRITERIA) { o[c.key] = active.includes(c.key) ? Math.round(100 * Math.max(0, w[c.key] || 0) / sum) : 0; acc += o[c.key]; }
+  let diff = 100 - acc;   // fix rounding so the active points total exactly 100
+  const order = active.slice().sort((a, b) => o[b] - o[a]);
+  for (let i = 0; diff !== 0 && i < order.length; i++) { const k = order[i]; const nv = o[k] + (diff > 0 ? 1 : -1); if (nv >= 0) { o[k] = nv; diff += diff > 0 ? -1 : 1; } }
   return o;
 }
 
@@ -40,6 +50,7 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
   const [snapId, setSnapId] = useState('');
   const [genes, setGenes] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [elapsed, setElapsed] = useState(0);   // seconds spent on the current fetch (so the wait feels alive)
   const [error, setError] = useState<string | null>(null);
 
   const [modality, setModality] = useState<ModalityKey>('small_molecule');
@@ -74,16 +85,32 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
     return () => { alive = false; };
   }, [snapId]);
 
-  // switching modality resets to that modality's default weights (both applied and the draft budget)
-  useEffect(() => { setWeightOverride(null); setDraft(pointsOfWeights(MODALITY_PROFILES[modality].weights)); }, [modality]);
+  // never sit on a non-ready modality (defensive against a stale value); fall back to the first ready one
+  useEffect(() => { if (!MODALITY_PROFILES[modality].ready) setModality(MODALITY_ORDER[0] || 'small_molecule'); }, [modality]);
+
+  // Tick an elapsed-seconds counter while a fetch is in flight, so the loading screen
+  // shows live progress (the first evidence pull can take several seconds).
+  useEffect(() => {
+    if (!loading) return;
+    setElapsed(0);
+    const t0 = Date.now();
+    const id = setInterval(() => setElapsed(Math.round((Date.now() - t0) / 1000)), 250);
+    return () => clearInterval(id);
+  }, [loading]);
 
   const board = useMemo(() => buildBoard(genes, modality, weightOverride || undefined), [genes, modality, weightOverride]);
+  // Criteria that actually have data in this snapshot (dependency drops out for a non-cancer disease
+  // like Alzheimer's) — drives every criterion loop below, so absent axes never show.
+  const activeKeys = board.activeCriteria;
+  const activeSig = activeKeys.join(',');
+  const activeDefs = useMemo(() => CRITERIA.filter(c => activeKeys.includes(c.key)), [activeSig]);
+  const effWeights = board.weights;   // active-renormalised (sums to 1 over the criteria with data)
   // Within-category (0–1) standing: an absolute criterion score scaled by the field leader in
   // that column, so the strongest gene fills its bar. DISPLAY only — the overall score is unchanged.
   const relOf = (v: number | null | undefined, key: CriterionKey): number | null =>
     v == null || !isFinite(v) ? null : Math.max(0, Math.min(1, v / (board.criterionMax[key] || 1)));
-  const rawWeights = weightOverride || MODALITY_PROFILES[modality].weights;
-  const effWeights = useMemo(() => normaliseWeights(rawWeights), [rawWeights]);
+  // switching modality OR loading a snapshot with a different set of active criteria resets the budget
+  useEffect(() => { setWeightOverride(null); setDraft(pointsOfWeights(MODALITY_PROFILES[modality].weights, activeKeys)); }, [modality, activeSig]);
   // selected target derived from its symbol, so the report card stays in sync when the modality re-ranks
   const selected = useMemo(() => (selectedSym ? board.scored.find(s => s.symbol === selectedSym) || null : null), [board, selectedSym]);
 
@@ -113,7 +140,7 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
       .slice(0, 3)
       .map(nb => ({
         nb,
-        wins: CRITERIA.map(c => ({ label: c.label, d: (nb.criteria[c.key] ?? 0) - (selected.criteria[c.key] ?? 0) }))
+        wins: activeDefs.map(c => ({ label: c.label, d: (nb.criteria[c.key] ?? 0) - (selected.criteria[c.key] ?? 0) }))
           .filter(x => x.d > 0.12).sort((a, b) => b.d - a.d).slice(0, 3).map(x => x.label),
       }));
   }, [selected, neighborSet, board]);
@@ -133,31 +160,47 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
     const hit = board.scored.find(s => s.symbol.toUpperCase() === q) || board.scored.find(s => s.symbol.toUpperCase().includes(q));
     if (hit) { setPinned(hit.symbol); setSelectedSym(hit.symbol); }
   };
-  // ── 100-point weight budget ──────────────────────────────────────────────
-  const draftTotal = CRITERIA.reduce((s, c) => s + (draft[c.key] || 0), 0);
+  // ── 100-point weight budget (over the criteria with data in this snapshot) ──
+  const draftTotal = activeKeys.reduce((s, k) => s + (draft[k] || 0), 0);
   const draftValid = draftTotal === 100;
-  const appliedPoints = pointsOfWeights(weightOverride || MODALITY_PROFILES[modality].weights);
-  const dirty = CRITERIA.some(c => (draft[c.key] || 0) !== (appliedPoints[c.key] || 0));
+  const appliedPoints = pointsOfWeights(weightOverride || MODALITY_PROFILES[modality].weights, activeKeys);
+  const dirty = activeKeys.some(k => (draft[k] || 0) !== (appliedPoints[k] || 0));
   const setDraftPoint = (k: CriterionKey, v: number) => setDraft(d => ({ ...d, [k]: Math.max(0, Math.min(100, Math.round(v))) }));
   // Apply is the SAVE step — only allowed when the budget totals exactly 100.
-  const applyWeights = () => { if (!draftValid) return; const w = {} as Record<CriterionKey, number>; for (const c of CRITERIA) w[c.key] = (draft[c.key] || 0) / 100; setWeightOverride(w); };
-  const resetWeights = () => { setWeightOverride(null); setDraft(pointsOfWeights(MODALITY_PROFILES[modality].weights)); };
+  const applyWeights = () => { if (!draftValid) return; const w = {} as Record<CriterionKey, number>; for (const k of activeKeys) w[k] = (draft[k] || 0) / 100; setWeightOverride(w); };
+  const resetWeights = () => { setWeightOverride(null); setDraft(pointsOfWeights(MODALITY_PROFILES[modality].weights, activeKeys)); };
   // Proportionally snap the draft so it totals exactly 100 (integer, remainder to the largest slices).
   const rebalanceWeights = () => {
     const t = draftTotal;
-    if (t <= 0) { setDraft(pointsOfWeights(MODALITY_PROFILES[modality].weights)); return; }
+    if (t <= 0) { setDraft(pointsOfWeights(MODALITY_PROFILES[modality].weights, activeKeys)); return; }
     const scaled = {} as Record<CriterionKey, number>; let acc = 0;
-    for (const c of CRITERIA) { scaled[c.key] = Math.round((draft[c.key] || 0) / t * 100); acc += scaled[c.key]; }
+    for (const k of activeKeys) { scaled[k] = Math.round((draft[k] || 0) / t * 100); acc += scaled[k]; }
     let diff = 100 - acc;
-    const order = [...CRITERIA].sort((a, b) => (scaled[b.key] - scaled[a.key]));
-    for (let i = 0; diff !== 0 && i < order.length; i++) { const k = order[i].key; const nv = scaled[k] + (diff > 0 ? 1 : -1); if (nv >= 0) { scaled[k] = nv; diff += diff > 0 ? -1 : 1; } }
+    const order = activeKeys.slice().sort((a, b) => (scaled[b] - scaled[a]));
+    for (let i = 0; diff !== 0 && i < order.length; i++) { const k = order[i]; const nv = scaled[k] + (diff > 0 ? 1 : -1); if (nv >= 0) { scaled[k] = nv; diff += diff > 0 ? -1 : 1; } }
     setDraft(scaled);
   };
 
   const card = isDark ? 'bg-slate-900 border-slate-700' : 'bg-white border-slate-200';
   const snapMeta = snapshots.find(s => String(s.id) === snapId);
 
-  if (loading) return <div className="h-full flex flex-col items-center justify-center gap-3 text-slate-500"><Loader2 className="w-7 h-7 animate-spin text-blue-500" /><p className="text-sm">Building the ranking board…</p></div>;
+  if (loading) {
+    // Rotating status so the user sees it's actively working, not frozen.
+    const stage = elapsed < 2 ? 'Connecting to the evidence store…'
+      : elapsed < 6 ? 'Fetching evidence across all axes…'
+      : elapsed < 12 ? 'Assembling per-target evidence…'
+      : 'Scoring and ranking targets…';
+    return (
+      <div className="h-full flex flex-col items-center justify-center gap-3 px-8 text-center">
+        <Loader2 className="w-7 h-7 animate-spin text-blue-500" />
+        <div>
+          <p className={`text-sm font-semibold ${isDark ? 'text-slate-200' : 'text-slate-700'}`}>Getting evidence… <span className="tabular-nums font-normal text-slate-400">{elapsed}s</span></p>
+          <p className="text-xs text-slate-400 mt-1">{stage}</p>
+        </div>
+        <p className="text-[11px] text-slate-400 max-w-xs leading-snug">Pulling this disease's full evidence set from the store. First load only — it's cached afterward, so reopening is instant.</p>
+      </div>
+    );
+  }
   if (error) return <div className="h-full flex flex-col items-center justify-center gap-2 text-center p-8"><Trophy className="w-10 h-10 text-slate-400 mb-2" /><p className="text-sm font-semibold text-red-500">Couldn't load the board</p><p className="text-xs text-slate-500 max-w-md">{error}</p></div>;
 
   return (
@@ -181,7 +224,8 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
           <button onClick={() => setShowWeights(v => !v)} className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border text-[11px] font-semibold ${card} ${isDark ? 'text-slate-200' : 'text-slate-700'}`}><Sliders className="w-3.5 h-3.5" /> Weights</button>
           <button onClick={() => navigate('/Methodologies')} title="How the board scores and ranks targets — opens /Methodologies" className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border text-[11px] font-semibold ${card} ${isDark ? 'text-slate-200' : 'text-slate-700'}`}><BookOpen className="w-3.5 h-3.5" /> Methodology</button>
         </div>
-        {/* modality selector — the lever */}
+        {/* modality selector — the lever. Only validated modalities are shown; the rest are
+            deferred until they have modality-specific criteria (professor's guidance). */}
         <div className="flex items-center gap-1.5 flex-wrap">
           <span className={`text-[10px] font-black uppercase tracking-widest ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Modality</span>
           {MODALITY_ORDER.map(m => (
@@ -191,6 +235,11 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
             </button>
           ))}
           <span className="text-[11px] text-slate-500 ml-1 hidden lg:inline">— {MODALITY_PROFILES[modality].note}</span>
+          {MODALITY_ORDER.length < 5 && (
+            <span className="text-[10px] text-slate-400 ml-1 italic" title="Antibody, PROTAC, RNA and gene therapy need their own criteria (immunogenicity, extracellular localization, delivery…) before their rankings are shown. See Methodology.">
+              Antibody · PROTAC · RNA · gene therapy — in development
+            </span>
+          )}
         </div>
         {/* weight budget — 100 points allocated across the 8 criteria; must total 100 to apply */}
         {showWeights && (
@@ -206,7 +255,7 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
               </div>
             </div>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-x-4 gap-y-2">
-              {CRITERIA.map(c => (
+              {activeDefs.map(c => (
                 <div key={c.key} className="flex flex-col gap-0.5">
                   <div className="flex justify-between items-center text-[10px]"><span className="font-semibold text-slate-600 dark:text-slate-300">{c.label}</span><span className="text-slate-500 tabular-nums">{draft[c.key] || 0} pt</span></div>
                   <input type="range" min={0} max={60} value={draft[c.key] || 0} onChange={e => setDraftPoint(c.key, Number(e.target.value))} className="w-full accent-blue-600 h-1" />
@@ -240,7 +289,7 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
               <tr className={`${isDark ? 'text-slate-400 border-slate-800' : 'text-slate-500 border-slate-200'} border-b`}>
                 <th className="text-left font-bold px-3 py-2 w-12">#</th>
                 <th className="text-left font-bold px-2 py-2">Target</th>
-                {CRITERIA.map(c => <th key={c.key} title={`${c.label}: ${c.definition}`} className="text-center font-semibold px-1 py-2 w-[68px]">{c.label}</th>)}
+                {activeDefs.map(c => <th key={c.key} title={`${c.label}: ${c.definition}`} className="text-center font-semibold px-1 py-2 w-[68px]">{c.label}</th>)}
                 <th className="text-right font-bold px-3 py-2 w-24">Overall</th>
               </tr>
             </thead>
@@ -259,7 +308,7 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
                       {isPinned && <span className="ml-1.5 text-[9px] font-bold uppercase text-blue-500">your target</span>}
                       {s.gated && <span className="ml-1.5 text-[9px] text-slate-400" title={s.gateNote}>· gated</span>}
                     </td>
-                    {CRITERIA.map(c => { const v = s.criteria[c.key]; const rel = relOf(v, c.key); return (
+                    {activeDefs.map(c => { const v = s.criteria[c.key]; const rel = relOf(v, c.key); return (
                       <td key={c.key} className="px-1 py-1.5">
                         <div className={`h-1.5 rounded-full ${isDark ? 'bg-slate-800' : 'bg-slate-100'}`} title={v == null || rel == null ? 'no data' : `${c.label}: ${(rel * 100).toFixed(0)}/100 vs field (absolute ${(v * 100).toFixed(0)})`}>
                           {rel != null && <div className="h-1.5 rounded-full" style={{ width: `${Math.max(3, rel * 100)}%`, background: barBg(rel) }} />}
@@ -283,7 +332,7 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
             <div className={`p-4 border-b flex items-start justify-between ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
               <div>
                 <div className={`text-lg font-black ${isDark ? 'text-white' : 'text-slate-900'}`}>{selected.symbol}</div>
-                <div className="text-[11px] text-slate-500">Rank #{selected.boardRank} · overall {selected.display}/100 · {selected.coverage}/8 criteria · {MODALITY_PROFILES[modality].label}</div>
+                <div className="text-[11px] text-slate-500">Rank #{selected.boardRank} · overall {selected.display}/100 · {selected.coverage}/{activeDefs.length} criteria · {MODALITY_PROFILES[modality].label}</div>
                 {selected.gated && <div className="text-[11px] text-amber-500 mt-1">⚠ {selected.gateNote}</div>}
               </div>
               <button onClick={() => setSelectedSym(null)} className="text-slate-400 hover:text-slate-600"><X className="w-4 h-4" /></button>
@@ -314,7 +363,7 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
                 <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">Score by criterion</p>
                 <span className="text-[9px] text-slate-400">bars = standing vs. field (best = 100)</span>
               </div>
-              {CRITERIA.map(c => {
+              {activeDefs.map(c => {
                 const v = selected.criteria[c.key]; const w = effWeights[c.key];
                 // Network fallback: no stored WINNER (gene outside the top-2000 set) → show live
                 // connectivity from the neighbours we already fetched. Labeled, and NOT in the overall.

@@ -8,7 +8,11 @@ import React from 'react';
 import { X, Trophy, ShieldCheck, FlaskConical, Ban, Scale, Gauge } from 'lucide-react';
 import { CRITERIA, MODALITY_PROFILES, CORE_CRITERIA, criterionBreakdown, type ModalityKey, type CriterionKey } from './rankingBoard';
 
-const MODALITY_ORDER: ModalityKey[] = ['small_molecule', 'antibody', 'protac', 'mrna', 'gene_therapy'];
+// Only validated modalities appear in the weights table; the rest are documented as
+// "in development" below (they re-weight SM-oriented criteria but lack their own biology).
+const ALL_MODALITIES: ModalityKey[] = ['small_molecule', 'antibody', 'protac', 'mrna', 'gene_therapy'];
+const MODALITY_ORDER: ModalityKey[] = ALL_MODALITIES.filter(m => MODALITY_PROFILES[m].ready);
+const DEFERRED_MODALITIES: ModalityKey[] = ALL_MODALITIES.filter(m => !MODALITY_PROFILES[m].ready);
 // Short column headers (the full labels are too wide for a 5-column table).
 const MODALITY_SHORT: Record<ModalityKey, string> = {
   small_molecule: 'Small molecule', antibody: 'Antibody / ADC', protac: 'Degrader', mrna: 'mRNA / siRNA', gene_therapy: 'Gene therapy',
@@ -65,7 +69,7 @@ export default function MethodologyView({ isDark, onClose }: { isDark: boolean; 
             <div className="grid sm:grid-cols-3 gap-3">
               {[
                 { icon: Scale, t: 'Weighted sum, leader = 100', d: 'Overall = Σ (criterion score × weight) over the criteria a target has data for, rescaled so the disease’s strongest eligible target = 100.' },
-                { icon: Gauge, t: 'Modality is the lever', d: 'Choosing small-molecule vs antibody vs siRNA swaps the weight vector (and can gate ineligible targets), so the ranking reshuffles live.' },
+                { icon: Gauge, t: 'Modality re-weights the criteria', d: 'The framework lets a modality swap the weight vector (and gate ineligible targets). Only small-molecule is validated and shown today — other modalities are deferred until they have their own criteria (below).' },
                 { icon: ShieldCheck, t: 'Fact vs prediction, never mixed', d: 'Measured evidence and model predictions are tagged separately. Novel targets are not punished for lacking trials or papers.' },
               ].map((b, i) => (
                 <div key={i} className={`rounded-xl border p-3.5 ${card}`}>
@@ -81,7 +85,7 @@ export default function MethodologyView({ isDark, onClose }: { isDark: boolean; 
           <section className="space-y-3">
             <div>
               <h2 className={`text-[13px] font-black uppercase tracking-wider ${heading}`}>Indicators &amp; weights</h2>
-              <p className={`text-[11px] ${sub}`}>The weight each criterion carries by modality. Every column sums to 100 points — the professor’s 100-point allocation.</p>
+              <p className={`text-[11px] ${sub}`}>The weight each criterion carries, as a 100-point allocation (the column sums to 100). Shown for the validated small-molecule modality; others are in development (below).</p>
             </div>
             <div className={`rounded-xl border overflow-x-auto ${card}`}>
               <table className="w-full text-[12px] border-collapse min-w-[560px]">
@@ -114,10 +118,34 @@ export default function MethodologyView({ isDark, onClose }: { isDark: boolean; 
             </div>
             <div className={`flex flex-wrap items-center gap-x-4 gap-y-1 text-[10.5px] ${sub}`}>
               <span className="inline-flex items-center gap-1"><span className={`text-[8px] font-black uppercase px-1 py-px rounded ${isDark ? 'bg-slate-800 text-slate-400' : 'bg-slate-100 text-slate-500'}`}>core</span> missing data here penalises the score (real evidence gap)</span>
-              <span className="inline-flex items-center gap-1"><Ban className="w-3 h-3 text-amber-500" /> Antibody / ADC also <strong>gates</strong>: only surface or secreted targets are eligible.</span>
-              <span>Tractability is 0% for mRNA / gene therapy — no binding pocket is required.</span>
             </div>
           </section>
+
+          {/* ── Modalities in development (deferred, conservative) ── */}
+          {DEFERRED_MODALITIES.length > 0 && (
+            <section className="space-y-3">
+              <div>
+                <h2 className={`text-[13px] font-black uppercase tracking-wider ${heading}`}>Modalities in development</h2>
+                <p className={`text-[11px] ${sub}`}>
+                  Only small-molecule is shown today. The modalities below would re-weight the same eight criteria, but those criteria
+                  are small-molecule-oriented — they don’t yet capture the biology each other modality actually depends on. Rather than
+                  present rankings that look authoritative but aren’t validated, we <strong className={heading}>withhold them until their own
+                  criteria exist</strong>. Each needs the signals listed before it will be enabled.
+                </p>
+              </div>
+              <div className={`rounded-xl border divide-y ${isDark ? 'border-slate-800 divide-slate-800' : 'border-slate-200 divide-slate-100'} ${card}`}>
+                {DEFERRED_MODALITIES.map(m => (
+                  <div key={m} className="px-4 py-3 flex items-start gap-3">
+                    <Ban className="w-3.5 h-3.5 text-amber-500 mt-0.5 shrink-0" />
+                    <div>
+                      <p className={`text-[12px] font-bold ${heading}`}>{MODALITY_PROFILES[m].label} <span className={`ml-1 text-[9px] font-black uppercase tracking-wide ${isDark ? 'text-amber-400' : 'text-amber-600'}`}>in development</span></p>
+                      <p className={`text-[11px] leading-snug ${sub}`}>Needs: {MODALITY_PROFILES[m].pendingCriteria || 'modality-specific criteria'}.</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
 
           {/* ── Per-criterion detail ── */}
           <section className="space-y-3">
@@ -178,13 +206,13 @@ export default function MethodologyView({ isDark, onClose }: { isDark: boolean; 
               <p className={`text-[12px] leading-relaxed ${sub}`}>
                 The board is <strong className={heading}>benchmarked</strong>, not just asserted. Using known drug targets for the disease as a
                 gold set — with <strong className={heading}>tractability held out</strong> to avoid leakage — the small-molecule ranking reaches
-                <strong className={heading}> ROC-AUC 0.82</strong> (enrichment 7.8× in the top 5%), ahead of the earlier funnel’s 0.74. Other
-                modalities: degrader 0.78, mRNA 0.70, gene therapy 0.68, antibody 0.64. Weights are first-proposal values calibrated by eye and
-                exposed as sliders — the benchmark is how any change is judged before it ships.
+                <strong className={heading}> ROC-AUC 0.82</strong> (enrichment 7.8× in the top 5%), ahead of the earlier funnel’s 0.74. Weights are
+                first-proposal values calibrated by eye and exposed as sliders — the benchmark is how any change is judged before it ships.
               </p>
               <p className={`text-[10px] mt-2 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
-                Antibody grading is judged against a small-molecule-biased gold set, so its number understates real antibody performance — an
-                antibody-specific gold set is the honest fix.
+                Only small-molecule is validated this way. The gold set (known drug targets) is small-molecule-biased, so grading the other
+                modalities against it would understate them — another reason their rankings are withheld until they have their own criteria and
+                an appropriate gold set.
               </p>
             </div>
           </section>

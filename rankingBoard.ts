@@ -19,7 +19,7 @@ export interface CriterionDef { key: CriterionKey; label: string; definition: st
 // definition + where each candidate scores + the evidence").
 export const CRITERIA: CriterionDef[] = [
   { key: 'genetics',     label: 'Genetics',      definition: 'Causal disease association and somatic mutation burden — how strongly genetics implicates this gene in the disease.', source: 'Open Targets genetic association · cBioPortal mutation frequency' },
-  { key: 'expression',   label: 'Disease expr.', definition: 'Dysregulation in disease vs normal tissue — magnitude of tumour-vs-normal change at the mRNA and protein level.', source: 'UCSC Xena (mRNA log2FC) · CPTAC/LinkedOmics (protein log2FC)' },
+  { key: 'expression',   label: 'Expression',    definition: 'Dysregulation in disease vs normal tissue — magnitude of tumour-vs-normal change at the mRNA and protein level.', source: 'UCSC Xena (mRNA log2FC) · CPTAC/LinkedOmics (protein log2FC)' },
   { key: 'dependency',   label: 'Dependency',    definition: 'How essential the gene is in disease cell lines (CRISPR knockout effect) — a strong dependency means knocking it out hurts the tumour.', source: 'DepMap Chronos' },
   { key: 'tractability', label: 'Tractability',  definition: 'How druggable the protein is — whether a therapeutic of the chosen modality can engage it.', source: 'Open Targets tractability' },
   { key: 'safety',       label: 'Safety',        definition: 'Tolerance to perturbation — loss-of-function constraint, curated safety liabilities, and whether the gene is pan-essential (a lower score = more risk).', source: 'gnomAD LOEUF · Open Targets safety · common-essential flag' },
@@ -39,7 +39,19 @@ export interface ModalityProfile {
   weights: Record<CriterionKey, number>;   // relative; normalised at build time
   gate?: (g: any) => boolean;               // eligibility (e.g. antibody ⇒ surface/secreted)
   gateNote?: string;
+  // Only "ready" modalities are shown. The non-SM profiles re-weight the SAME eight
+  // small-molecule-oriented criteria; they do NOT yet model modality-specific biology
+  // (immunogenicity, extracellular localization, delivery, ternary-complex formation…),
+  // so — per the professor — we don't display their rankings until those criteria exist.
+  // The profiles stay in code so re-enabling is one flag once the criteria are built.
+  ready: boolean;
+  pendingCriteria?: string;                 // what still needs to exist before this is shown
 }
+
+// Modalities we actually surface in the UI. Small-molecule is the only validated one today
+// (benchmarked ROC-AUC 0.82); the rest are deferred until they have their own criteria.
+export const readyModalities = (): ModalityKey[] =>
+  (Object.keys(MODALITY_PROFILES) as ModalityKey[]).filter(k => MODALITY_PROFILES[k].ready);
 
 // First-proposal weight profiles — the *shape* the professor described. Shipped as
 // defaults; the UI exposes them as adjustable sliders so they can be calibrated by eye.
@@ -47,6 +59,7 @@ export const MODALITY_PROFILES: Record<ModalityKey, ModalityProfile> = {
   small_molecule: {
     key: 'small_molecule', label: 'Small molecule', note: 'Balanced; leans on a ligandable pocket (tractability) and dependency.',
     weights: { genetics: 0.15, expression: 0.12, dependency: 0.15, tractability: 0.20, safety: 0.13, clinical: 0.10, literature: 0.05, network: 0.10 },
+    ready: true,
   },
   antibody: {
     key: 'antibody', label: 'Antibody / ADC', note: 'Requires the target to be on the cell surface or secreted; weights surface abundance and selectivity.',
@@ -54,19 +67,23 @@ export const MODALITY_PROFILES: Record<ModalityKey, ModalityProfile> = {
     weights: { genetics: 0.14, expression: 0.21, dependency: 0.09, tractability: 0.14, safety: 0.19, clinical: 0.12, literature: 0.05, network: 0.06 },
     gate: (g) => g?.surface_or_secreted === true,
     gateNote: 'Not surface/secreted — unreachable by an antibody.',
+    ready: false, pendingCriteria: 'extracellular localization, surface abundance, immunogenicity',
   },
   protac: {
     key: 'protac', label: 'Degrader (PROTAC)', note: 'Needs a ligandable handle and enough expressed protein to degrade; intracellular.',
     // Integer-percent points summing to 100 (reproduces the prior effective weights to the nearest 1%).
     weights: { genetics: 0.14, expression: 0.17, dependency: 0.16, tractability: 0.17, safety: 0.13, clinical: 0.08, literature: 0.04, network: 0.11 },
+    ready: false, pendingCriteria: 'ternary-complex feasibility, E3-ligase co-expression, lysine availability',
   },
   mrna: {
     key: 'mrna', label: 'mRNA / siRNA (knockdown)', note: 'No binding pocket needed — dependency dominates (knockdown must matter); values knockdown tolerance.',
     weights: { genetics: 0.15, expression: 0.15, dependency: 0.28, tractability: 0.0, safety: 0.20, clinical: 0.07, literature: 0.05, network: 0.10 },
+    ready: false, pendingCriteria: 'delivery / tissue targeting, knockdown durability, off-target risk',
   },
   gene_therapy: {
     key: 'gene_therapy', label: 'Gene therapy', note: 'Genetic causality dominates; loss-of-function biology and safety weigh heavily.',
     weights: { genetics: 0.35, expression: 0.08, dependency: 0.12, tractability: 0.0, safety: 0.25, clinical: 0.08, literature: 0.04, network: 0.08 },
+    ready: false, pendingCriteria: 'vector tropism / delivery, expression durability, immunogenicity',
   },
 };
 
@@ -233,17 +250,32 @@ export function normaliseWeights(w: Record<CriterionKey, number>): Record<Criter
 export function buildBoard(genes: any[], modality: ModalityKey, weightOverride?: Record<CriterionKey, number>): {
   scored: ScoredGene[]; weights: Record<CriterionKey, number>; profile: ModalityProfile;
   criterionMax: Record<CriterionKey, number>;   // field-leader value per criterion — DISPLAY normalization only (not scoring)
+  activeCriteria: CriterionKey[];               // criteria with data in THIS snapshot (e.g. no dependency for a non-cancer disease)
+  criterionCoverage: Record<CriterionKey, number>;
 } {
   const profile = MODALITY_PROFILES[modality];
-  const weights = normaliseWeights(weightOverride || profile.weights);
+  const rawW = weightOverride || profile.weights;
 
-  const pre = genes.map(g => {
-    const criteria = criterionScores(g);
+  // Score every gene once, then measure per-criterion coverage across the whole field.
+  const allCriteria = genes.map(g => criterionScores(g));
+  const criterionCoverage = {} as Record<CriterionKey, number>;
+  for (const c of CRITERIA) { let n = 0; for (const sc of allCriteria) if (sc[c.key] != null) n++; criterionCoverage[c.key] = n; }
+
+  // ACTIVE = criteria that actually have data in this snapshot AND carry weight. A criterion that
+  // is empty for EVERY gene (e.g. dependency for a non-cancer disease like Alzheimer's) is dropped
+  // entirely: hidden from the UI and removed from the weight budget, which is renormalised over the
+  // remaining criteria. Because the axis was absent for the whole field, this does NOT change the
+  // ranking (it rescales every score by the same factor) — it just stops a dead axis wasting budget.
+  const activeCriteria = CRITERIA.filter(c => criterionCoverage[c.key] > 0).map(c => c.key);
+  const activeSum = activeCriteria.reduce((s, k) => s + Math.max(0, rawW[k] || 0), 0) || 1;
+  const weights = {} as Record<CriterionKey, number>;
+  for (const c of CRITERIA) weights[c.key] = activeCriteria.includes(c.key) ? Math.max(0, rawW[c.key] || 0) / activeSum : 0;
+
+  const pre = genes.map((g, i) => {
+    const criteria = allCriteria[i];
     const gated = !!(profile.gate && !profile.gate(g));
-    // Weighted sum over present criteria (a missing criterion contributes 0). Weights sum to 1,
-    // so breadth of evidence matters — a single-signal gene can't tie a fully-evidenced target.
-    // (The review's A2 "coverage-normalize context vs core" redesign is deferred — a naive
-    // present-mean version demoted real drivers like KRAS, so it needs benchmark-guided tuning.)
+    // Weighted sum over present ACTIVE criteria (a missing one contributes 0). Weights sum to 1
+    // over the active set, so breadth of evidence still matters.
     let overall = 0, coverage = 0;
     for (const c of CRITERIA) {
       const v = criteria[c.key], w = weights[c.key];
@@ -269,5 +301,5 @@ export function buildBoard(genes: any[], modality: ModalityKey, weightOverride?:
     for (const p of pre) { const v = p.criteria[c.key]; if (v != null && isFinite(v) && v > mx) mx = v; }
     criterionMax[c.key] = mx > 0 ? mx : 1;
   }
-  return { scored, weights, profile, criterionMax };
+  return { scored, weights, profile, criterionMax, activeCriteria, criterionCoverage };
 }
