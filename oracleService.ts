@@ -290,7 +290,41 @@ export async function saveAxisEvidence(
         await conn.execute(`DELETE FROM ${T('evidence')} WHERE snapshot_id = :s AND evidence_type = :t`, { s: snapshotId, t });
       }
     }
-    for (const r of rows) await insertEvidence(conn, { ...r, snapshot_id: snapshotId, disease_id: diseaseId, generated_by: r.generated_by ?? 'job', audit_status: r.audit_status ?? 'not_audited' });
+    // Batched insert (executeMany) instead of one round-trip per row — a 6k-row axis
+    // dropped from ~15 min (row-by-row over VPN) to a few seconds. Same columns/limits as
+    // insertEvidence(); value_json is bound as a JSON string into the CLOB column.
+    const EV_SQL = `INSERT INTO ${T('evidence')}
+       (snapshot_id, disease_id, gene_symbol, evidence_type, source, source_url, value_text, value_json, retrieved_at, generated_by, audit_status)
+     VALUES (:snapshot_id,:disease_id,:gene_symbol,:evidence_type,:source,:source_url,:value_text,:value_json,:retrieved_at,:generated_by,:audit_status)`;
+    const EV_BINDDEFS: Record<string, any> = {
+      snapshot_id:   { type: oracledb.NUMBER },
+      disease_id:    { type: oracledb.STRING, maxSize: 100 },
+      gene_symbol:   { type: oracledb.STRING, maxSize: 64 },
+      evidence_type: { type: oracledb.STRING, maxSize: 60 },
+      source:        { type: oracledb.STRING, maxSize: 100 },
+      source_url:    { type: oracledb.STRING, maxSize: 1000 },
+      value_text:    { type: oracledb.STRING, maxSize: 4000 },
+      value_json:    { type: oracledb.CLOB },
+      retrieved_at:  { type: oracledb.DATE },
+      generated_by:  { type: oracledb.STRING, maxSize: 200 },
+      audit_status:  { type: oracledb.STRING, maxSize: 40 },
+    };
+    const evBinds = rows.map((r) => ({
+      snapshot_id: snapshotId,
+      disease_id: String(diseaseId ?? 'unknown').slice(0, 100),
+      gene_symbol: String(r.gene_symbol ?? '').slice(0, 64),
+      evidence_type: String(r.evidence_type).slice(0, 60),
+      source: String(r.source ?? 'unknown').slice(0, 100),
+      source_url: r.source_url ? String(r.source_url).slice(0, 1000) : null,
+      value_text: r.value_text ? String(r.value_text).slice(0, 4000) : null,
+      value_json: JSON.stringify(r.value_json ?? {}),
+      retrieved_at: r.retrieved_at ? new Date(r.retrieved_at) : new Date(),
+      generated_by: String(r.generated_by ?? 'job').slice(0, 200),
+      audit_status: String(r.audit_status ?? 'not_audited').slice(0, 40),
+    }));
+    for (let i = 0; i < evBinds.length; i += 1000) {
+      await conn.executeMany(EV_SQL, evBinds.slice(i, i + 1000), { bindDefs: EV_BINDDEFS });
+    }
     await logAudit(conn, { actor: actor ?? 'job', action: 'evidence_saved', entity: 'evidence', entity_id: String(snapshotId), disease_id: diseaseId, details: { count: rows.length, types } });
     await conn.commit();
     return { count: rows.length, types };

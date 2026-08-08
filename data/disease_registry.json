@@ -107,6 +107,14 @@
       "expression": { "ref_file": "expression_kirc.json", "xena_primary_site": "Kidney", "xena_tcga_disease": "clear cell", "source_label": "UCSC Xena Toil (TCGA-KIRC vs GTEx kidney)" },
       "dependency": { "ref_file": "depmap_kirc.json", "depmap_lineage": "Kidney", "source_label": "DepMap CRISPR (Chronos, Kidney)" },
       "cbioportal_study": "kirc_tcga_pan_can_atlas_2018"
+    },
+    {
+      "key": "ad",
+      "disease_name": "Alzheimer disease",
+      "mondo": "MONDO_0004975",
+      "aliases": ["alzheimer"],
+      "_note": "Non-cancer disease. Expression is from GSE5281 (bulk-brain microarray, AD-vulnerable regions EC+HIP+MTG, AD vs control) built directly into expression_ad.json — NOT the TCGA/GTEx (build_expression.mjs) pipeline. Dependency (DepMap = cancer cell lines) and CPTAC proteomics do NOT apply to AD, so they are intentionally omitted.",
+      "expression": { "ref_file": "expression_ad.json", "source_label": "GSE5281 — Alzheimer vs control brain (EC+HIP+MTG, GPL570 microarray)" }
     }
   ]
 }
