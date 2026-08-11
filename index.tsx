@@ -113,7 +113,7 @@ import { glossaryPromptBlock } from './dashboardGlossary';
 import JobsView from './JobsView';
 import { getCbioMutations } from './cbioportalService';
 import { getChEMBLDruggability } from './chemblService';
-import { supabase, authenticatedFetch, clearSupabaseSessionStorage, getInitialSession, fetchGlobalWeights, saveGlobalWeights, fetchUserProfile, updateUserProfile, saveRankingSnapshot, fetchSnapshots, fetchSnapshot, deleteSnapshot, savePaper, fetchEvidenceGeneSymbols, saveHarvest, type HarvestRow, type RankingSnapshotMeta } from './supabase';
+import { supabase, authenticatedFetch, clearSupabaseSessionStorage, getInitialSession, sendPasswordReset, updatePassword, fetchGlobalWeights, saveGlobalWeights, fetchUserProfile, updateUserProfile, saveRankingSnapshot, fetchSnapshots, fetchSnapshot, deleteSnapshot, savePaper, fetchEvidenceGeneSymbols, saveHarvest, type HarvestRow, type RankingSnapshotMeta } from './supabase';
 import {
   Target,
   DrugInfo,
@@ -3437,6 +3437,11 @@ const App = () => {
   const [currentUser, setCurrentUser] = useState<UserSession | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const isAuthenticated = !!currentUser;
+  // Password-recovery: set true when the user arrives via a reset-email link (Supabase fires
+  // 'PASSWORD_RECOVERY', and the URL hash carries type=recovery). Shows the set-new-password screen.
+  const [recoveryMode, setRecoveryMode] = useState<boolean>(
+    typeof window !== 'undefined' && /type=recovery/.test(window.location.hash),
+  );
 
   // ── Role gating: researchers get a limited nav; admins get everything. An admin can
   // temporarily "view as researcher" to preview that experience (local, this session only). ──
@@ -3484,7 +3489,12 @@ const App = () => {
       .then(({ data }) => {
         if (!mounted) return;
         applySession(data.session);
-        subscription = supabase.auth.onAuthStateChange((_event, session) => applySession(session)).data.subscription;
+        subscription = supabase.auth.onAuthStateChange((event, session) => {
+          // A reset-email link puts the user in a recovery session — don't log them straight
+          // in; show the set-new-password screen instead (cleared once they set it).
+          if (event === 'PASSWORD_RECOVERY') { if (mounted) { setRecoveryMode(true); setAuthLoading(false); } return; }
+          applySession(session);
+        }).data.subscription;
       })
       .catch(() => {
         if (!mounted) return;
@@ -5711,6 +5721,9 @@ ${glossaryPromptBlock()}`;
     </div>
   );
 
+  if (recoveryMode) return <ResetPasswordPage theme={theme} toggleTheme={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}
+    onDone={() => { setRecoveryMode(false); if (typeof window !== 'undefined' && window.location.hash) history.replaceState(null, '', window.location.pathname + window.location.search); }} />;
+
   if (!isAuthenticated) return <SignInPage theme={theme} toggleTheme={() => setTheme(t => t === 'dark' ? 'light' : 'dark')} />;
 
   return (
@@ -6894,7 +6907,7 @@ ${glossaryPromptBlock()}`;
 };
 
 const SignInPage = ({ theme, toggleTheme }: { theme: Theme; toggleTheme: () => void }) => {
-  const [mode, setMode]           = useState<'signin' | 'signup'>('signin');
+  const [mode, setMode]           = useState<'signin' | 'signup' | 'reset'>('signin');
   const [email, setEmail]         = useState('');
   const [password, setPassword]   = useState('');
   const [confirm, setConfirm]     = useState('');
@@ -6963,6 +6976,24 @@ const SignInPage = ({ theme, toggleTheme }: { theme: Theme; toggleTheme: () => v
     }
   };
 
+  const handleReset = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!email.trim()) { setError('Enter your email to receive a reset link.'); return; }
+    setBusy(true); setError(''); setInfo('');
+    try {
+      const { ok, error } = await sendPasswordReset(email.trim());
+      // Don't reveal whether an account exists — always show the same confirmation.
+      if (!ok && error && /rate|too many/i.test(error)) { setError('Too many requests — wait a minute and try again.'); return; }
+      setInfo('If an account exists for that email, a password-reset link is on its way. Check your inbox (and spam).');
+    } catch (err: any) {
+      setError(err?.message || 'Could not send the reset link. Check your network and try again.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const submitHandler = mode === 'signin' ? handleSignIn : mode === 'signup' ? handleSignUp : handleReset;
+
   return (
     <div className={`h-screen flex items-center justify-center p-6 ${theme === 'dark' ? 'bg-[#0a0a0a]' : 'bg-neutral-50'}`}>
       <div className={`w-full max-w-sm rounded-2xl border transition-all ${theme === 'dark' ? 'bg-[#171717] border-neutral-800 shadow-2xl' : 'bg-white border-neutral-200 shadow-2xl shadow-blue-900/10'}`}>
@@ -6995,15 +7026,26 @@ const SignInPage = ({ theme, toggleTheme }: { theme: Theme; toggleTheme: () => v
         </div>
 
         {/* Form */}
-        <form onSubmit={mode === 'signin' ? handleSignIn : handleSignUp} className="px-10 pb-6 space-y-4">
+        <form onSubmit={submitHandler} className="px-10 pb-6 space-y-4">
+          {mode === 'reset' && (
+            <p className="text-[12px] text-neutral-500 dark:text-neutral-400 -mt-1">Enter your email and we'll send you a link to reset your password.</p>
+          )}
           <div className="space-y-1.5">
             <label className="text-[10px] font-bold uppercase text-neutral-500 ml-1 tracking-widest">Email</label>
             <input type="email" value={email} onChange={e => setEmail(e.target.value)} autoComplete="email" className={inputCls} placeholder="you@institution.edu" />
           </div>
+          {mode !== 'reset' && (
           <div className="space-y-1.5">
-            <label className="text-[10px] font-bold uppercase text-neutral-500 ml-1 tracking-widest">Password</label>
+            <div className="flex items-center justify-between ml-1">
+              <label className="text-[10px] font-bold uppercase text-neutral-500 tracking-widest">Password</label>
+              {mode === 'signin' && (
+                <button type="button" onClick={() => { setMode('reset'); setError(''); setInfo(''); }}
+                  className="text-[10px] font-bold text-blue-600 hover:text-blue-500 tracking-wide">Forgot password?</button>
+              )}
+            </div>
             <input type="password" value={password} onChange={e => setPassword(e.target.value)} autoComplete={mode === 'signin' ? 'current-password' : 'new-password'} className={inputCls} placeholder="••••••••" />
           </div>
+          )}
           {mode === 'signup' && (
             <div className="space-y-1.5">
               <label className="text-[10px] font-bold uppercase text-neutral-500 ml-1 tracking-widest">Confirm Password</label>
@@ -7026,9 +7068,109 @@ const SignInPage = ({ theme, toggleTheme }: { theme: Theme; toggleTheme: () => v
             className="w-full mt-2 p-4 bg-blue-600 text-white rounded-xl font-bold uppercase text-[12px] tracking-widest shadow-xl shadow-blue-600/20 hover:bg-blue-700 active:scale-95 transition-all flex items-center justify-center gap-3 disabled:opacity-60 disabled:cursor-not-allowed"
           >
             {busy ? <Loader2 className="w-5 h-5 animate-spin" /> : <ShieldCheck className="w-5 h-5" />}
-            {busy ? (mode === 'signin' ? 'Signing in…' : 'Creating account…') : (mode === 'signin' ? 'Sign In' : 'Create Account')}
+            {busy
+              ? (mode === 'signin' ? 'Signing in…' : mode === 'signup' ? 'Creating account…' : 'Sending link…')
+              : (mode === 'signin' ? 'Sign In' : mode === 'signup' ? 'Create Account' : 'Send reset link')}
           </button>
+
+          {mode === 'reset' && (
+            <button type="button" onClick={() => { setMode('signin'); setError(''); setInfo(''); }}
+              className="w-full text-center text-[11px] font-bold text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300 tracking-wide">
+              ← Back to sign in
+            </button>
+          )}
         </form>
+
+        <div className="pb-8 flex justify-center">
+          <button onClick={toggleTheme} className="p-3 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded-xl transition-colors">
+            {theme === 'dark' ? <Sun className="w-5 h-5 text-neutral-500" /> : <Moon className="w-5 h-5 text-neutral-600" />}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// Shown when the user returns via a password-reset email link (recovery session).
+// Sets the new password, then signs out so they log in fresh with it.
+const ResetPasswordPage = ({ theme, toggleTheme, onDone }: { theme: Theme; toggleTheme: () => void; onDone: () => void }) => {
+  const [password, setPassword] = useState('');
+  const [confirm, setConfirm]   = useState('');
+  const [error, setError]       = useState('');
+  const [busy, setBusy]         = useState(false);
+  const [done, setDone]         = useState(false);
+
+  const inputCls = `w-full p-4 rounded-xl border text-sm font-semibold outline-none transition-all ${
+    theme === 'dark'
+      ? 'bg-[#0a0a0a] border-neutral-800 text-white focus:border-blue-600'
+      : 'bg-neutral-50 border-neutral-300 text-neutral-900 focus:border-blue-600 focus:bg-white'
+  }`;
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (password.length < 8) { setError('Password must be at least 8 characters.'); return; }
+    if (password !== confirm) { setError('Passwords do not match.'); return; }
+    setBusy(true); setError('');
+    try {
+      const { ok, error } = await updatePassword(password);
+      if (!ok) { setError(error || 'Could not update the password. The reset link may have expired — request a new one.'); return; }
+      setDone(true);
+    } catch (err: any) {
+      setError(err?.message || 'Could not update the password. Try again.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const backToSignIn = async () => {
+    try { await supabase.auth.signOut(); } catch { /* ignore */ }
+    clearSupabaseSessionStorage();
+    onDone();
+  };
+
+  return (
+    <div className={`h-screen flex items-center justify-center p-6 ${theme === 'dark' ? 'bg-[#0a0a0a]' : 'bg-neutral-50'}`}>
+      <div className={`w-full max-w-sm rounded-2xl border transition-all ${theme === 'dark' ? 'bg-[#171717] border-neutral-800 shadow-2xl' : 'bg-white border-neutral-200 shadow-2xl shadow-blue-900/10'}`}>
+        <div className="flex flex-col items-center gap-6 pt-10 pb-6 px-10 text-center">
+          <div className="p-4 bg-blue-600 rounded-2xl shadow-xl shadow-blue-600/30 rotate-3 transition-transform hover:rotate-0">
+            <FlaskConical className="w-10 h-10 text-white" />
+          </div>
+          <div>
+            <h1 className={`text-3xl font-black tracking-tight ${theme === 'light' ? 'text-neutral-900' : 'text-white'}`}>
+              Disease<span className="text-blue-600">2</span>Target
+            </h1>
+            <p className="text-[10px] font-bold uppercase tracking-[0.3em] text-neutral-400 dark:text-neutral-500 mt-2">Set a new password</p>
+          </div>
+        </div>
+
+        {done ? (
+          <div className="px-10 pb-8 space-y-4 text-center">
+            <p className="text-[13px] font-bold text-emerald-500 flex items-center justify-center gap-1.5"><CheckCircle2 className="w-4 h-4 shrink-0" />Password updated.</p>
+            <button onClick={backToSignIn} className="w-full p-4 bg-blue-600 text-white rounded-xl font-bold uppercase text-[12px] tracking-widest shadow-xl shadow-blue-600/20 hover:bg-blue-700 active:scale-95 transition-all">
+              Continue to sign in
+            </button>
+          </div>
+        ) : (
+          <form onSubmit={handleSubmit} className="px-10 pb-8 space-y-4">
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-bold uppercase text-neutral-500 ml-1 tracking-widest">New Password</label>
+              <input type="password" value={password} onChange={e => setPassword(e.target.value)} autoComplete="new-password" className={inputCls} placeholder="••••••••" />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-bold uppercase text-neutral-500 ml-1 tracking-widest">Confirm New Password</label>
+              <input type="password" value={confirm} onChange={e => setConfirm(e.target.value)} autoComplete="new-password" className={inputCls} placeholder="••••••••" />
+            </div>
+            {error && <p className="text-[11px] font-bold text-rose-500 flex items-center gap-1.5"><AlertCircle className="w-3.5 h-3.5 shrink-0" />{error}</p>}
+            <button type="submit" disabled={busy}
+              className="w-full mt-2 p-4 bg-blue-600 text-white rounded-xl font-bold uppercase text-[12px] tracking-widest shadow-xl shadow-blue-600/20 hover:bg-blue-700 active:scale-95 transition-all flex items-center justify-center gap-3 disabled:opacity-60 disabled:cursor-not-allowed">
+              {busy ? <Loader2 className="w-5 h-5 animate-spin" /> : <ShieldCheck className="w-5 h-5" />}
+              {busy ? 'Updating…' : 'Update password'}
+            </button>
+            <button type="button" onClick={backToSignIn} className="w-full text-center text-[11px] font-bold text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300 tracking-wide">
+              ← Back to sign in
+            </button>
+          </form>
+        )}
 
         <div className="pb-8 flex justify-center">
           <button onClick={toggleTheme} className="p-3 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded-xl transition-colors">

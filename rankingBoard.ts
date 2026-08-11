@@ -238,6 +238,93 @@ export interface ScoredGene {
   raw: any;                 // the original row (for the evidence drill-down)
 }
 
+// ── F1.1 Verdict ─────────────────────────────────────────────────────────────
+// Turn a scored target into a plain-language decision: what tier it's in, what it
+// leads on, and what holds it back — derived from the SAME field-standing math the
+// report-card bars use (rel = value ÷ field-leader), weighted by the ACTIVE weights,
+// so the callouts reflect what actually moves the score for the current modality.
+// Pure + exported so the on-screen card and the generated report share one source.
+export type VerdictTone = 'top' | 'strong' | 'mid' | 'low';
+export interface TargetVerdict {
+  rank: number; total: number; pctTop: number;   // pctTop: 0 = best, 1 = worst
+  tier: string; tone: VerdictTone; isTop: boolean;
+  strengths: string[]; drags: string[]; gaps: string[];
+}
+export function computeVerdict(
+  selected: ScoredGene,
+  total: number,
+  activeKeys: CriterionKey[],
+  weights: Record<CriterionKey, number>,
+  criterionMax: Record<CriterionKey, number>,
+): TargetVerdict {
+  const N = total || 1;
+  const rank = selected.boardRank;
+  const pctTop = rank / N;
+  let tier: string, tone: VerdictTone;
+  if (rank <= Math.max(1, N * 0.01))      { tier = 'Top-tier candidate'; tone = 'top'; }
+  else if (rank <= N * 0.10)              { tier = 'Strong candidate';   tone = 'strong'; }
+  else if (rank <= N * 0.33)              { tier = 'Upper mid-field';    tone = 'mid'; }
+  else if (rank <= N * 0.66)              { tier = 'Mid-field';          tone = 'mid'; }
+  else                                    { tier = 'Lower tier';         tone = 'low'; }
+
+  const labelOf = (k: CriterionKey) => CRITERIA.find(c => c.key === k)?.label || k;
+  const rel = (k: CriterionKey): number | null => {
+    const raw = selected.criteria[k];
+    return raw == null || !isFinite(raw) ? null : Math.max(0, Math.min(1, raw / (criterionMax[k] || 1)));
+  };
+  const rows = activeKeys.map(k => ({ k, label: labelOf(k), rel: rel(k), w: weights[k] || 0, missing: selected.criteria[k] == null }));
+
+  const WT = 0.05;   // ignore criteria carrying <5% of the active budget — they don't move the verdict
+  const strengths = rows.filter(r => !r.missing && (r.rel ?? 0) >= 0.6 && r.w >= WT)
+    .sort((a, b) => ((b.rel ?? 0) * b.w) - ((a.rel ?? 0) * a.w)).slice(0, 3).map(r => r.label);
+  const drags = rows.filter(r => !r.missing && (r.rel ?? 1) < 0.4 && r.w >= WT)
+    .sort((a, b) => (1 - (b.rel ?? 0)) * b.w - (1 - (a.rel ?? 0)) * a.w).slice(0, 3).map(r => r.label);
+  const gaps = rows.filter(r => r.missing && r.w >= WT).sort((a, b) => b.w - a.w).slice(0, 2).map(r => r.label);
+
+  return { rank, total: N, pctTop, tier, tone, isTop: tone === 'top' || tone === 'strong', strengths, drags, gaps };
+}
+
+// ── F1.2 Better alternatives ─────────────────────────────────────────────────
+// "Are there better targets than X, and why?" — the comparable targets that OUTRANK
+// the selected one, found through two lenses the user chose: same protein family
+// (target_class) and STRING network neighbours. Modality-eligibility is already baked
+// in: `scored` is built for the current modality, so gated targets have sunk. For each
+// alternative we surface the criteria on which it beats the selected target (the "why").
+// Pure + exported so the card and the generated report share one source of truth.
+export interface Alternative {
+  symbol: string; boardRank: number; display: number;
+  tags: Array<'family' | 'network'>;
+  wins: string[];   // criteria labels where this alternative out-scores the selected target
+  targetClass: string | null;
+}
+export function findBetterAlternatives(
+  selected: ScoredGene,
+  scored: ScoredGene[],
+  activeKeys: CriterionKey[],
+  opts: { neighbors?: Set<string>; limit?: number; minDelta?: number } = {},
+): Alternative[] {
+  const limit = opts.limit ?? 5;
+  const minDelta = opts.minDelta ?? 0.12;
+  const neighbors = opts.neighbors ?? new Set<string>();
+  const norm = (v: any) => String(v ?? '').trim().toLowerCase();
+  const selClass = norm(selected.raw?.target_class);
+  const labelOf = (k: CriterionKey) => CRITERIA.find(c => c.key === k)?.label || k;
+
+  const out: Alternative[] = [];
+  for (const s of scored) {
+    if (s.symbol === selected.symbol || s.gated || s.boardRank >= selected.boardRank) continue;
+    const tags: Array<'family' | 'network'> = [];
+    if (selClass && norm(s.raw?.target_class) === selClass) tags.push('family');
+    if (neighbors.has(s.symbol.toUpperCase())) tags.push('network');
+    if (tags.length === 0) continue;
+    const wins = activeKeys
+      .map(k => ({ label: labelOf(k), d: (s.criteria[k] ?? 0) - (selected.criteria[k] ?? 0) }))
+      .filter(x => x.d > minDelta).sort((a, b) => b.d - a.d).slice(0, 6).map(x => x.label);
+    out.push({ symbol: s.symbol, boardRank: s.boardRank, display: s.display, tags, wins, targetClass: s.raw?.target_class ?? null });
+  }
+  return out.sort((a, b) => a.boardRank - b.boardRank).slice(0, limit);
+}
+
 // Normalise a weight vector to sum 1 across the 8 criteria.
 export function normaliseWeights(w: Record<CriterionKey, number>): Record<CriterionKey, number> {
   const total = CRITERIA.reduce((s, c) => s + Math.max(0, w[c.key] || 0), 0) || 1;

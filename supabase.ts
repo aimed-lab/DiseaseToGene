@@ -37,6 +37,23 @@ export async function getInitialSession() {
   return { data: { session: null }, error: null };
 }
 
+// ── Password reset ────────────────────────────────────────────────────────────
+// Step 1: email the user a recovery link. The link returns them to the app with a
+// recovery session; Supabase fires an onAuthStateChange 'PASSWORD_RECOVERY' event.
+// (Requires SMTP configured in the Supabase project, and this origin listed under
+// Auth → URL Configuration → Redirect URLs.)
+export async function sendPasswordReset(email: string): Promise<{ ok: boolean; error?: string }> {
+  const redirectTo = typeof window !== 'undefined' ? window.location.origin : undefined;
+  const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), { redirectTo });
+  return error ? { ok: false, error: error.message } : { ok: true };
+}
+
+// Step 2: once in the recovery session, set the new password.
+export async function updatePassword(newPassword: string): Promise<{ ok: boolean; error?: string }> {
+  const { error } = await supabase.auth.updateUser({ password: newPassword });
+  return error ? { ok: false, error: error.message } : { ok: true };
+}
+
 export async function authenticatedFetch(input: RequestInfo | URL, init: RequestInit = {}) {
   const { data, error } = await getInitialSession();
   if (error || !data.session?.access_token) {

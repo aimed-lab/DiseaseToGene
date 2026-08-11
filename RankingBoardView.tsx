@@ -6,10 +6,11 @@
 // Reads /api/dashboard/genes (no new endpoint); all scoring is client-side via
 // rankingBoard.ts.
 import React, { useEffect, useMemo, useState } from 'react';
-import { Loader2, Trophy, Search, X, Sliders, RotateCcw, Award, ChevronDown, BookOpen } from 'lucide-react';
+import { Loader2, Trophy, Search, X, Sliders, RotateCcw, Award, ChevronDown, BookOpen, FileText } from 'lucide-react';
 import { fetchSnapshots, authenticatedFetch, type RankingSnapshotMeta } from './supabase';
 import { navigate } from './nav';
-import { CRITERIA, MODALITY_PROFILES, buildBoard, criterionBreakdown, type CriterionKey, type ModalityKey, type ScoredGene, type SubMetric, type CriterionBreakdown } from './rankingBoard';
+import { CRITERIA, MODALITY_PROFILES, buildBoard, criterionBreakdown, computeVerdict, findBetterAlternatives, type CriterionKey, type ModalityKey, type ScoredGene, type SubMetric, type CriterionBreakdown } from './rankingBoard';
+import { buildTargetReportHTML, type ReportCriterion } from './targetReport';
 import type { Theme } from './types';
 
 // Only READY modalities are offered. The others (antibody/PROTAC/RNA/gene therapy) are
@@ -132,18 +133,55 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
     return () => { alive = false; };
   }, [selectedSym]);
 
-  // network neighbours that OUTRANK the selected target — "you may also like" (better profile)
-  const betterNeighbors = useMemo(() => {
-    if (!selected || neighborSet.size === 0) return [];
-    return board.scored
-      .filter(s => neighborSet.has(s.symbol.toUpperCase()) && s.boardRank < selected.boardRank && !s.gated)
-      .slice(0, 3)
-      .map(nb => ({
-        nb,
-        wins: activeDefs.map(c => ({ label: c.label, d: (nb.criteria[c.key] ?? 0) - (selected.criteria[c.key] ?? 0) }))
-          .filter(x => x.d > 0.12).sort((a, b) => b.d - a.d).slice(0, 3).map(x => x.label),
-      }));
-  }, [selected, neighborSet, board]);
+  // F1.2 — comparable targets that OUTRANK the selected one (same family + network neighbours),
+  // each with the criteria it wins on. Shared pure fn (report reuses it). Network needs the
+  // neighbour fetch; family works from the board rows alone, so this shows even before neighbours load.
+  const betterAlternatives = useMemo(
+    () => selected ? findBetterAlternatives(selected, board.scored, activeKeys, { neighbors: neighborSet, limit: 5 }) : [],
+    [selected, board, activeKeys, neighborSet],
+  );
+
+  // F1.3 — assemble a self-contained HTML report from the SAME verdict / alternatives /
+  // breakdowns shown on screen, and open it in a new tab (print → Save as PDF). Falls back
+  // to a download if the popup is blocked.
+  const generateReport = () => {
+    if (!selected || !verdict) return;
+    const snapMeta = snapshots.find(s => String(s.id) === snapId);
+    const snapshotLabel = snapMeta ? `snapshot #${snapMeta.id}${snapMeta.version ? ` v${snapMeta.version}` : ''}` : null;
+    const criteria: ReportCriterion[] = activeDefs.map(c => {
+      const v = selected.criteria[c.key]; const rel = relOf(v, c.key);
+      return {
+        key: c.key, label: c.label, definition: c.definition, source: c.source,
+        standing: rel != null ? rel * 100 : null,
+        weightPct: (effWeights[c.key] || 0) * 100,
+        hasData: v != null,
+        breakdown: criterionBreakdown(c.key, selected.raw),
+      };
+    });
+    const html = buildTargetReportHTML({
+      gene: selected.symbol,
+      diseaseName: diseaseName || 'disease',
+      modalityLabel: MODALITY_PROFILES[modality].label,
+      snapshotLabel,
+      verdict, criteria, alternatives: betterAlternatives,
+      generatedAt: new Date().toLocaleString(),
+      appUrl: 'target.smartdrugdiscovery.com',
+    });
+    const url = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
+    const win = window.open(url, '_blank');
+    if (!win) {   // popup blocked → download instead
+      const a = document.createElement('a');
+      a.href = url; a.download = `${selected.symbol}_${(diseaseName || 'disease').replace(/\s+/g, '_')}_report.html`; a.click();
+    }
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  };
+
+  // ── F1.1 Verdict — the decision-tool answer. Computed by the shared pure fn in
+  // rankingBoard.ts (same one the generated report will use), so card + report never drift.
+  const verdict = useMemo(
+    () => selected ? computeVerdict(selected, board.scored.length, activeKeys, effWeights, board.criterionMax) : null,
+    [selected, board, activeKeys, effWeights],
+  );
 
   const pinnedGene = useMemo(() => pinned ? board.scored.find(s => s.symbol === pinned) : null, [board, pinned]);
   const shown = useMemo(() => {
@@ -335,29 +373,82 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
                 <div className="text-[11px] text-slate-500">Rank #{selected.boardRank} · overall {selected.display}/100 · {selected.coverage}/{activeDefs.length} criteria · {MODALITY_PROFILES[modality].label}</div>
                 {selected.gated && <div className="text-[11px] text-amber-500 mt-1">⚠ {selected.gateNote}</div>}
               </div>
-              <button onClick={() => setSelectedSym(null)} className="text-slate-400 hover:text-slate-600"><X className="w-4 h-4" /></button>
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button onClick={generateReport} title="Generate a shareable target report (opens in a new tab)"
+                  className={`flex items-center gap-1 text-[11px] font-bold px-2 py-1 rounded-md border transition-colors ${isDark ? 'border-slate-700 text-slate-200 hover:bg-slate-800' : 'border-slate-300 text-slate-700 hover:bg-slate-100'}`}>
+                  <FileText className="w-3.5 h-3.5" /> Report
+                </button>
+                <button onClick={() => setSelectedSym(null)} className="text-slate-400 hover:text-slate-600"><X className="w-4 h-4" /></button>
+              </div>
             </div>
             <div className="p-3 space-y-3">
-              {/* RWR recommender — network neighbours that outrank this target */}
-              {neighborsLoading ? (
-                <div className="text-[11px] text-slate-500 flex items-center gap-1.5"><Loader2 className="w-3 h-3 animate-spin" /> finding network neighbours…</div>
-              ) : betterNeighbors.length > 0 ? (
+              {/* F1.1 — Verdict: the decision-tool answer, not just a score */}
+              {verdict && (
+                <div className={`rounded-lg border p-3 ${
+                  verdict.isTop ? (isDark ? 'bg-emerald-950/30 border-emerald-800/50' : 'bg-emerald-50 border-emerald-200')
+                  : verdict.tone === 'low' ? (isDark ? 'bg-rose-950/20 border-rose-900/50' : 'bg-rose-50 border-rose-200')
+                  : (isDark ? 'bg-slate-800/40 border-slate-700' : 'bg-slate-50 border-slate-200')
+                }`}>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className={`text-[11px] font-black uppercase tracking-widest ${
+                      verdict.isTop ? 'text-emerald-600 dark:text-emerald-300'
+                      : verdict.tone === 'low' ? 'text-rose-600 dark:text-rose-300'
+                      : 'text-slate-500'}`}>{verdict.tier}</span>
+                    <span className="text-[10px] font-bold text-slate-400 tabular-nums">top {Math.max(1, Math.round(verdict.pctTop * 100))}%</span>
+                  </div>
+                  <p className={`text-[12px] font-semibold mt-1 ${isDark ? 'text-slate-200' : 'text-slate-800'}`}>
+                    #{verdict.rank.toLocaleString()} of {verdict.total.toLocaleString()}{diseaseName ? ` for ${diseaseName}` : ''}
+                  </p>
+                  {verdict.strengths.length > 0 && (
+                    <p className="text-[11px] mt-1.5 leading-snug text-slate-500">
+                      <span className="font-bold text-emerald-500">Strong on:</span> {verdict.strengths.join(', ')}
+                    </p>
+                  )}
+                  {(verdict.drags.length > 0 || verdict.gaps.length > 0) && (
+                    <p className="text-[11px] mt-0.5 leading-snug text-slate-500">
+                      <span className="font-bold text-amber-500">Held back by:</span>{' '}
+                      {[...verdict.drags, ...verdict.gaps.map(g => `${g} (no data)`)].join(', ')}
+                    </p>
+                  )}
+                  {!verdict.isTop && (
+                    <p className="text-[10px] mt-1.5 text-slate-400 italic">Not among the top candidates — see stronger alternatives below.</p>
+                  )}
+                </div>
+              )}
+              {/* F1.2 — Stronger alternatives: comparable targets (same family / network) that outrank this one */}
+              {betterAlternatives.length > 0 ? (
                 <div className={`rounded-lg border p-2.5 ${isDark ? 'bg-blue-950/30 border-blue-800/50' : 'bg-blue-50/60 border-blue-200'}`}>
-                  <p className="text-[10px] font-black uppercase tracking-widest text-blue-600 dark:text-blue-300 mb-1">You may also like</p>
-                  <p className="text-[10px] text-slate-500 mb-2">Targets connected to {selected.symbol} in the STRING network that rank higher:</p>
+                  <div className="flex items-center justify-between mb-1">
+                    <p className="text-[10px] font-black uppercase tracking-widest text-blue-600 dark:text-blue-300">Stronger alternatives</p>
+                    {neighborsLoading && <Loader2 className="w-3 h-3 animate-spin text-blue-400" />}
+                  </div>
+                  <p className="text-[10px] text-slate-500 mb-2">Comparable targets that rank higher than {selected.symbol} — by protein family or STRING network:</p>
                   <div className="space-y-1">
-                    {betterNeighbors.map(({ nb, wins }) => (
-                      <button key={nb.symbol} onClick={() => setSelectedSym(nb.symbol)} className={`w-full flex items-center gap-2 p-1.5 rounded-md text-left transition-colors ${isDark ? 'hover:bg-blue-900/40' : 'hover:bg-blue-100'}`}>
-                        <span className="text-[11px] font-bold text-slate-400 tabular-nums w-7">#{nb.boardRank}</span>
-                        <span className={`text-[12px] font-bold w-14 ${isDark ? 'text-white' : 'text-slate-900'}`}>{nb.symbol}</span>
-                        <span className="text-[12px] font-black text-emerald-500 tabular-nums w-8">{nb.display}</span>
-                        <span className="text-[9px] text-slate-500 flex-1 truncate">{wins.length ? `stronger: ${wins.join(', ')}` : 'higher overall'}</span>
+                    {betterAlternatives.map(a => (
+                      <button key={a.symbol} onClick={() => setSelectedSym(a.symbol)}
+                        title={`#${a.boardRank} ${a.symbol} · score ${a.display} · comparable by ${a.tags.join(' + ')}${a.wins.length ? ` · beats ${selected.symbol} on: ${a.wins.join(', ')}` : ` · higher overall score than ${selected.symbol}`}`}
+                        className={`w-full p-1.5 rounded-md text-left transition-colors ${isDark ? 'hover:bg-blue-900/40' : 'hover:bg-blue-100'}`}>
+                        <div className="flex items-center gap-2">
+                          <span className="text-[11px] font-bold text-slate-400 tabular-nums w-8">#{a.boardRank}</span>
+                          <span className={`text-[12px] font-bold w-14 shrink-0 ${isDark ? 'text-white' : 'text-slate-900'}`}>{a.symbol}</span>
+                          <span className="text-[12px] font-black text-emerald-500 tabular-nums w-7">{a.display}</span>
+                          <span className="flex gap-0.5 shrink-0 ml-auto">
+                            {a.tags.map(t => (
+                              <span key={t} className={`text-[8px] font-bold uppercase px-1 py-px rounded ${t === 'family' ? 'bg-violet-500/15 text-violet-500' : 'bg-cyan-500/15 text-cyan-500'}`}>{t}</span>
+                            ))}
+                          </span>
+                        </div>
+                        <div className="text-[9px] text-slate-500 mt-0.5 pl-10 leading-snug">
+                          {a.wins.length ? <><span className="text-emerald-500 font-semibold">beats {selected.symbol} on:</span> {a.wins.join(', ')}</> : 'higher overall score'}
+                        </div>
                       </button>
                     ))}
                   </div>
                 </div>
-              ) : neighborSet.size > 0 ? (
-                <div className={`rounded-lg border p-2.5 text-[11px] ${card} text-emerald-600 dark:text-emerald-400`}>✓ No network neighbour outranks {selected.symbol} — it's the strongest target in its neighbourhood.</div>
+              ) : neighborsLoading ? (
+                <div className="text-[11px] text-slate-500 flex items-center gap-1.5"><Loader2 className="w-3 h-3 animate-spin" /> finding comparable targets…</div>
+              ) : (selected && !verdict?.isTop) ? (
+                <div className={`rounded-lg border p-2.5 text-[11px] ${card} text-emerald-600 dark:text-emerald-400`}>✓ No comparable target (same family or network) outranks {selected.symbol}.</div>
               ) : null}
               <div className="flex items-baseline justify-between gap-2">
                 <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">Score by criterion</p>
