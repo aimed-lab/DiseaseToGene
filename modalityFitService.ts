@@ -68,6 +68,7 @@ export interface ModalityEvidence {
   provenModalities: { family: string; drugCount: number; topStage: string }[];
   chemblActivities: number | null;   // 5b — measured bioactivities in ChEMBL (empirical "chemical matter exists")
   ppiPartners: number | null;        // 5c — high-confidence STRING partners (an interface exists to disrupt)
+  exonCount: number | null;          // 5d — canonical-transcript exon count (splice-switching ASO feasibility)
   notes: string[];
 }
 
@@ -188,6 +189,24 @@ async function fetchSTRING(gene: string): Promise<{ ppiPartners: number | null }
   } catch { return { ppiPartners: null }; }
 }
 
+// ── 5d: Ensembl canonical-transcript exon count — a single-exon gene has no splicing event
+// to switch (splice-switching ASO is ruled out); multi-exon is necessary but not sufficient. ──
+async function fetchEnsembl(gene: string): Promise<{ exonCount: number | null }> {
+  const attempt = async (): Promise<number | null> => {
+    const url = `https://rest.ensembl.org/lookup/symbol/homo_sapiens/${encodeURIComponent(gene)}?expand=1;content-type=application/json`;
+    const r = await fetch(url, { headers: { Accept: 'application/json' } });
+    if (!r.ok) throw new Error(String(r.status));
+    const j: any = await r.json();
+    const trs: any[] = j?.Transcript || [];
+    if (!trs.length) return null;
+    const canon = trs.find(t => t.is_canonical === 1) || trs.reduce((a, b) => ((b.Exon?.length || 0) > (a.Exon?.length || 0) ? b : a), trs[0]);
+    return canon?.Exon?.length ?? null;
+  };
+  // Ensembl REST is flaky under parallel load — one retry absorbs a transient 429/blip.
+  try { return { exonCount: await attempt() }; }
+  catch { try { await new Promise(r => setTimeout(r, 400)); return { exonCount: await attempt() }; } catch { return { exonCount: null }; } }
+}
+
 const clamp01 = (n: number) => Math.max(0, Math.min(1, n));
 // Descriptor-based druggability PROXY (not the published drugScore). Bigger + more
 // enclosed + more hydrophobic pocket ⇒ more small-molecule-tractable.
@@ -201,18 +220,20 @@ function druggabilityProxy(p: any): number | null {
 
 // ── M1: gather the evidence (each source independent; a failure degrades gracefully) ──
 export async function gatherModalityEvidence(gene: string): Promise<ModalityEvidence> {
-  const [modR, pkR, uniR, hpaR, strR] = await Promise.allSettled([
+  const [modR, pkR, uniR, hpaR, strR, ensR] = await Promise.allSettled([
     getModalityProfile(gene),
     getPocketStructure(gene),
     fetchUniProt(gene),
     fetchHPA(gene),
     fetchSTRING(gene),
+    fetchEnsembl(gene),
   ]);
   const mod = modR.status === 'fulfilled' ? modR.value : null;
   const pk = pkR.status === 'fulfilled' ? pkR.value : null;
   const uni = (uniR.status === 'fulfilled' ? uniR.value : {}) as Partial<ModalityEvidence>;
   const hpa = hpaR.status === 'fulfilled' ? hpaR.value : { hpaSurface: null, hpaSecreted: null };
   const ppi = strR.status === 'fulfilled' ? strR.value : { ppiPartners: null };
+  const ens = ensR.status === 'fulfilled' ? ensR.value : { exonCount: null };
   // ChEMBL depends on the resolved UniProt accession, so fetch it after UniProt.
   const chembl = await fetchChEMBL(uni.uniprot ?? pk?.uniprot ?? null).catch(() => ({ chemblActivities: null }));
 
@@ -272,6 +293,7 @@ export async function gatherModalityEvidence(gene: string): Promise<ModalityEvid
     provenModalities: (mod?.fact?.developed ?? []).map((d: any) => ({ family: d.family, drugCount: d.drugCount, topStage: d.topStage })),
     chemblActivities: chembl.chemblActivities,
     ppiPartners: ppi.ppiPartners,
+    exonCount: ens.exonCount,
     notes,
   };
 }
@@ -343,7 +365,10 @@ export function assessModalities(ev: ModalityEvidence, goal: MechanisticGoal): M
       tier = provenOligo && modality.includes('RNA knockdown') ? 'Precedented' : 'Plausible';
       basis.push('acts at the transcript level (structure-independent)'); basis.push('delivery to the disease tissue is the real constraint');
     } else if (isSplice(modality)) {
-      tier = 'Speculative'; basis.push('needs a targetable exon/splicing event (transcript model not gathered)');
+      const ex = ev.exonCount;
+      if (ex != null && ex <= 1) { tier = 'Blocked'; gate = `single-exon transcript (${ex}) — no splicing event to switch`; }
+      else if (ex != null) { tier = 'Speculative'; basis.push(`multi-exon transcript (${ex} exons) — splicing exists, but a specific targetable event is unconfirmed`); }
+      else { tier = 'Speculative'; basis.push('transcript/exon model not resolved'); }
     } else if (isPeptide(modality)) {
       if (hasPPI) { tier = 'Plausible'; basis.push(`${ev.ppiPartners} high-confidence STRING partners — a PPI interface to target`); }
       else { tier = 'Speculative'; basis.push('no clear interaction interface'); }
