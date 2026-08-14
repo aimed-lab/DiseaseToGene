@@ -7,7 +7,7 @@ import { createHash } from "crypto";
 import { fetchCohortMutations, fetchDruggability, fetchClinical, fetchLiterature, fetchPubmedLiterature, resolveCbioStudy, resolveDiseaseScope } from "./evidenceProviders.js";
 import { getPocketStructure } from "./dogsiteService.js";
 import { getModalityProfile } from "./modalityService.js";
-import { gatherModalityEvidence, buildModalityPrompt, parseModalityScores, MECHANISTIC_GOALS, isGoal, type MechanisticGoal } from "./modalityFitService.js";
+import { gatherModalityEvidence, assessModalities, buildRationalePrompt, attachRationales, MECHANISTIC_GOALS, isGoal, type MechanisticGoal } from "./modalityFitService.js";
 import { enrichGene, enrichGenes } from "./enrichService.js";
 import * as ordsSvc from "./ordsService.js"; // pure fetch client → safe to bundle for Vercel
 // NOTE: relative imports carry an explicit .js extension (Node-ESM requirement). On Vercel
@@ -215,14 +215,15 @@ const waitForNcbiSlot = (): Promise<void> => {
 };
 
 // ── Shared Gemini REST helper (module-level so it's available at setup time) ───
-const geminiGenerate = async (contents: object[], model = GEMINI_MODEL, responseMimeType?: string) => {
+const geminiGenerate = async (contents: object[], model = GEMINI_MODEL, responseMimeType?: string, temperature?: number) => {
   const key = process.env.GEMINI_API_KEY;
   if (!key) throw new Error('GEMINI_API_KEY not configured');
   const body: Record<string, unknown> = { contents };
   // Generous output budget so large structured extractions aren't truncated.
-  body.generationConfig = responseMimeType
-    ? { responseMimeType, maxOutputTokens: 8192 }
-    : { maxOutputTokens: 8192 };
+  const gen: Record<string, unknown> = { maxOutputTokens: 8192 };
+  if (responseMimeType) gen.responseMimeType = responseMimeType;
+  if (temperature != null) gen.temperature = temperature;   // 0 → reproducible (used by modality rationale)
+  body.generationConfig = gen;
   const r = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
     { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
@@ -1678,17 +1679,20 @@ Rules: prefer tools over guessing; call several tools when a question spans sour
     if (!gene) { res.status(400).json({ error: 'gene is required' }); return; }
     try {
       const evidence = await gatherModalityEvidence(gene);
-      let modalities;
+      // Tiers are DETERMINISTIC (reproducible, auditable). The LLM only writes the one-line
+      // rationale for each fixed tier, at temperature 0, restricted to the deterministic basis.
+      const rows = assessModalities(evidence, goal);
+      let modalities = rows;
       try {
-        const text = await geminiGenerate([{ role: 'user', parts: [{ text: buildModalityPrompt(evidence, goal) }] }], GEMINI_MODEL, 'application/json');
-        modalities = parseModalityScores(text, evidence);
-      } catch (e: any) {
-        res.status(502).json({ error: `Modality scoring failed: ${e.message}`, evidence });
-        return;
+        const text = await geminiGenerate([{ role: 'user', parts: [{ text: buildRationalePrompt(evidence, goal, rows) }] }], GEMINI_MODEL, 'application/json', 0);
+        modalities = attachRationales(rows, text);
+      } catch {
+        // rationale is optional — tiers stand on their own; fall back to deterministic text
+        modalities = attachRationales(rows, '');
       }
       res.json({
         gene, goal, goalText: MECHANISTIC_GOALS[goal], evidence, modalities,
-        provenance: 'Facts: Open Targets tractability + developed drugs, DoGSite3 pocket descriptors, UniProt. Scores: AI-assessed (Gemini) — a prediction, not a measurement.',
+        provenance: `Tiers: deterministic rules over Open Targets tractability + developed drugs, DoGSite3 pockets, UniProt (localization/active-site/sequence). Rationale only: ${GEMINI_MODEL} at temperature 0, restricted to the listed evidence. Tiers are reproducible; rationale text is a model-written explanation.`,
         generatedNote: `Whole-protein modality assessment for ${gene} under goal "${goal}".`,
       });
     } catch (e: any) {
