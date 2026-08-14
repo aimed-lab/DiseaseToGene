@@ -6,7 +6,7 @@
 // Reads /api/dashboard/genes (no new endpoint); all scoring is client-side via
 // rankingBoard.ts.
 import React, { useEffect, useMemo, useState } from 'react';
-import { Loader2, Trophy, Search, X, Sliders, RotateCcw, Award, ChevronDown, BookOpen, FileText } from 'lucide-react';
+import { Loader2, Trophy, Search, X, Sliders, RotateCcw, Award, ChevronDown, BookOpen, FileText, Atom } from 'lucide-react';
 import { fetchSnapshots, authenticatedFetch, type RankingSnapshotMeta } from './supabase';
 import { navigate } from './nav';
 import { CRITERIA, MODALITY_PROFILES, buildBoard, criterionBreakdown, computeVerdict, findBetterAlternatives, type CriterionKey, type ModalityKey, type ScoredGene, type SubMetric, type CriterionBreakdown } from './rankingBoard';
@@ -261,6 +261,7 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
           </div>
           <button onClick={() => setShowWeights(v => !v)} className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border text-[11px] font-semibold ${card} ${isDark ? 'text-slate-200' : 'text-slate-700'}`}><Sliders className="w-3.5 h-3.5" /> Weights</button>
           <button onClick={() => navigate('/Methodologies')} title="How the board scores and ranks targets — opens /Methodologies" className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border text-[11px] font-semibold ${card} ${isDark ? 'text-slate-200' : 'text-slate-700'}`}><BookOpen className="w-3.5 h-3.5" /> Methodology</button>
+          <button onClick={() => navigate(selectedSym ? `/Modality?gene=${encodeURIComponent(selectedSym)}` : '/Modality')} title={selectedSym ? `Modality-fit analysis for ${selectedSym} (opens /Modality)` : 'Modality-fit analysis — pick a target, or search on the page (opens /Modality)'} className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border text-[11px] font-semibold ${card} ${isDark ? 'text-slate-200' : 'text-slate-700'}`}><Atom className="w-3.5 h-3.5" /> Modality{selectedSym ? `: ${selectedSym}` : ''}</button>
         </div>
         {/* modality selector — the lever. Only validated modalities are shown; the rest are
             deferred until they have modality-specific criteria (professor's guidance). */}
@@ -494,6 +495,12 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
                   )}
                 </div>
               ); })}
+              {/* Modality fit opens on its own full-width page, with this target preselected */}
+              <button onClick={() => navigate(`/Modality?gene=${encodeURIComponent(selected.symbol)}`)}
+                title={`Which therapeutic modality suits ${selected.symbol}? Opens the full Modality Fit page.`}
+                className={`w-full flex items-center justify-center gap-1.5 mt-1 px-2.5 py-2 rounded-lg border text-[11px] font-bold transition-colors ${card} ${isDark ? 'text-slate-200 hover:bg-slate-800' : 'text-slate-700 hover:bg-slate-50'}`}>
+                <Atom className="w-3.5 h-3.5 text-blue-500" /> Modality fit for {selected.symbol} →
+              </button>
             </div>
           </div>
         )}

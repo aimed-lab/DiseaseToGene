@@ -43,7 +43,10 @@ export async function getInitialSession() {
 // (Requires SMTP configured in the Supabase project, and this origin listed under
 // Auth → URL Configuration → Redirect URLs.)
 export async function sendPasswordReset(email: string): Promise<{ ok: boolean; error?: string }> {
-  const redirectTo = typeof window !== 'undefined' ? window.location.origin : undefined;
+  // Land the link on the dedicated reset-password page (not the site root), so it can consume
+  // the recovery hash and show a new-password form. Origin must be listed in Supabase Auth →
+  // URL Configuration → Redirect URLs.
+  const redirectTo = typeof window !== 'undefined' ? `${window.location.origin}/reset-password` : undefined;
   const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), { redirectTo });
   return error ? { ok: false, error: error.message } : { ok: true };
 }

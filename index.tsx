@@ -108,7 +108,13 @@ import DashboardView, { type DashboardCommand } from './DashboardView';
 import KnowledgeGraphView from './KnowledgeGraphView';
 import RankingBoardView from './RankingBoardView';
 import MethodologyView from './MethodologyView';
-import { navigate, isMethodologyPath } from './nav';
+import ModalityFitView from './ModalityFitView';
+import { navigate, isMethodologyPath, isModalityPath, isResetPasswordPath, catchRecoveryHash, ROUTES } from './nav';
+
+// Root catch (runs once at module load, BEFORE React mounts and before Supabase consumes the
+// URL hash): if a password-recovery link landed on any path with a #...type=recovery hash,
+// move it to /reset-password preserving the hash. Handles old emails that pointed at the root.
+catchRecoveryHash();
 import { glossaryPromptBlock } from './dashboardGlossary';
 import JobsView from './JobsView';
 import { getCbioMutations } from './cbioportalService';
@@ -777,7 +783,7 @@ const TabNavigation = ({
   const btnCls = (active: boolean) => `h-9 px-3 xl:px-4 rounded-md text-[11px] font-semibold transition-all flex items-center gap-2 whitespace-nowrap ${active ? (isDark ? 'bg-slate-800 text-white' : 'bg-slate-950 text-white') : (isDark ? 'text-slate-300 hover:text-white hover:bg-slate-800' : 'text-slate-900 hover:text-slate-950 hover:bg-slate-100')}`;
   const iconCls = (active: boolean) => `w-3.5 h-3.5 ${active ? 'text-white' : (isDark ? 'text-slate-400' : 'text-slate-700')}`;
 
-  const primaryAll = [ {id:'board',i:Trophy,l:'Ranking'}, {id:'dashboard',i:LayoutDashboard,l:'Evidence'}, {id:'list',i:List,l:'Targets'}, {id:'funnel',i:Filter,l:'Funnel'}, {id:'rankings',i:Layers,l:'Rankings'}, {id:'graph',i:Network,l:'Graph'} ];
+  const primaryAll = [ {id:'board',i:Trophy,l:'Ranking Board'}, {id:'dashboard',i:LayoutDashboard,l:'Evidence'}, {id:'list',i:List,l:'Targets'}, {id:'funnel',i:Filter,l:'Funnel'}, {id:'rankings',i:Layers,l:'Score Matrix'}, {id:'graph',i:Network,l:'Graph'} ];
   // Researchers see only their allow-listed tabs; admins see everything.
   const primary  = isAdmin ? primaryAll : primaryAll.filter(t => RESEARCHER_VIEWS.has(t.id));
   const trailing = [ {id:'enrichment',i:BarChart3,l:'Enrichment'}, {id:'jobs',i:Cpu,l:'Jobs'} ];
@@ -3437,11 +3443,6 @@ const App = () => {
   const [currentUser, setCurrentUser] = useState<UserSession | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const isAuthenticated = !!currentUser;
-  // Password-recovery: set true when the user arrives via a reset-email link (Supabase fires
-  // 'PASSWORD_RECOVERY', and the URL hash carries type=recovery). Shows the set-new-password screen.
-  const [recoveryMode, setRecoveryMode] = useState<boolean>(
-    typeof window !== 'undefined' && /type=recovery/.test(window.location.hash),
-  );
 
   // ── Role gating: researchers get a limited nav; admins get everything. An admin can
   // temporarily "view as researcher" to preview that experience (local, this session only). ──
@@ -3485,16 +3486,19 @@ const App = () => {
       }
     };
 
+    // Attach the listener SYNCHRONOUSLY (before getInitialSession triggers URL/session
+    // detection) so a PASSWORD_RECOVERY event fired during startup is never missed. A reset
+    // link puts the user in a recovery session — route to the reset form instead of logging in.
+    subscription = supabase.auth.onAuthStateChange((event, session) => {
+      if (!mounted) return;
+      if (event === 'PASSWORD_RECOVERY') { setAuthLoading(false); navigate(ROUTES.resetPassword); return; }
+      applySession(session);
+    }).data.subscription;
+
     getInitialSession()
       .then(({ data }) => {
         if (!mounted) return;
         applySession(data.session);
-        subscription = supabase.auth.onAuthStateChange((event, session) => {
-          // A reset-email link puts the user in a recovery session — don't log them straight
-          // in; show the set-new-password screen instead (cleared once they set it).
-          if (event === 'PASSWORD_RECOVERY') { if (mounted) { setRecoveryMode(true); setAuthLoading(false); } return; }
-          applySession(session);
-        }).data.subscription;
       })
       .catch(() => {
         if (!mounted) return;
@@ -5711,6 +5715,11 @@ ${glossaryPromptBlock()}`;
   // so it renders BEFORE the auth gate: the URL is publicly shareable without a login.
   if (isMethodologyPath(routePath)) return <MethodologyView isDark={theme === 'dark'} onClose={() => navigate('/')} />;
 
+  // /reset-password — where a recovery link lands. Renders BEFORE the auth gate (the recovery
+  // session is special) so the new-password form is shown; updateUser() runs on submit.
+  if (isResetPasswordPath(routePath)) return <ResetPasswordPage theme={theme} toggleTheme={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}
+    onDone={() => { if (typeof window !== 'undefined' && window.location.hash) history.replaceState(null, '', window.location.pathname + window.location.search); navigate('/'); }} />;
+
   // While Supabase is checking the existing session, show a neutral loader
   if (authLoading) return (
     <div className={`h-screen flex flex-col items-center justify-center gap-4 ${theme === 'dark' ? 'bg-[#0a0a0a]' : 'bg-neutral-50'}`}>
@@ -5721,13 +5730,13 @@ ${glossaryPromptBlock()}`;
     </div>
   );
 
-  if (recoveryMode) return <ResetPasswordPage theme={theme} toggleTheme={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}
-    onDone={() => { setRecoveryMode(false); if (typeof window !== 'undefined' && window.location.hash) history.replaceState(null, '', window.location.pathname + window.location.search); }} />;
-
   if (!isAuthenticated) return <SignInPage theme={theme} toggleTheme={() => setTheme(t => t === 'dark' ? 'light' : 'dark')} />;
 
   return (
     <div className={`h-screen flex flex-col transition-colors duration-200 ai-native-bg ${theme === 'dark' ? 'bg-[#070b12] text-slate-200' : 'bg-[#eef3f8] text-slate-950'}`}>
+      {/* Full-page Modality Fit (/Modality) renders as an OVERLAY, not a replacement route, so the
+          board/dashboard underneath stays mounted — returning from it keeps all loaded data. */}
+      {isModalityPath(routePath) && <ModalityFitView isDark={theme === 'dark'} onClose={() => navigate('/')} />}
       {/* relative z-30 gives the header its own stacking context ABOVE <main>, so the
           Research ▾ dropdown overlays the breadcrumb bar instead of being painted under it. */}
       <header className={`relative z-30 px-4 md:px-6 py-2.5 flex items-center justify-between gap-3 border-b backdrop-blur-xl ${theme === 'dark' ? 'bg-[#070b12]/90 border-slate-800/80' : 'bg-white/95 border-slate-200'}`}>

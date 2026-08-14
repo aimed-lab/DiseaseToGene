@@ -7,6 +7,7 @@ import { createHash } from "crypto";
 import { fetchCohortMutations, fetchDruggability, fetchClinical, fetchLiterature, fetchPubmedLiterature, resolveCbioStudy, resolveDiseaseScope } from "./evidenceProviders.js";
 import { getPocketStructure } from "./dogsiteService.js";
 import { getModalityProfile } from "./modalityService.js";
+import { gatherModalityEvidence, buildModalityPrompt, parseModalityScores, MECHANISTIC_GOALS, isGoal, type MechanisticGoal } from "./modalityFitService.js";
 import { enrichGene, enrichGenes } from "./enrichService.js";
 import * as ordsSvc from "./ordsService.js"; // pure fetch client → safe to bundle for Vercel
 // NOTE: relative imports carry an explicit .js extension (Node-ESM requirement). On Vercel
@@ -1666,6 +1667,34 @@ Rules: prefer tools over guessing; call several tools when a question spans sour
     }
     return process.env.SIGNUP_INVITE_CODE?.trim() || null;
   };
+
+  // ── F-MOD: on-demand modality-fit analysis for one target ────────────────────
+  // Gathers hard evidence (OT tractability + developed drugs, DoGSite pocket, UniProt
+  // localization/active-site/sequence), then Gemini scores each modality 0–5 grounded
+  // in that evidence + the chosen mechanistic goal. Scores are AI-assessed predictions.
+  app.post("/api/modality-fit", requireUser, async (req, res) => {
+    const gene = String(req.body?.gene || '').trim();
+    const goal: MechanisticGoal = isGoal(req.body?.goal) ? req.body.goal : 'inhibit';
+    if (!gene) { res.status(400).json({ error: 'gene is required' }); return; }
+    try {
+      const evidence = await gatherModalityEvidence(gene);
+      let modalities;
+      try {
+        const text = await geminiGenerate([{ role: 'user', parts: [{ text: buildModalityPrompt(evidence, goal) }] }], GEMINI_MODEL, 'application/json');
+        modalities = parseModalityScores(text, evidence);
+      } catch (e: any) {
+        res.status(502).json({ error: `Modality scoring failed: ${e.message}`, evidence });
+        return;
+      }
+      res.json({
+        gene, goal, goalText: MECHANISTIC_GOALS[goal], evidence, modalities,
+        provenance: 'Facts: Open Targets tractability + developed drugs, DoGSite3 pocket descriptors, UniProt. Scores: AI-assessed (Gemini) — a prediction, not a measurement.',
+        generatedNote: `Whole-protein modality assessment for ${gene} under goal "${goal}".`,
+      });
+    } catch (e: any) {
+      res.status(502).json({ error: e.message });
+    }
+  });
 
   // ── Invite-gated self-registration ───────────────────────────────────────────
   // Validates a shared invite code server-side, then creates an auto-confirmed
