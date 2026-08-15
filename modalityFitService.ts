@@ -53,6 +53,8 @@ export interface ModalityEvidence {
   surfaceSource: string;            // which evidence set the call
   sequenceLength: number | null;
   cysCount: number | null;
+  lysineCount: number | null;       // 5e — lysines available for ubiquitin transfer (PROTAC)
+  isUbiquitinated: boolean;         // 5f — known ubiquitination (UniProt "Ubl conjugation") → degradation-compatible
   activeSiteCount: number | null;   // annotated catalytic/active-site residues
   likelyEnzyme: boolean;
   pocket: {
@@ -122,6 +124,9 @@ async function fetchUniProt(gene: string): Promise<Partial<ModalityEvidence> & {
     const hasTransmembrane = feats.some(f => f.type === 'Transmembrane');
     const hasSignalPeptide = feats.some(f => f.type === 'Signal');
     const keywords = (e.keywords || []).map((k: any) => String(k.name || '').toLowerCase()).join(' ');
+    // 5f — ubiquitination evidence: the "Ubl conjugation" keyword, or a ubiquitin isopeptide cross-link.
+    const isUbiquitinated = /ubl conjugation/.test(keywords) ||
+      feats.some(f => f.type === 'Cross-link' && /isopeptide|ubiquitin/i.test(f.description || ''));
     const locStr = locs.join(' ').toLowerCase();
     const isMembrane = hasTransmembrane || /membrane/.test(locStr) || /membrane/.test(keywords);
     const isSecreted = /secreted|extracellular/.test(locStr) || /secreted/.test(keywords);
@@ -133,6 +138,8 @@ async function fetchUniProt(gene: string): Promise<Partial<ModalityEvidence> & {
       hasTransmembrane, hasSignalPeptide,
       sequenceLength: seq.length || null,
       cysCount: seq ? (seq.match(/C/g) || []).length : null,
+      lysineCount: seq ? (seq.match(/K/g) || []).length : null,
+      isUbiquitinated,
       activeSiteCount: activeSites || null,
       likelyEnzyme: activeSites > 0,
       _keywords: keywords,
@@ -278,6 +285,8 @@ export async function gatherModalityEvidence(gene: string): Promise<ModalityEvid
     surfaceAccess, surfaceSource,
     sequenceLength: uni.sequenceLength ?? null,
     cysCount: uni.cysCount ?? null,
+    lysineCount: uni.lysineCount ?? null,
+    isUbiquitinated: uni.isUbiquitinated ?? false,
     activeSiteCount: uni.activeSiteCount ?? null,
     likelyEnzyme: uni.likelyEnzyme ?? false,
     pocket: {
@@ -358,8 +367,13 @@ export function assessModalities(ev: ModalityEvidence, goal: MechanisticGoal): M
       else { tier = 'Speculative'; basis.push('no high-confidence interaction partners found'); }
     } else if (isDegrader(modality)) {
       if (secreted) { tier = 'Blocked'; gate = 'secreted/extracellular — no ubiquitin–proteasome access'; }
-      else if (hasPocket || prBucket) { tier = 'Plausible'; basis.push(prBucket ? 'Open Targets rates it PROTAC-tractable' : 'a ligandable pocket (handle) is present'); basis.push('still needs E3 co-expression + surface lysines (not gathered)'); }
-      else { tier = 'Speculative'; basis.push('no ligandable handle found'); }
+      else if (hasPocket || prBucket) {
+        tier = 'Plausible';
+        basis.push(prBucket ? 'Open Targets rates it PROTAC-tractable' : 'a ligandable pocket (handle) is present');
+        if (ev.isUbiquitinated) basis.push('known ubiquitination — degradation-compatible');        // 5f
+        if (ev.lysineCount != null) basis.push(`${ev.lysineCount} lysines for ubiquitin transfer`);   // 5e
+        basis.push('CRBN/VHL E3 ligases broadly expressed (confirm in disease tissue)');
+      } else { tier = 'Speculative'; basis.push('no ligandable handle (pocket) found'); }
       if (modality.includes('Molecular glue')) { tier = cap(tier, 'Speculative'); basis.push('glues are largely serendipity-driven'); }
     } else if (isKnockdown(modality)) {
       tier = provenOligo && modality.includes('RNA knockdown') ? 'Precedented' : 'Plausible';

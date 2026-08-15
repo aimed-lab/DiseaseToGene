@@ -30,7 +30,7 @@ type Tier = 'Precedented' | 'Plausible' | 'Speculative' | 'Blocked';
 interface ModalityRow { category: string; modality: string; tier: Tier; gate: string | null; rationale?: string; }
 interface Evidence {
   uniprot: string | null; subcellularLocations: string[]; likelyEnzyme: boolean; activeSiteCount: number | null;
-  surfaceAccess?: string; surfaceSource?: string;
+  surfaceAccess?: string; surfaceSource?: string; isUbiquitinated?: boolean; lysineCount?: number | null;
   sequenceLength: number | null; cysCount: number | null;
   pocket: { hasStructure: boolean; structureLabel: string | null; totalPockets: number; topVolume: number | null; druggabilityProxy: number | null };
   tractabilityBuckets: { modality: string }[]; provenModalities: { family: string; drugCount: number; topStage: string }[];
@@ -151,6 +151,7 @@ export const ModalityFitPanel: React.FC<Props> = ({ geneSymbol, theme = 'light',
             {data.evidence.chemblActivities != null ? ` · ChEMBL: ${data.evidence.chemblActivities.toLocaleString()} bioactivities` : ''}
             {data.evidence.ppiPartners != null ? ` · STRING: ${data.evidence.ppiPartners} hi-conf partners` : ''}
             {data.evidence.exonCount != null ? ` · ${data.evidence.exonCount} exons` : ''}
+            {data.evidence.isUbiquitinated ? ' · known ubiquitination' : ''}
             {data.evidence.provenModalities.length ? ` · developed: ${data.evidence.provenModalities.map(p => p.family).join(', ')}` : ' · no developed drugs (novel)'}
             <div style={{ marginTop: 4, fontStyle: 'italic' }}>Tiers are set by <strong>deterministic rules</strong> (reproducible). Only the one-line rationale is model-written (temperature 0), restricted to the evidence above.</div>
             {data.evidence.notes.map((n, i) => <div key={i} style={{ marginTop: 2 }}>⚠ {n}</div>)}
