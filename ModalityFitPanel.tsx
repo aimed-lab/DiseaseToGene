@@ -49,7 +49,19 @@ export const ModalityFitPanel: React.FC<Props> = ({ geneSymbol, theme = 'light',
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<FitResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [elapsed, setElapsed] = useState(0);
   const autoRan = useRef(false);
+
+  // Tick a visible elapsed counter while the analysis runs. A first-time gene can take
+  // ~30-40s (the Ensembl transcript lookup dominates), and a single static line gave no
+  // sign the request was still alive — users assumed it had hung.
+  useEffect(() => {
+    if (!loading) return;
+    setElapsed(0);
+    const started = Date.now();
+    const id = window.setInterval(() => setElapsed(Math.round((Date.now() - started) / 1000)), 1000);
+    return () => window.clearInterval(id);
+  }, [loading]);
 
   const muted = isDark ? '#64748b' : '#94a3b8';
   const text = isDark ? '#e2e8f0' : '#1e293b';
@@ -105,7 +117,31 @@ export const ModalityFitPanel: React.FC<Props> = ({ geneSymbol, theme = 'light',
         {data && <button onClick={downloadReport} style={{ background: 'transparent', color: text, border: `1px solid ${border}`, borderRadius: 8, padding: '6px 12px', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>Download report</button>}
       </div>
 
-      {loading && <div style={{ color: muted, fontStyle: 'italic', marginTop: 12 }}>Gathering structure, pockets, tractability &amp; localization, then scoring {geneSymbol}…</div>}
+      {loading && (
+        <div style={{
+          marginTop: 12, padding: '14px 16px', borderRadius: 10,
+          border: `1px solid ${border}`, background: isDark ? '#0b1220' : '#f8fafc',
+          display: 'flex', gap: 12, alignItems: 'flex-start',
+        }}>
+          <span className="spinner" style={{ width: 20, height: 20, flexShrink: 0, marginTop: 2, borderTopColor: '#2563eb' }} />
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 15, fontWeight: 800, color: text }}>
+              Analyzing {geneSymbol}… <span style={{ fontVariantNumeric: 'tabular-nums', fontWeight: 700, color: muted }}>{elapsed}s</span>
+            </div>
+            <div style={{ fontSize: 12.5, color: text, opacity: 0.85, marginTop: 5, lineHeight: 1.5 }}>
+              Gathering Open Targets tractability &amp; developed drugs, DoGSite3 pockets, UniProt
+              localization, ChEMBL bioactivity, STRING partners and Ensembl exons — then applying
+              the tier rules.
+            </div>
+            {elapsed >= 10 && (
+              <div style={{ fontSize: 12, color: muted, marginTop: 7 }}>
+                Still running — a gene analysed for the first time usually takes 30–40 seconds.
+                Results are cached upstream, so a re-run is much faster.
+              </div>
+            )}
+          </div>
+        </div>
+      )}
       {error && <div style={{ color: '#f43f5e', marginTop: 12, fontWeight: 600 }}>{error}</div>}
 
       {data && (
