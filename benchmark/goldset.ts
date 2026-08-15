@@ -18,7 +18,8 @@ const OT = 'https://api.platform.opentargets.org/api/v4/graphql';
 async function otFetch(query: string, variables: Record<string, unknown>): Promise<any> {
   const r = await fetch(OT, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    // OT 403s requests with no User-Agent (Node's fetch sends none) — see modalityService.ts.
+    headers: { 'content-type': 'application/json', 'User-Agent': 'Disease2Target/1.0 (academic research; contact via app)' },
     body: JSON.stringify({ query, variables }),
   });
   if (!r.ok) throw new Error(`Open Targets HTTP ${r.status}`);

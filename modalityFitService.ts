@@ -149,23 +149,51 @@ async function fetchUniProt(gene: string): Promise<Partial<ModalityEvidence> & {
   } catch { return {}; }
 }
 
+// ── Transient-failure handling for the public evidence APIs. All of them (ChEMBL, HPA,
+// STRING, Ensembl) blip under the benchmark's parallel load, and a blip silently degrades
+// a target's evidence to null — which reads as "no evidence" rather than "not fetched".
+// `getJSON` throws only on RETRYABLE failures (network error, 429, 5xx); a definitive 4xx
+// returns null so we don't hammer it. `withRetry` gives each fetcher one second chance. ──
+const UA = 'Disease2Target/1.0 (academic research; contact via app)';
+
+async function getJSON(url: string, headers: Record<string, string> = {}): Promise<any> {
+  const r = await fetch(url, { headers: { Accept: 'application/json', 'User-Agent': UA, ...headers } });
+  if (!r.ok) {
+    if (r.status === 429 || r.status >= 500) throw new Error(`HTTP ${r.status}`);  // transient → retry
+    return null;                                                                   // definitive → give up
+  }
+  return r.json();
+}
+
+// Two retries with a widening gap (0.4s, 1.2s): a single short retry is not enough — an
+// Ensembl 500 blip took out the JUN single-exon gate in a benchmark run because both
+// attempts fell inside the same bad window.
+async function withRetry<T>(attempt: () => Promise<T>, fallback: T, delaysMs = [400, 1200]): Promise<T> {
+  for (let i = 0; ; i++) {
+    try { return await attempt(); }
+    catch {
+      if (i >= delaysMs.length) return fallback;
+      await new Promise(r => setTimeout(r, delaysMs[i]));
+    }
+  }
+}
+
 // ── HPA (Human Protein Atlas): a second surface/secretome opinion for antibody accessibility. ──
+const HPA_NONE = { hpaSurface: null, hpaSecreted: null };
 async function fetchHPA(gene: string): Promise<{ hpaSurface: boolean | null; hpaSecreted: boolean | null }> {
-  try {
+  return withRetry(async () => {
     const url = `https://www.proteinatlas.org/api/search_download.php?search=${encodeURIComponent(gene)}&format=json&columns=g,pc&compress=no`;
-    const r = await fetch(url, { headers: { Accept: 'application/json', 'User-Agent': 'Disease2Target/1.0 (academic research)' } });
-    if (!r.ok) return { hpaSurface: null, hpaSecreted: null };
-    const j: any = await r.json();
+    const j: any = await getJSON(url);
     const rows: any[] = Array.isArray(j) ? j : [];
     const row = rows.find(x => String(x.Gene || x.g || '').toUpperCase() === gene.toUpperCase()) || rows[0];
-    if (!row) return { hpaSurface: null, hpaSecreted: null };
+    if (!row) return HPA_NONE;
     const pc = String(row['Protein class'] ?? row.pc ?? '').toLowerCase();
-    if (!pc) return { hpaSurface: null, hpaSecreted: null };
+    if (!pc) return HPA_NONE;
     return {
       hpaSurface:  /membrane|cd markers|transporter|receptor|voltage-gated|g-protein coupled/.test(pc),
       hpaSecreted: /secreted|plasma protein/.test(pc),
     };
-  } catch { return { hpaSurface: null, hpaSecreted: null }; }
+  }, HPA_NONE);
 }
 
 // ── 5b: ChEMBL bioactivity count — the empirical "chemical matter exists" anchor for small
@@ -173,47 +201,36 @@ async function fetchHPA(gene: string): Promise<{ hpaSurface: boolean | null; hpa
 // → total activities. ──
 async function fetchChEMBL(uniprot: string | null): Promise<{ chemblActivities: number | null }> {
   if (!uniprot) return { chemblActivities: null };
-  try {
-    const tr = await fetch(`https://www.ebi.ac.uk/chembl/api/data/target.json?target_components__accession=${encodeURIComponent(uniprot)}&limit=5`, { headers: { Accept: 'application/json' } });
-    if (!tr.ok) return { chemblActivities: null };
-    const tj: any = await tr.json();
+  return withRetry(async () => {
+    const tj: any = await getJSON(`https://www.ebi.ac.uk/chembl/api/data/target.json?target_components__accession=${encodeURIComponent(uniprot)}&limit=5`);
     const ids: string[] = (tj?.targets || []).map((t: any) => t.target_chembl_id).filter(Boolean);
-    if (!ids.length) return { chemblActivities: 0 };
-    const ar = await fetch(`https://www.ebi.ac.uk/chembl/api/data/activity.json?target_chembl_id=${ids[0]}&limit=1`, { headers: { Accept: 'application/json' } });
-    if (!ar.ok) return { chemblActivities: null };
-    const aj: any = await ar.json();
+    if (!ids.length) return { chemblActivities: tj ? 0 : null };   // resolved-but-empty ≠ not fetched
+    const aj: any = await getJSON(`https://www.ebi.ac.uk/chembl/api/data/activity.json?target_chembl_id=${ids[0]}&limit=1`);
     return { chemblActivities: aj?.page_meta?.total_count ?? null };
-  } catch { return { chemblActivities: null }; }
+  }, { chemblActivities: null });
 }
 
 // ── 5c: STRING high-confidence interaction partners — an interface exists to disrupt
 // (peptide / interaction-disrupting biologic). ──
 async function fetchSTRING(gene: string): Promise<{ ppiPartners: number | null }> {
-  try {
+  return withRetry(async () => {
     const url = `https://string-db.org/api/json/interaction_partners?identifiers=${encodeURIComponent(gene)}&species=9606&required_score=700&limit=50`;
-    const r = await fetch(url, { headers: { Accept: 'application/json' } });
-    if (!r.ok) return { ppiPartners: null };
-    const j: any = await r.json();
+    const j: any = await getJSON(url);
     return { ppiPartners: Array.isArray(j) ? j.length : null };
-  } catch { return { ppiPartners: null }; }
+  }, { ppiPartners: null });
 }
 
 // ── 5d: Ensembl canonical-transcript exon count — a single-exon gene has no splicing event
 // to switch (splice-switching ASO is ruled out); multi-exon is necessary but not sufficient. ──
 async function fetchEnsembl(gene: string): Promise<{ exonCount: number | null }> {
-  const attempt = async (): Promise<number | null> => {
+  return withRetry(async () => {
     const url = `https://rest.ensembl.org/lookup/symbol/homo_sapiens/${encodeURIComponent(gene)}?expand=1;content-type=application/json`;
-    const r = await fetch(url, { headers: { Accept: 'application/json' } });
-    if (!r.ok) throw new Error(String(r.status));
-    const j: any = await r.json();
+    const j: any = await getJSON(url);
     const trs: any[] = j?.Transcript || [];
-    if (!trs.length) return null;
+    if (!trs.length) return { exonCount: null };
     const canon = trs.find(t => t.is_canonical === 1) || trs.reduce((a, b) => ((b.Exon?.length || 0) > (a.Exon?.length || 0) ? b : a), trs[0]);
-    return canon?.Exon?.length ?? null;
-  };
-  // Ensembl REST is flaky under parallel load — one retry absorbs a transient 429/blip.
-  try { return { exonCount: await attempt() }; }
-  catch { try { await new Promise(r => setTimeout(r, 400)); return { exonCount: await attempt() }; } catch { return { exonCount: null }; } }
+    return { exonCount: canon?.Exon?.length ?? null };
+  }, { exonCount: null });
 }
 
 const clamp01 = (n: number) => Math.max(0, Math.min(1, n));

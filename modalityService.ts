@@ -20,6 +20,11 @@
 //  • Public OT GraphQL only → works locally and on Vercel.
 
 const OT = 'https://api.platform.opentargets.org/api/v4/graphql';
+// Open Targets' edge (nginx) 403s any request with no User-Agent. Node's fetch sends none
+// by default, so every server-side OT call silently failed — which is what left `fact.developed`
+// empty and stopped the "Precedented" modality tier from ever firing. Browsers were unaffected
+// (they send their own UA), so this only ever broke the server path.
+const OT_UA = 'Disease2Target/1.0 (academic research; contact via app)';
 
 // OT maximumClinicalStage enum → ordinal + human label (for maturity ANNOTATION, not gating).
 const STAGE_RANK: Record<string, number> = {
@@ -96,7 +101,7 @@ export interface ModalityProfile {
 }
 
 async function otFetch(query: string, variables: any): Promise<any> {
-  const r = await fetch(OT, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query, variables }) });
+  const r = await fetch(OT, { method: 'POST', headers: { 'content-type': 'application/json', 'User-Agent': OT_UA }, body: JSON.stringify({ query, variables }) });
   if (!r.ok) throw new Error(`OT ${r.status}`);
   const j = await r.json();
   if (j.errors) throw new Error('OT: ' + String(j.errors?.[0]?.message || 'query error').slice(0, 160));

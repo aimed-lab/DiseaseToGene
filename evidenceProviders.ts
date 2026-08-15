@@ -196,7 +196,8 @@ const TRIAL_PHASE_NUM: Record<string, number> = {
 };
 
 async function otGql(query: string, variables: Record<string, unknown>): Promise<any> {
-  const r = await fetch(OT_GQL, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query, variables }) });
+  // OT 403s requests with no User-Agent (Node's fetch sends none) — see modalityService.ts.
+  const r = await fetch(OT_GQL, { method: 'POST', headers: { 'content-type': 'application/json', 'User-Agent': 'Disease2Target/1.0 (academic research; contact via app)' }, body: JSON.stringify({ query, variables }) });
   if (!r.ok) throw new Error(`OT ${r.status}`);
   const j = await r.json();
   if (j.errors) throw new Error('OT: ' + String(j.errors?.[0]?.message || 'query error').slice(0, 160));

@@ -857,7 +857,8 @@ function setupRoutes() {
     try {
       const upstream = await fetch('https://api.platform.opentargets.org/api/v4/graphql', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        // OT 403s requests with no User-Agent (Node's fetch sends none) — see modalityService.ts.
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'User-Agent': 'Disease2Target/1.0 (academic research; contact via app)' },
         body: JSON.stringify({ query, variables }),
       });
       const data = await upstream.json();
@@ -1165,7 +1166,8 @@ Rules: prefer tools over guessing; call several tools when a question spans sour
 
   const OT_URL = 'https://api.platform.opentargets.org/api/v4/graphql';
   const otFetch = async (query: string, variables: any): Promise<any> => {
-    const r = await fetch(OT_URL, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }, body: JSON.stringify({ query, variables }) });
+    // OT 403s requests with no User-Agent (Node's fetch sends none) — see modalityService.ts.
+    const r = await fetch(OT_URL, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'User-Agent': 'Disease2Target/1.0 (academic research; contact via app)' }, body: JSON.stringify({ query, variables }) });
     const j = await r.json();
     if (j.errors) throw new Error('Open Targets: ' + JSON.stringify(j.errors).slice(0, 200));
     return j.data;
