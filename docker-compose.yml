@@ -1,22 +1,24 @@
-version: '3.9'
-
 services:
   app:
     build:
       context: .
       dockerfile: Dockerfile
+    image: disease2target:latest
     container_name: diseasetotarget
     restart: unless-stopped
     ports:
-      - "3000:3000"
-    environment:
-      - NODE_ENV=production
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - SUPABASE_URL=${SUPABASE_URL}
-      - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
-      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
-      - NOTION_TOKEN=${NOTION_TOKEN}
-      - NOTION_DATABASE_ID=${NOTION_DATABASE_ID}
-      - NCBI_API_KEY=${NCBI_API_KEY}
+      - "${PORT:-3000}:3000"
+    # Every variable comes from .env. This deliberately does NOT re-list them under
+    # `environment:` — that block takes precedence over env_file, so any variable the
+    # host shell happens not to export would resolve to an empty string and silently
+    # override the real value from .env.
     env_file:
       - .env
+    environment:
+      - NODE_ENV=production
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3

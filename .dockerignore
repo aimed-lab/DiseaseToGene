@@ -1,12 +1,41 @@
+# Build context hygiene: everything here is either rebuilt in the image, secret,
+# or a large artifact that would slow every `docker build` without being used.
+
+# Dependencies + build output (regenerated inside the image)
 node_modules
 dist
+dist-server
+dist-ssr
+
+# Secrets
 .env
 .env.local
+.env.*.local
+
+# VCS + tooling
 .git
 .gitignore
+.github
+.claude
+.vscode
+
+# Large non-source artifacts
+assets
+deliverables
+docs
 wiki-vault
 graphify-out
 *.docx
+*.pptx
+*.xlsx
 *.ipynb
 *.csv
-.claude
+*.zip
+*.pdf
+
+# Local scratch
+_tmp_*
+
+# Runtime job queue — local state, not something to bake into an image.
+# NOTE: data/*.json reference compendia ARE needed at runtime and must stay.
+data/jobs.json

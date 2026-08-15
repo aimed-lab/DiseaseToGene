@@ -372,6 +372,18 @@ function setupRoutes() {
     }
   });
 
+  // ── Liveness probe. Unauthenticated and dependency-free ON PURPOSE: it answers
+  // "is this process up and serving?", which is what a container orchestrator asks.
+  // It reports which read path is active but NEVER any credential or host detail. ──
+  app.get("/api/health", (_req, res) => {
+    res.json({
+      ok: true,
+      uptimeSeconds: Math.round(process.uptime()),
+      readPath: ordsReadEnabled() ? 'ords' : (oracleStoreEnabled() ? 'oracle' : 'none'),
+      writesEnabled: oracleStoreEnabled(),
+    });
+  });
+
   // ── Oracle content store (lazy-loaded; gated by USE_ORACLE_STORE=1) ───────────
   app.get("/api/oracle/health", async (_req, res) => {
     if (!oracleStoreEnabled()) return res.status(503).json({ ok: false, error: "Oracle store disabled (set USE_ORACLE_STORE=1 + creds)" });
