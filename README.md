@@ -9,6 +9,8 @@ Disease2Target aggregates public target-discovery evidence (genetics, expression
 ![Node](https://img.shields.io/badge/Node-20+-5fa04e)
 ![Oracle](https://img.shields.io/badge/Oracle-19c%20%2F%20ORDS-c74634)
 
+Built by [Nikhil Kurmachalam](mailto:nkurmach@uab.edu) — SPARC, University of Alabama at Birmingham.
+
 ---
 
 ## Contents
@@ -271,6 +273,14 @@ docs/                     Design notes, ORDS setup, handoffs
 
 Open Targets · UniProt · ChEMBL · DepMap · gnomAD · cBioPortal · UCSC Xena · CPTAC / LinkedOmics · Human Protein Atlas · STRING · Ensembl · Europe PMC · PubTator3 / PubMed · ClinicalTrials.gov · Enrichr (KEGG / Reactome / WikiPathways) · DoGSite3 (proteins.plus) · AlphaFold / PDBe · Google Gemini
 
+## Maintainer
+
+**Nikhil Kurmachalam** — SPARC, University of Alabama at Birmingham
+· [nkurmach@uab.edu](mailto:nkurmach@uab.edu)
+
+Questions about the ranking methodology, the evidence pipeline, or access to a
+deployment are best sent by email.
+
 ## License
 
-No license file is currently included — all rights reserved by the AIMed Lab, University of Alabama at Birmingham. Contact the maintainers before reuse.
+No license file is currently included — all rights reserved by the AIMed Lab, University of Alabama at Birmingham. Contact the maintainer before reuse.
