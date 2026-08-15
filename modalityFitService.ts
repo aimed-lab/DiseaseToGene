@@ -61,6 +61,8 @@ export interface ModalityEvidence {
     hasStructure: boolean;
     structureLabel: string | null;
     totalPockets: number;
+    druggablePockets: number;           // 5g — pockets with a druggable SHAPE (enclosed, drug-sized) among those returned
+    bestEnclosure: number | null;       // 5g — best enclosure among druggable pockets (0–1)
     topVolume: number | null;
     topEnclosure: number | null;
     topDepth: number | null;
@@ -245,8 +247,18 @@ export async function gatherModalityEvidence(gene: string): Promise<ModalityEvid
   const chembl = await fetchChEMBL(uni.uniprot ?? pk?.uniprot ?? null).catch(() => ({ chemblActivities: null }));
 
   const top = pk?.pockets?.[0] || null;
+  // 5g — classify EACH detected pocket by druggable SHAPE, not just size. Per the review, a
+  // huge (>1200 Å³) PPI-interface pocket is HARDER, not easier; drug-bindable pockets are
+  // enclosed and drug-sized (~150–1200 Å³). Thresholds are explicit (not a hidden score).
+  const pockets: any[] = pk?.pockets ?? [];
+  const isDruggableShape = (p: any) => { const v = p?.volume ?? 0, e = p?.enclosure ?? 0; return v >= 150 && v <= 1200 && e >= 0.4; };
+  const druggable = pockets.filter(isDruggableShape);
+  const druggablePockets = druggable.length;
+  const bestEnclosure = druggable.length ? Math.max(...druggable.map(p => p.enclosure ?? 0)) : null;
   const notes: string[] = [];
   if (!pk || pk.structure?.kind === 'none') notes.push('No 3D structure resolved — pocket-based (small-molecule/covalent) reasoning is limited.');
+  if (pk && pk.structure?.kind === 'alphafold') notes.push('Pocket assessment is on an AlphaFold model (one, often-closed conformation) — a hypothesis, not a measurement.');
+  if (pk && pk.structure?.kind !== 'none' && druggablePockets === 0 && (pk.totalPockets ?? 0) > 0) notes.push('No druggable-shaped pocket in this structure — cryptic/allosteric pockets are NOT predicted (apo/AF structures can hide sites; FTMap/PocketMiner not integrated).');
   if (!mod || mod.error) notes.push('Open Targets tractability unavailable — modality assessment falls back to structure/sequence only.');
   if (!uni.uniprot) notes.push('UniProt annotation unavailable — localization / active-site reasoning is limited.');
 
@@ -293,6 +305,8 @@ export async function gatherModalityEvidence(gene: string): Promise<ModalityEvid
       hasStructure: !!(pk && pk.structure?.kind !== 'none'),
       structureLabel: pk?.structure?.label ?? null,
       totalPockets: pk?.totalPockets ?? 0,
+      druggablePockets,
+      bestEnclosure,
       topVolume: top?.volume ?? null,
       topEnclosure: top?.enclosure ?? null,
       topDepth: top?.depth ?? null,
@@ -315,7 +329,9 @@ export function assessModalities(ev: ModalityEvidence, goal: MechanisticGoal): M
   const extracellular = ev.surfaceAccess === 'surface' || ev.surfaceAccess === 'secreted'; // antibody-accessible (5a)
   const secreted      = ev.surfaceAccess === 'secreted';                // no cytoplasmic portion → no UPS access for degraders
   const hasStruct     = ev.pocket.hasStructure;
-  const hasPocket     = hasStruct && ev.pocket.totalPockets > 0;
+  const hasPocket     = hasStruct && ev.pocket.totalPockets > 0;                 // ANY pocket = a handle (PROTAC)
+  const hasDruggablePocket = (ev.pocket.druggablePockets ?? 0) > 0;              // 5g — a druggable-SHAPED pocket (SM)
+  const multiPocket   = (ev.pocket.totalPockets ?? 0) >= 2;                      // 5g — an allosteric option may exist
   const smBucket      = ev.tractabilityBuckets.some(b => b.code === 'SM');
   const prBucket      = ev.tractabilityBuckets.some(b => b.code === 'PR');
   const hasCys        = (ev.cysCount ?? 0) > 0;
@@ -342,10 +358,13 @@ export function assessModalities(ev: ModalityEvidence, goal: MechanisticGoal): M
     // ── base tier from evidence + clinical precedent ──
     if (isOccSM(modality)) {
       if (modality.includes('Conventional') && provenSM) { tier = 'Precedented'; basis.push('a small-molecule drug is developed for this target'); }
-      else if (chemMatter || smBucket || hasPocket) {
+      else if (chemMatter || smBucket || hasDruggablePocket) {
         tier = 'Plausible';
         if (chemMatter) basis.push(`${ev.chemblActivities} measured bioactivities in ChEMBL — chemical matter exists`);
-        else basis.push(smBucket ? 'Open Targets rates it small-molecule tractable' : `a binding pocket is present (${ev.pocket.totalPockets} detected)`);
+        else if (hasDruggablePocket) basis.push(`${ev.pocket.druggablePockets} druggable-shaped pocket(s) of ${ev.pocket.totalPockets} (enclosed, drug-sized)`);
+        else basis.push('Open Targets rates it small-molecule tractable');
+      } else if (hasPocket) {
+        tier = 'Speculative'; basis.push(`${ev.pocket.totalPockets} pocket(s) detected but none druggable-shaped (shallow or large/interface)`);
       } else { tier = 'Speculative'; basis.push('no pocket, tractability, or ChEMBL chemical-matter evidence'); }
       if (modality.includes('Covalent') && !hasCys) { tier = cap(tier, 'Speculative'); basis.push('no cysteines for a covalent warhead'); }
       if (modality.includes('Fragments') && !hasStruct) { tier = cap(tier, 'Speculative'); basis.push('no 3D structure for fragment screening'); }
@@ -394,7 +413,11 @@ export function assessModalities(ev: ModalityEvidence, goal: MechanisticGoal): M
     if (goal === 'spare_catalytic') {
       if (isDegrader(modality) || isKnockdown(modality)) { tier = 'Blocked'; gate = 'removes the protein — cannot spare its catalytic activity'; }
       else if (isSplice(modality)) { tier = cap(tier, 'Speculative'); basis.push('alters the transcript — catalytic function not guaranteed'); }
-      else if (isOccSM(modality)) { tier = cap(tier, 'Plausible'); basis.push('must bind allosterically (not the active site) to spare catalysis'); }
+      else if (isOccSM(modality)) {
+        tier = cap(tier, 'Plausible');
+        if (ev.likelyEnzyme && multiPocket) basis.push('multiple pockets present — an allosteric (non-catalytic) site is plausible');
+        else basis.push('must bind allosterically (not the active site) to spare catalysis');
+      }
     } else if (goal === 'reduce_level') {
       if (isOccSM(modality) || isAntibody(modality) || isPeptide(modality) || isInterDis(modality)) {
         tier = cap(tier, 'Speculative'); if (!gate) gate = 'occupancy does not change protein level';

@@ -32,7 +32,7 @@ interface Evidence {
   uniprot: string | null; subcellularLocations: string[]; likelyEnzyme: boolean; activeSiteCount: number | null;
   surfaceAccess?: string; surfaceSource?: string; isUbiquitinated?: boolean; lysineCount?: number | null;
   sequenceLength: number | null; cysCount: number | null;
-  pocket: { hasStructure: boolean; structureLabel: string | null; totalPockets: number; topVolume: number | null; druggabilityProxy: number | null };
+  pocket: { hasStructure: boolean; structureLabel: string | null; totalPockets: number; druggablePockets?: number; topVolume: number | null; druggabilityProxy: number | null };
   tractabilityBuckets: { modality: string }[]; provenModalities: { family: string; drugCount: number; topStage: string }[];
   chemblActivities?: number | null; ppiPartners?: number | null; exonCount?: number | null; notes: string[];
 }
@@ -144,7 +144,7 @@ export const ModalityFitPanel: React.FC<Props> = ({ geneSymbol, theme = 'light',
           <div style={{ marginTop: 12, paddingTop: 8, borderTop: `1px solid ${border}`, color: muted, fontSize: 10, lineHeight: 1.5 }}>
             <strong style={{ color: text }}>Evidence:</strong> {data.evidence.uniprot ? `UniProt ${data.evidence.uniprot} · ` : ''}
             {data.evidence.surfaceAccess ? `access: ${data.evidence.surfaceAccess}${data.evidence.surfaceSource ? ` (${data.evidence.surfaceSource})` : ''} · ` : ''}
-            {data.evidence.pocket.hasStructure ? `${data.evidence.pocket.structureLabel} · ${data.evidence.pocket.totalPockets} pockets` : 'no structure'}
+            {data.evidence.pocket.hasStructure ? `${data.evidence.pocket.structureLabel} · ${data.evidence.pocket.totalPockets} pockets${data.evidence.pocket.druggablePockets != null ? ` (${data.evidence.pocket.druggablePockets} druggable-shaped)` : ''}` : 'no structure'}
             {data.evidence.likelyEnzyme ? ` · enzyme (${data.evidence.activeSiteCount} active site${data.evidence.activeSiteCount === 1 ? '' : 's'})` : ''}
             {data.evidence.cysCount != null ? ` · ${data.evidence.cysCount} Cys` : ''}
             {data.evidence.tractabilityBuckets.length ? ` · OT tractable: ${data.evidence.tractabilityBuckets.map(b => b.modality).join(', ')}` : ''}
