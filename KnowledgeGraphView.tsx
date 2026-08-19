@@ -9,6 +9,7 @@ import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import * as d3 from 'd3';
 import { Loader2, Search, Crosshair, X, Network, ExternalLink } from 'lucide-react';
 import type { Theme } from './types';
+import { authenticatedFetch } from './supabase';
 
 interface KgNode { key: string; type: string; label: string; degree: number; props: any; x?: number; y?: number; vx?: number; vy?: number; fx?: number | null; fy?: number | null; }
 interface KgEdge { source: any; target: any; rel: string; weight: number | null; confidence: string | null; src: string | null; props: any; }
@@ -41,6 +42,11 @@ export default function KnowledgeGraphView({ theme, diseaseName }: { theme: Them
   const [selected, setSelected] = useState<KgNode | null>(null);
   const [search, setSearch] = useState('');
   const [geneLimit, setGeneLimit] = useState<number | 'all'>(100);   // show the top-N genes by rank (declutters the hairball)
+  // The graph used to follow researchState.activeDisease only, which the Ranking Board's own
+  // snapshot picker never updates — so switching disease on the board left the graph behind
+  // with no way to change it from this screen. It now owns its selection.
+  const [snapId, setSnapId] = useState<number | null>(null);
+  const [snapList, setSnapList] = useState<{ id: number; disease_name: string; nodes: number | null }[]>([]);
 
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -51,16 +57,40 @@ export default function KnowledgeGraphView({ theme, diseaseName }: { theme: Them
   const selRef = useRef<string | null>(null);
   const focusRef = useRef<string | null>(null);
 
+  // ── snapshot list for the picker, annotated with node counts ──
+  // Only some snapshots have had the KG projection run, and "which ones have a graph?" was
+  // exactly the question that made this feature look broken. The counts answer it in the
+  // dropdown itself. Stats calls are cheap and fired in parallel; a failure just leaves the
+  // count unknown rather than blocking the picker.
+  useEffect(() => {
+    let alive = true;
+    authenticatedFetch('/api/snapshots')
+      .then(r => (r.ok ? r.json() : []))
+      .then(async (rows: any[]) => {
+        const list = (Array.isArray(rows) ? rows : []).map(r => ({ id: Number(r.id), disease_name: String(r.disease_name ?? ''), nodes: null as number | null }));
+        if (alive) setSnapList(list);
+        const withCounts = await Promise.all(list.map(async sn => {
+          try {
+            const st = await fetch(`/api/graph/stats?snapshot=${sn.id}`).then(r => (r.ok ? r.json() : null));
+            return { ...sn, nodes: st && typeof st.nodeTotal === 'number' ? st.nodeTotal : null };
+          } catch { return sn; }
+        }));
+        if (alive) setSnapList(withCounts);
+      })
+      .catch(() => { /* the picker degrades to the current snapshot only */ });
+    return () => { alive = false; };
+  }, []);
+
   // ── load the graph ──
   useEffect(() => {
     let alive = true;
     setLoading(true); setError(null);
-    fetch(`/api/graph${diseaseName ? `?disease=${encodeURIComponent(diseaseName)}` : ''}`)
+    fetch(`/api/graph${snapId ? `?snapshot=${snapId}` : diseaseName ? `?disease=${encodeURIComponent(diseaseName)}` : ''}`)
       .then(async r => { if (!r.ok) throw new Error((await r.json().catch(() => ({})))?.error || `HTTP ${r.status}`); return r.json(); })
       .then((j: KgPayload) => { if (alive) { setData(j); setLoading(false); } })
       .catch(e => { if (alive) { setError(String(e?.message || e)); setLoading(false); } });
     return () => { alive = false; };
-  }, [diseaseName]);
+  }, [diseaseName, snapId]);
 
   // adjacency (for ego-focus + neighbour highlight), built once per dataset
   const adj = useMemo(() => {
@@ -262,6 +292,69 @@ export default function KnowledgeGraphView({ theme, diseaseName }: { theme: Them
   }
   if (!data) return null;
 
+  // A snapshot with no KG rows is a normal state, not a failure: the projection is a separate
+  // step (`d2t.ts kg <id>`) and has only been run for some snapshots. Rendering the canvas
+  // anyway produced a blank white area that read as a broken feature, so say what is actually
+  // true and leave the picker reachable so another snapshot can be chosen.
+  if (!data.nodes.length) {
+    const withGraph = snapList.filter(sn => (sn.nodes ?? 0) > 0);
+    return (
+      <div className="h-full flex flex-col">
+        <div className={`flex items-center gap-3 px-4 py-2.5 border-b ${isDark ? 'border-slate-800' : 'border-slate-200'} flex-wrap`}>
+          <div className="flex items-center gap-2">
+            <Network className="w-4 h-4 text-blue-500" />
+            <span className={`text-sm font-bold ${isDark ? 'text-white' : 'text-slate-900'}`}>Knowledge Graph</span>
+            {snapList.length > 1 ? (
+              <select
+                value={String(data.snapshot_id)}
+                onChange={e => setSnapId(Number(e.target.value))}
+                title="Which snapshot's graph to show"
+                className={`bg-transparent text-[11px] outline-none cursor-pointer rounded border px-1.5 py-0.5 ${isDark ? 'text-slate-300 border-slate-700' : 'text-slate-600 border-slate-300'}`}
+              >
+                {snapList.map(sn => (
+                  <option key={sn.id} value={sn.id}>
+                    {sn.disease_name} · #{sn.id}{sn.nodes == null ? '' : sn.nodes > 0 ? ` · ${sn.nodes.toLocaleString()} nodes` : ' · no graph'}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <span className="text-[11px] text-slate-500">{data.disease_name} · #{data.snapshot_id}</span>
+            )}
+          </div>
+        </div>
+
+        <div className="flex-1 flex flex-col items-center justify-center gap-3 text-center p-8">
+          <Network className="w-10 h-10 text-slate-400" />
+          <p className={`text-sm font-semibold ${isDark ? 'text-white' : 'text-slate-900'}`}>
+            No graph has been built for {data.disease_name} yet
+          </p>
+          <p className="text-xs text-slate-500 max-w-md">
+            Snapshot #{data.snapshot_id} has evidence, but the knowledge-graph projection has not
+            been run for it. The graph is built once per snapshot — it is not computed when this
+            page opens.
+          </p>
+          {withGraph.length > 0 && (
+            <p className="text-xs text-slate-500">
+              Snapshots that do have a graph:{' '}
+              {withGraph.map((sn, i) => (
+                <React.Fragment key={sn.id}>
+                  {i > 0 && ', '}
+                  <button onClick={() => setSnapId(sn.id)} className="underline font-semibold hover:text-blue-500">
+                    {sn.disease_name} · #{sn.id}
+                  </button>
+                </React.Fragment>
+              ))}
+            </p>
+          )}
+          <p className="text-xs text-slate-400 mt-1">
+            To build it, run inside the UAB network:{' '}
+            <code className="px-1 rounded bg-slate-500/10">npx tsx --env-file=.env scripts/d2t.ts kg {data.snapshot_id}</code>
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="h-full flex flex-col">
       {/* header */}
@@ -269,7 +362,22 @@ export default function KnowledgeGraphView({ theme, diseaseName }: { theme: Them
         <div className="flex items-center gap-2">
           <Network className="w-4 h-4 text-blue-500" />
           <span className={`text-sm font-bold ${isDark ? 'text-white' : 'text-slate-900'}`}>Knowledge Graph</span>
-          <span className="text-[11px] text-slate-500">{data.disease_name} · #{data.snapshot_id}</span>
+          {snapList.length > 1 ? (
+            <select
+              value={String(data.snapshot_id)}
+              onChange={e => setSnapId(Number(e.target.value))}
+              title="Which snapshot's graph to show"
+              className={`bg-transparent text-[11px] outline-none cursor-pointer rounded border px-1.5 py-0.5 ${isDark ? 'text-slate-300 border-slate-700' : 'text-slate-600 border-slate-300'}`}
+            >
+              {snapList.map(sn => (
+                <option key={sn.id} value={sn.id}>
+                  {sn.disease_name} · #{sn.id}{sn.nodes == null ? '' : sn.nodes > 0 ? ` · ${sn.nodes.toLocaleString()} nodes` : ' · no graph'}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <span className="text-[11px] text-slate-500">{data.disease_name} · #{data.snapshot_id}</span>
+          )}
         </div>
         <span className="text-[11px] text-slate-500">{data.stats.nodeTotal.toLocaleString()} nodes · {data.stats.edgeTotal.toLocaleString()} edges · showing {view.nodes.length}/{view.links.length}</span>
         <div className="flex-1" />
