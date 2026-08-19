@@ -3,41 +3,28 @@
 // modality bar-chart). Whole-protein, hybrid engine:
 //   1) gather HARD evidence deterministically (OT tractability + developed drugs,
 //      DoGSite pocket descriptors, UniProt localization / active-site / sequence),
-//   2) let Gemini synthesise a 0–5 plausibility + one-line rationale per modality,
-//      GROUNDED strictly in that evidence and the chosen mechanistic goal.
-// Scores are AI-assessed PREDICTIONS (kept separate from the facts, per the
-// project's fact/prediction rule). Public APIs only → runs locally and on Vercel.
+//   2) assign an anchored TIER per modality from DETERMINISTIC rules + hard gates,
+//   3) let Gemini write ONLY the one-line rationale for each fixed tier (temperature 0,
+//      restricted to that tier's deterministic `basis`).
+// Tiers are reproducible facts-plus-rules, never model output — that separation is the
+// point of the design. Public APIs only → runs locally and on Vercel.
 
 import { getModalityProfile } from './modalityService.js';
 import { getPocketStructure } from './dogsiteService.js';
 
-// ── Mechanistic goal (changes the scoring — e.g. catalytic sparing) ──
-export type MechanisticGoal = 'inhibit' | 'degrade' | 'reduce_level' | 'spare_catalytic';
-export const MECHANISTIC_GOALS: Record<MechanisticGoal, string> = {
-  inhibit:        'Inhibit or block the target’s function (engage and antagonise it).',
-  degrade:        'Remove the target protein entirely via induced degradation.',
-  reduce_level:   'Lower the amount of target protein / mRNA (knockdown or expression modulation).',
-  spare_catalytic:'Modulate the target WITHOUT abolishing its catalytic/enzymatic activity (spare the active site).',
-};
-export const isGoal = (g: any): g is MechanisticGoal => typeof g === 'string' && g in MECHANISTIC_GOALS;
+// The shared vocabulary (goals, thresholds, taxonomy, tiers) lives in modalityConstants.ts
+// so modalityGlossary.ts can document the exact values these rules use, without dragging
+// this server module into the browser bundle. Re-exported here: importers are unchanged.
+export {
+  MECHANISTIC_GOALS, isGoal, MODALITY_THRESHOLDS,
+  MODALITY_CATEGORIES, MODALITY_TAXONOMY, TIER_RANK, TIER_DEF,
+} from './modalityConstants.js';
+export type { MechanisticGoal, ModalityCategory, Tier } from './modalityConstants.js';
 
-// ── The 12-modality taxonomy, grouped into the 5 chart categories ──
-export const MODALITY_CATEGORIES = ['Biologic', 'RNA/genetic', 'Peptide', 'Induced-proximity', 'Small molecule'] as const;
-export type ModalityCategory = typeof MODALITY_CATEGORIES[number];
-export const MODALITY_TAXONOMY: { category: ModalityCategory; modality: string }[] = [
-  { category: 'Biologic',        modality: 'Antibody / intrabody' },
-  { category: 'Biologic',        modality: 'Interaction-disrupting biologic' },
-  { category: 'RNA/genetic',     modality: 'Expression / genetic modulation' },
-  { category: 'RNA/genetic',     modality: 'RNA knockdown (siRNA/gapmer ASO)' },
-  { category: 'RNA/genetic',     modality: 'Splice-switching ASO' },
-  { category: 'Peptide',         modality: 'Stapled / macrocyclic peptide' },
-  { category: 'Peptide',         modality: 'Linear peptide' },
-  { category: 'Induced-proximity', modality: 'Molecular glue' },
-  { category: 'Induced-proximity', modality: 'PROTAC / degrader' },
-  { category: 'Small molecule',  modality: 'Covalent ligand' },
-  { category: 'Small molecule',  modality: 'Fragments' },
-  { category: 'Small molecule',  modality: 'Conventional small molecule' },
-];
+import {
+  MECHANISTIC_GOALS, MODALITY_THRESHOLDS, MODALITY_TAXONOMY, TIER_RANK, TIER_DEF,
+  type MechanisticGoal, type ModalityCategory, type Tier,
+} from './modalityConstants.js';
 
 export interface ModalityEvidence {
   gene: string;
@@ -75,17 +62,6 @@ export interface ModalityEvidence {
   exonCount: number | null;          // 5d — canonical-transcript exon count (splice-switching ASO feasibility)
   notes: string[];
 }
-
-// Anchored ordinal tiers replace the old 0–5 LLM number (per the methodology review):
-// they calibrate far better and are set DETERMINISTICALLY, so the tool is reproducible.
-export type Tier = 'Precedented' | 'Plausible' | 'Speculative' | 'Blocked';
-export const TIER_RANK: Record<Tier, number> = { Blocked: 0, Speculative: 1, Plausible: 2, Precedented: 3 };
-export const TIER_DEF: Record<Tier, string> = {
-  Precedented: 'A drug of this modality has reached the clinic for this target.',
-  Plausible:   'Hard requirements met and tractability supportive, but no drug yet.',
-  Speculative: 'Requirements met but key evidence is weak or not gathered.',
-  Blocked:     'A hard requirement fails — this modality cannot work here.',
-};
 
 export interface ModalityAssessment {
   category: ModalityCategory;
@@ -268,7 +244,8 @@ export async function gatherModalityEvidence(gene: string): Promise<ModalityEvid
   // huge (>1200 Å³) PPI-interface pocket is HARDER, not easier; drug-bindable pockets are
   // enclosed and drug-sized (~150–1200 Å³). Thresholds are explicit (not a hidden score).
   const pockets: any[] = pk?.pockets ?? [];
-  const isDruggableShape = (p: any) => { const v = p?.volume ?? 0, e = p?.enclosure ?? 0; return v >= 150 && v <= 1200 && e >= 0.4; };
+  const T = MODALITY_THRESHOLDS;
+  const isDruggableShape = (p: any) => { const v = p?.volume ?? 0, e = p?.enclosure ?? 0; return v >= T.pocketMinVolume && v <= T.pocketMaxVolume && e >= T.pocketMinEnclosure; };
   const druggable = pockets.filter(isDruggableShape);
   const druggablePockets = druggable.length;
   const bestEnclosure = druggable.length ? Math.max(...druggable.map(p => p.enclosure ?? 0)) : null;
@@ -348,11 +325,11 @@ export function assessModalities(ev: ModalityEvidence, goal: MechanisticGoal): M
   const hasStruct     = ev.pocket.hasStructure;
   const hasPocket     = hasStruct && ev.pocket.totalPockets > 0;                 // ANY pocket = a handle (PROTAC)
   const hasDruggablePocket = (ev.pocket.druggablePockets ?? 0) > 0;              // 5g — a druggable-SHAPED pocket (SM)
-  const multiPocket   = (ev.pocket.totalPockets ?? 0) >= 2;                      // 5g — an allosteric option may exist
+  const multiPocket   = (ev.pocket.totalPockets ?? 0) >= MODALITY_THRESHOLDS.multiPocketMin;                      // 5g — an allosteric option may exist
   const smBucket      = ev.tractabilityBuckets.some(b => b.code === 'SM');
   const prBucket      = ev.tractabilityBuckets.some(b => b.code === 'PR');
   const hasCys        = (ev.cysCount ?? 0) > 0;
-  const chemMatter    = (ev.chemblActivities ?? 0) >= 50;   // 5b — measured ligands exist
+  const chemMatter    = (ev.chemblActivities ?? 0) >= MODALITY_THRESHOLDS.chemblChemicalMatter;   // 5b — measured ligands exist
   const hasPPI        = (ev.ppiPartners ?? 0) > 0;           // 5c — an interface to disrupt
   const fams          = new Set(ev.provenModalities.map(p => p.family));
   const provenSM      = fams.has('Small molecule');
@@ -416,7 +393,7 @@ export function assessModalities(ev: ModalityEvidence, goal: MechanisticGoal): M
       basis.push('acts at the transcript level (structure-independent)'); basis.push('delivery to the disease tissue is the real constraint');
     } else if (isSplice(modality)) {
       const ex = ev.exonCount;
-      if (ex != null && ex <= 1) { tier = 'Blocked'; gate = `single-exon transcript (${ex}) — no splicing event to switch`; }
+      if (ex != null && ex <= MODALITY_THRESHOLDS.singleExonMax) { tier = 'Blocked'; gate = `single-exon transcript (${ex}) — no splicing event to switch`; }
       else if (ex != null) { tier = 'Speculative'; basis.push(`multi-exon transcript (${ex} exons) — splicing exists, but a specific targetable event is unconfirmed`); }
       else { tier = 'Speculative'; basis.push('transcript/exon model not resolved'); }
     } else if (isPeptide(modality)) {

@@ -116,6 +116,8 @@ import { navigate, isMethodologyPath, isModalityPath, isResetPasswordPath, catch
 // move it to /reset-password preserving the hash. Handles old emails that pointed at the root.
 catchRecoveryHash();
 import { glossaryPromptBlock } from './dashboardGlossary';
+import { modalityPromptBlock, modalityResultBlock } from './modalityGlossary';
+import { getLastModalityResult } from './modalityStore';
 import JobsView from './JobsView';
 import { getCbioMutations } from './cbioportalService';
 import { getChEMBLDruggability } from './chemblService';
@@ -5620,7 +5622,20 @@ CRITICAL RULES:
 
       DASHBOARD REFERENCE — the meaning of every dashboard term, column, abbreviation, range, formula and data source:
       When the user asks what a term/column/metric/abbreviation means, or asks for its RANGE, FORMULA, DATA SOURCE, or evidence level, answer ONLY from this reference. Quote the range and formula verbatim when present, and always name the exact source. If a value has a caveat, include it. Never invent a range, formula or source; if a term is not in this reference, say so plainly rather than guessing. These are explanatory questions — answer them directly in prose, no tool call needed.
-${glossaryPromptBlock()}`;
+${glossaryPromptBlock()}
+
+      MODALITY FIT REFERENCE — the meaning of every modality term: the 4 mechanistic goals, the 4 tiers, the 12 modalities, and every evidence field with the threshold it turns on.
+      When the user asks what a modality/goal/tier/evidence term MEANS, answer ONLY from this reference. Quote thresholds and sources verbatim. If a term is not here, say so plainly rather than guessing. Prefer the "Plain:" wording — many users are not bioinformaticians.
+${modalityPromptBlock()}
+
+      EXPLAINING A TIER — the rule you must not break:
+      Modality tiers are assigned by DETERMINISTIC rules, not by you. Your job is to EXPLAIN a tier, never to assign, revise, second-guess or argue with one.
+      - Answer "why is X that tier?" using ONLY the GATE and BASIS recorded for that modality below. Those are the rules' own reasons; put them in plain language, do not add reasoning of your own.
+      - If a user proposes a different tier, explain which evidence and which rule produced the current one. Do not agree that the tier is wrong and do not offer an alternative tier.
+      - If BASIS says "none recorded", say the rules recorded no basis rather than inventing one.
+      - Distinguish "no evidence exists" from "the evidence was not retrieved this run" — the result block marks fields it could not fetch, and that difference changes the answer.
+      - If no result is loaded, say so and offer to open the Modality page for a gene.
+${modalityResultBlock(getLastModalityResult()) || '      (No modality analysis has been run yet in this session.)'}`;
 
       const callAI = async (messages: Message[]) => {
         const res = await authenticatedFetch('/api/ai/gemini-chat', {
@@ -5736,7 +5751,14 @@ ${glossaryPromptBlock()}`;
     <div className={`h-screen flex flex-col transition-colors duration-200 ai-native-bg ${theme === 'dark' ? 'bg-[#070b12] text-slate-200' : 'bg-[#eef3f8] text-slate-950'}`}>
       {/* Full-page Modality Fit (/Modality) renders as an OVERLAY, not a replacement route, so the
           board/dashboard underneath stays mounted — returning from it keeps all loaded data. */}
-      {isModalityPath(routePath) && <ModalityFitView isDark={theme === 'dark'} onClose={() => navigate('/')} />}
+      {isModalityPath(routePath) && (
+        <ModalityFitView
+          isDark={theme === 'dark'}
+          onClose={() => navigate('/')}
+          chatOpen={isLeftSidebarOpen}
+          onToggleChat={() => setIsLeftSidebarOpen(v => !v)}
+        />
+      )}
       {/* relative z-30 gives the header its own stacking context ABOVE <main>, so the
           Research ▾ dropdown overlays the breadcrumb bar instead of being painted under it. */}
       <header className={`relative z-30 px-4 md:px-6 py-2.5 flex items-center justify-between gap-3 border-b backdrop-blur-xl ${theme === 'dark' ? 'bg-[#070b12]/90 border-slate-800/80' : 'bg-white/95 border-slate-200'}`}>
@@ -5787,7 +5809,7 @@ ${glossaryPromptBlock()}`;
         </div>
       </header>
       <main className="flex-1 flex overflow-hidden relative p-2 gap-2">
-        <aside className={`order-2 border flex flex-col shrink-0 transition-all duration-300 rounded-xl overflow-hidden shadow-lg shadow-slate-950/5 ${isLeftSidebarOpen ? 'w-[340px]' : 'w-0 opacity-0 pointer-events-none'} ${theme === 'dark' ? 'bg-[#0b111c]/95 border-slate-800/80' : 'bg-white border-slate-200'}`}>
+        <aside className={`order-2 border flex flex-col shrink-0 transition-all duration-300 rounded-xl overflow-hidden shadow-lg shadow-slate-950/5 ${isModalityPath(routePath) ? 'relative z-[60]' : ''} ${isLeftSidebarOpen ? 'w-[340px]' : 'w-0 opacity-0 pointer-events-none'} ${theme === 'dark' ? 'bg-[#0b111c]/95 border-slate-800/80' : 'bg-white border-slate-200'}`}>
            <div className={`p-4 border-b flex items-center justify-between ${theme === 'dark' ? 'bg-[#0b111c] border-slate-800' : 'bg-white border-slate-200'}`}>
              <div className="flex items-center gap-3">
                <div className="h-8 w-8 rounded-lg bg-blue-600/10 text-blue-600 dark:text-blue-400 flex items-center justify-center">

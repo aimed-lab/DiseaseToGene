@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Atom, Search, X } from 'lucide-react';
+import { Atom, MessageSquare, Search, X } from 'lucide-react';
 import ModalityFitPanel from './ModalityFitPanel';
 import { queryParam } from './nav';
 
@@ -8,7 +8,12 @@ import { queryParam } from './nav';
 // of the narrow report-card column. Optionally arrives with ?gene=SYMBOL (from the board
 // report card), in which case it preselects that target and auto-runs.
 
-export default function ModalityFitView({ isDark, onClose }: { isDark: boolean; onClose: () => void }) {
+export default function ModalityFitView({ isDark, onClose, chatOpen, onToggleChat }: {
+  isDark: boolean;
+  onClose: () => void;
+  chatOpen?: boolean;              // whether the co-pilot sidebar is currently open
+  onToggleChat?: () => void;       // show/hide it — this view covers the app, so it needs its own control
+}) {
   const initialGene = (queryParam('gene') || '').toUpperCase();
   const [input, setInput] = useState(initialGene);
   const [gene, setGene] = useState<string>(initialGene);
@@ -29,7 +34,15 @@ export default function ModalityFitView({ isDark, onClose }: { isDark: boolean; 
         <Atom className="w-5 h-5" style={{ color: '#2563eb' }} />
         <div style={{ fontWeight: 900, fontSize: 16 }}>Modality Fit</div>
         <div style={{ fontSize: 12, color: muted }}>which therapeutic modality suits a target — on demand</div>
-        <button onClick={onClose} title="Back to the app" style={{ marginLeft: 'auto', border: `1px solid ${border}`, background: 'transparent', color: muted, borderRadius: 8, width: 34, height: 34, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><X className="w-4 h-4" /></button>
+        {onToggleChat && (
+          <button onClick={onToggleChat} title={chatOpen ? 'Hide the co-pilot' : 'Ask the co-pilot about this analysis'}
+            style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 7, border: `1px solid ${chatOpen ? '#2563eb' : border}`,
+                     background: chatOpen ? '#2563eb' : 'transparent', color: chatOpen ? '#fff' : ink,
+                     borderRadius: 8, padding: '7px 12px', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+            <MessageSquare className="w-4 h-4" />{chatOpen ? 'Co-pilot' : 'Ask co-pilot'}
+          </button>
+        )}
+        <button onClick={onClose} title="Back to the app" style={{ marginLeft: onToggleChat ? 0 : 'auto', border: `1px solid ${border}`, background: 'transparent', color: muted, borderRadius: 8, width: 34, height: 34, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><X className="w-4 h-4" /></button>
       </div>
 
       <div style={{ maxWidth: 880, margin: '0 auto', padding: '24px 20px 64px' }}>
