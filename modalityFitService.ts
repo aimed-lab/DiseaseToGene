@@ -220,6 +220,75 @@ function druggabilityProxy(p: any): number | null {
   return Number((0.5 * vol + 0.3 * enc + 0.2 * hyd).toFixed(3));
 }
 
+// ── Evidence cache ──────────────────────────────────────────────────────────
+// gatherModalityEvidence hits eight APIs and is dominated by one slow call (Ensembl: 25-36s
+// cold). That is tolerable once for a single gene, and hopeless for a 50-gene board column.
+// The result is a pure function of the gene, so it is cached for the process lifetime with a
+// TTL: the batch pays the cost once, and a re-run of the same gene is instant.
+const EVIDENCE_TTL_MS = 6 * 60 * 60 * 1000;   // 6h — public annotations do not move faster
+const evidenceCache = new Map<string, { at: number; ev: ModalityEvidence }>();
+
+export async function gatherModalityEvidenceCached(gene: string): Promise<ModalityEvidence> {
+  const key = (gene || '').toUpperCase();
+  const hit = evidenceCache.get(key);
+  if (hit && Date.now() - hit.at < EVIDENCE_TTL_MS) return hit.ev;
+  const ev = await gatherModalityEvidence(key);
+  // Only cache a result that actually resolved the protein. Caching a failed gather would
+  // pin a "no evidence" answer for six hours on what is usually a transient API blip.
+  if (ev.uniprot || ev.pocket.hasStructure || ev.chemblActivities != null) {
+    evidenceCache.set(key, { at: Date.now(), ev });
+  }
+  return ev;
+}
+
+// ── Compact per-gene summary, for the board column ──────────────────────────
+// The full 12-row chart is far too much for a table cell. What a ranked list needs is the
+// single best available route and whether anything is hard-blocked.
+export interface ModalitySummary {
+  gene: string;
+  goal: MechanisticGoal;
+  best: { modality: string; category: string; tier: Tier } | null;
+  counts: Record<Tier, number>;
+  blocked: string[];          // modalities ruled out by a hard gate
+  error?: string;
+}
+
+export async function summariseModality(gene: string, goal: MechanisticGoal): Promise<ModalitySummary> {
+  const empty: Record<Tier, number> = { Precedented: 0, Plausible: 0, Speculative: 0, Blocked: 0 };
+  try {
+    const ev = await gatherModalityEvidenceCached(gene);
+    const rows = assessModalities(ev, goal);          // already sorted best-tier-first
+    const counts = { ...empty };
+    for (const r of rows) counts[r.tier]++;
+    const top = rows[0] ?? null;
+    return {
+      gene: gene.toUpperCase(), goal, counts,
+      best: top ? { modality: top.modality, category: top.category, tier: top.tier } : null,
+      blocked: rows.filter(r => r.tier === 'Blocked').map(r => r.modality),
+    };
+  } catch (e: any) {
+    return { gene: gene.toUpperCase(), goal, best: null, counts: { ...empty }, blocked: [], error: String(e?.message || e).slice(0, 160) };
+  }
+}
+
+// Bounded-concurrency batch. The cap is deliberate: each miss costs several seconds of
+// upstream API time, and firing 50 at once would both stall and risk rate-limiting.
+export async function summariseModalityBatch(genes: string[], goal: MechanisticGoal, concurrency = 4): Promise<ModalitySummary[]> {
+  const queue = [...genes];
+  const out: ModalitySummary[] = [];
+  const worker = async () => {
+    for (;;) {
+      const g = queue.shift();
+      if (!g) return;
+      out.push(await summariseModality(g, goal));
+    }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, genes.length)) }, worker));
+  // Preserve caller order — workers finish out of order and a board column must line up.
+  const byGene = new Map(out.map(r => [r.gene, r]));
+  return genes.map(g => byGene.get(g.toUpperCase())!).filter(Boolean);
+}
+
 // ── M1: gather the evidence (each source independent; a failure degrades gracefully) ──
 export async function gatherModalityEvidence(gene: string): Promise<ModalityEvidence> {
   const [modR, pkR, uniR, hpaR, strR, ensR] = await Promise.allSettled([

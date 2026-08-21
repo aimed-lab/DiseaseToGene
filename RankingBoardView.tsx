@@ -42,6 +42,34 @@ async function getJson(url: string): Promise<any> {
   return j;
 }
 
+type ModalityTier = 'Precedented' | 'Plausible' | 'Speculative' | 'Blocked';
+interface ModalitySummaryRow {
+  gene: string;
+  best: { modality: string; category: string; tier: ModalityTier } | null;
+  counts: Record<ModalityTier, number>;
+  blocked: string[];
+  error?: string;
+}
+// Same tier palette as the Modality panel, so a route reads identically in both places.
+const MOD_TIER_COLOR: Record<ModalityTier, string> = {
+  Precedented: '#059669', Plausible: '#2563eb', Speculative: '#d97706', Blocked: '#64748b',
+};
+// The table cell has room for a route, not a chart: abbreviate the modality to its family.
+const SHORT_MODALITY = (m: string): string =>
+  m.includes('small molecule') ? 'Small molecule'
+  : m.includes('Covalent') ? 'Covalent'
+  : m.includes('Fragments') ? 'Fragments'
+  : m.includes('Antibody') ? 'Antibody'
+  : m.includes('Interaction-disrupting') ? 'PPI biologic'
+  : m.includes('PROTAC') ? 'Degrader'
+  : m.includes('Molecular glue') ? 'Glue'
+  : m.includes('RNA knockdown') ? 'RNA knockdown'
+  : m.includes('Splice') ? 'Splice ASO'
+  : m.includes('Expression') ? 'Expression'
+  : m.includes('Stapled') ? 'Peptide'
+  : m.includes('Linear') ? 'Linear peptide'
+  : m;
+
 export default function RankingBoardView({ theme, diseaseName }: { theme: Theme; diseaseName?: string }) {
   const isDark = theme === 'dark';
   // One calm accent for every criterion bar — the shade deepens with the score, so value
@@ -64,6 +92,14 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
   const [pinned, setPinned] = useState<string | null>(null);
   const [neighborSet, setNeighborSet] = useState<Set<string>>(new Set());
   const [neighborsLoading, setNeighborsLoading] = useState(false);
+  // ── Modality column ────────────────────────────────────────────────────────
+  // Opt-in, not automatic: a cold summary costs several seconds of upstream API time per
+  // gene, so this runs for the targets actually on screen when the user asks for it. The
+  // server caches evidence for 6h, so a second press — or a different goal — is instant.
+  const [modRows, setModRows] = useState<Record<string, ModalitySummaryRow>>({});
+  const [modLoading, setModLoading] = useState(false);
+  const [modGoal, setModGoal] = useState<string>('inhibit');
+
   const [liveConnectivity, setLiveConnectivity] = useState<number | null>(null);   // fallback network signal from the same neighbours call
 
   // ── load snapshots, then the disease's gene set ──
@@ -83,7 +119,7 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
     getJson(`/api/dashboard/genes?snapshotId=${encodeURIComponent(snapId)}&limit=20000`)
       .then(j => { if (alive) { setGenes(j?.rows || []); setLoading(false); } })
       .catch(e => { if (alive) { setError(String(e?.message || e)); setLoading(false); } });
-    return () => { alive = false; };
+  return () => { alive = false; };
   }, [snapId]);
 
   // never sit on a non-ready modality (defensive against a stale value); fall back to the first ready one
@@ -241,6 +277,26 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
   }
   if (error) return <div className="h-full flex flex-col items-center justify-center gap-2 text-center p-8"><Trophy className="w-10 h-10 text-slate-400 mb-2" /><p className="text-sm font-semibold text-red-500">Couldn't load the board</p><p className="text-xs text-slate-500 max-w-md">{error}</p></div>;
 
+  const runModality = async (genes: string[]) => {
+    if (!genes.length || modLoading) return;
+    setModLoading(true);
+    try {
+      const r = await authenticatedFetch('/api/modality-fit/batch', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ genes, goal: modGoal }),
+      });
+      const j = await r.json();
+      if (r.ok && Array.isArray(j.rows)) {
+        setModRows(prev => {
+          const next = { ...prev };
+          for (const row of j.rows as ModalitySummaryRow[]) next[row.gene] = row;
+          return next;
+        });
+      }
+    } catch { /* leave the column blank rather than blocking the board */ }
+    finally { setModLoading(false); }
+  };
+
   return (
     <div className="h-full flex flex-col">
       {/* header */}
@@ -258,6 +314,23 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
           <div className={`flex items-center gap-1 rounded-md border px-2 ${card}`}>
             <Search className="w-3.5 h-3.5 text-slate-400" />
             <input value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => e.key === 'Enter' && runFind()} placeholder="Is my target…?" className={`bg-transparent text-xs py-1.5 w-32 outline-none ${isDark ? 'text-white placeholder:text-slate-600' : 'text-slate-900 placeholder:text-slate-400'}`} />
+          </div>
+          {/* Populate the "Best route" column for the targets currently on screen. Explicitly
+              user-triggered: a cold run costs a few seconds per gene upstream, so it must not
+              fire on page load or on every re-rank. */}
+          <div className={`flex items-center gap-1 rounded-md border px-1.5 ${card}`} title="Compute the best available therapeutic route for the targets on screen">
+            <select value={modGoal} onChange={e => setModGoal(e.target.value)}
+              className={`bg-transparent text-[11px] py-1.5 outline-none cursor-pointer ${isDark ? 'text-slate-200' : 'text-slate-700'}`}>
+              <option value="inhibit">Inhibit</option>
+              <option value="degrade">Degrade</option>
+              <option value="reduce_level">Reduce level</option>
+              <option value="spare_catalytic">Spare catalytic</option>
+              <option value="restore_function">Restore function</option>
+            </select>
+            <button onClick={() => runModality(shown.map(x => x.symbol))} disabled={modLoading}
+              className={`flex items-center gap-1.5 px-2 py-1.5 text-[11px] font-semibold ${modLoading ? 'opacity-60' : ''} ${isDark ? 'text-slate-200' : 'text-slate-700'}`}>
+              <Atom className="w-3.5 h-3.5" />{modLoading ? `Computing ${shown.length}…` : 'Best route'}
+            </button>
           </div>
           <button onClick={() => setShowWeights(v => !v)} className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border text-[11px] font-semibold ${card} ${isDark ? 'text-slate-200' : 'text-slate-700'}`}><Sliders className="w-3.5 h-3.5" /> Weights</button>
           <button onClick={() => navigate('/Methodologies')} title="How the board scores and ranks targets — opens /Methodologies" className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border text-[11px] font-semibold ${card} ${isDark ? 'text-slate-200' : 'text-slate-700'}`}><BookOpen className="w-3.5 h-3.5" /> Methodology</button>
@@ -329,6 +402,7 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
                 <th className="text-left font-bold px-3 py-2 w-12">#</th>
                 <th className="text-left font-bold px-2 py-2">Target</th>
                 {activeDefs.map(c => <th key={c.key} title={`${c.label}: ${c.definition}`} className="text-center font-semibold px-1 py-2 w-[68px]">{c.label}</th>)}
+                <th className="text-left font-semibold px-2 py-2 w-[150px]" title="Best available therapeutic route for the selected mechanistic goal — deterministic tiers from Modality Fit">Best route</th>
                 <th className="text-right font-bold px-3 py-2 w-24">Overall</th>
               </tr>
             </thead>
@@ -354,6 +428,20 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
                         </div>
                       </td>
                     ); })}
+                    <td className="px-2 py-1.5">
+                      {(() => {
+                        const m = modRows[s.symbol];
+                        if (!m) return <span className="text-slate-400 text-[10px]">—</span>;
+                        if (m.error || !m.best) return <span className="text-slate-400 text-[10px]" title={m.error}>no data</span>;
+                        return (
+                          <span className="inline-flex items-center gap-1.5" title={`${m.best.tier}: ${m.best.modality}${m.blocked.length ? ` · ${m.blocked.length} ruled out` : ''}`}>
+                            <span className="w-1.5 h-3 rounded-sm shrink-0" style={{ background: MOD_TIER_COLOR[m.best.tier] }} />
+                            <span className={`text-[11px] font-semibold ${isDark ? 'text-slate-200' : 'text-slate-700'}`}>{SHORT_MODALITY(m.best.modality)}</span>
+                            {m.blocked.length > 0 && <span className="text-[9px] text-slate-400">{m.blocked.length}✕</span>}
+                          </span>
+                        );
+                      })()}
+                    </td>
                     <td className="px-3 py-1.5 text-right">
                       <span className={`font-black tabular-nums ${s.display >= 80 ? 'text-emerald-500' : s.display >= 50 ? (isDark ? 'text-white' : 'text-slate-900') : 'text-slate-400'}`}>{s.display}</span>
                     </td>

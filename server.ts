@@ -7,7 +7,7 @@ import { createHash } from "crypto";
 import { fetchCohortMutations, fetchDruggability, fetchClinical, fetchLiterature, fetchPubmedLiterature, resolveCbioStudy, resolveDiseaseScope } from "./evidenceProviders.js";
 import { getPocketStructure } from "./dogsiteService.js";
 import { getModalityProfile } from "./modalityService.js";
-import { gatherModalityEvidence, assessModalities, buildRationalePrompt, attachRationales, MECHANISTIC_GOALS, isGoal, type MechanisticGoal } from "./modalityFitService.js";
+import { gatherModalityEvidence, assessModalities, buildRationalePrompt, attachRationales, summariseModalityBatch, MECHANISTIC_GOALS, isGoal, type MechanisticGoal } from "./modalityFitService.js";
 import { enrichGene, enrichGenes } from "./enrichService.js";
 import * as ordsSvc from "./ordsService.js"; // pure fetch client → safe to bundle for Vercel
 // NOTE: relative imports carry an explicit .js extension (Node-ESM requirement). On Vercel
@@ -1682,6 +1682,24 @@ Rules: prefer tools over guessing; call several tools when a question spans sour
     }
     return process.env.SIGNUP_INVITE_CODE?.trim() || null;
   };
+
+  // ── F-MOD batch: one compact summary per gene, for the Ranking Board column ──
+  // Deliberately capped and opt-in. Each cache miss costs several seconds of upstream API
+  // time (a cold run is ~5s/gene at concurrency 4), so this is triggered by the user for the
+  // genes actually on screen, never on page load. Evidence is cached per gene for 6h, so a
+  // second page — or a different goal on the same genes — returns immediately.
+  app.post("/api/modality-fit/batch", requireUser, async (req, res) => {
+    const raw = Array.isArray(req.body?.genes) ? req.body.genes : [];
+    const goal: MechanisticGoal = isGoal(req.body?.goal) ? req.body.goal : 'inhibit';
+    const genes: string[] = [...new Set(raw.map((g: any) => String(g || '').trim().toUpperCase()).filter(Boolean) as string[])].slice(0, 60);
+    if (!genes.length) { res.status(400).json({ error: 'genes[] is required' }); return; }
+    try {
+      const rows = await summariseModalityBatch(genes, goal);
+      res.json({ goal, goalText: MECHANISTIC_GOALS[goal], count: rows.length, rows });
+    } catch (e: any) {
+      res.status(502).json({ error: e?.message || 'modality batch failed' });
+    }
+  });
 
   // ── F-MOD: on-demand modality-fit analysis for one target ────────────────────
   // Gathers hard evidence (OT tractability + developed drugs, DoGSite pocket, UniProt
