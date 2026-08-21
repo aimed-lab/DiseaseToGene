@@ -755,7 +755,7 @@ const RESEARCH_GROUP = [
 // Research menu, Enrichment, Jobs, …) is admin-only — hidden from the nav AND blocked
 // by a guard in App, so a researcher can't reach it via the co-pilot or a restored
 // session. Nothing is deleted; admins keep the full app.
-const RESEARCHER_VIEWS = new Set<string>(['board', 'dashboard', 'list', 'graph']);
+const RESEARCHER_VIEWS = new Set<string>(['board', 'dashboard', 'list', 'graph', 'modality']);
 
 const TabNavigation = ({
   viewMode,
@@ -785,14 +785,18 @@ const TabNavigation = ({
   const btnCls = (active: boolean) => `h-9 px-3 xl:px-4 rounded-md text-[11px] font-semibold transition-all flex items-center gap-2 whitespace-nowrap ${active ? (isDark ? 'bg-slate-800 text-white' : 'bg-slate-950 text-white') : (isDark ? 'text-slate-300 hover:text-white hover:bg-slate-800' : 'text-slate-900 hover:text-slate-950 hover:bg-slate-100')}`;
   const iconCls = (active: boolean) => `w-3.5 h-3.5 ${active ? 'text-white' : (isDark ? 'text-slate-400' : 'text-slate-700')}`;
 
-  const primaryAll = [ {id:'board',i:Trophy,l:'Ranking Board'}, {id:'dashboard',i:LayoutDashboard,l:'Evidence'}, {id:'list',i:List,l:'Targets'}, {id:'funnel',i:Filter,l:'Funnel'}, {id:'rankings',i:Layers,l:'Score Matrix'}, {id:'graph',i:Network,l:'Graph'} ];
+  // Modality is a ROUTE (/Modality renders as an overlay), not a view mode, so its tab
+  // navigates instead of switching viewMode. It sits in the nav rather than inside the
+  // Ranking Board toolbar: it is a feature in its own right, and moving it out also takes
+  // one button off an already-crowded board header.
+  const primaryAll = [ {id:'board',i:Trophy,l:'Ranking Board'}, {id:'dashboard',i:LayoutDashboard,l:'Evidence'}, {id:'list',i:List,l:'Targets'}, {id:'funnel',i:Filter,l:'Funnel'}, {id:'rankings',i:Layers,l:'Score Matrix'}, {id:'graph',i:Network,l:'Graph'}, {id:'modality',i:Atom,l:'Modality',route:ROUTES.modality} ];
   // Researchers see only their allow-listed tabs; admins see everything.
   const primary  = isAdmin ? primaryAll : primaryAll.filter(t => RESEARCHER_VIEWS.has(t.id));
   const trailing = [ {id:'enrichment',i:BarChart3,l:'Enrichment'}, {id:'jobs',i:Cpu,l:'Jobs'} ];
-  const flatBtn = (t: { id: string; i: any; l: string }) => {
-    const active = viewMode === t.id;
+  const flatBtn = (t: { id: string; i: any; l: string; route?: string }) => {
+    const active = t.route ? isModalityPath() : viewMode === t.id;
     return (
-      <button key={t.id} onClick={() => onViewModeChange(t.id as ViewMode)} className={btnCls(active)}>
+      <button key={t.id} onClick={() => (t.route ? navigate(t.route) : onViewModeChange(t.id as ViewMode))} className={btnCls(active)}>
         <t.i className={iconCls(active)} />
         {t.l}
       </button>

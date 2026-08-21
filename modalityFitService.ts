@@ -248,6 +248,10 @@ export interface ModalitySummary {
   gene: string;
   goal: MechanisticGoal;
   best: { modality: string; category: string; tier: Tier } | null;
+  // Best tier reached within each of the 5 categories — this is what a comparison across
+  // targets needs: "which of these is the better small-molecule target?" is a per-category
+  // question, and a single overall best hides it.
+  byCategory: Record<string, Tier>;
   counts: Record<Tier, number>;
   blocked: string[];          // modalities ruled out by a hard gate
   error?: string;
@@ -259,15 +263,20 @@ export async function summariseModality(gene: string, goal: MechanisticGoal): Pr
     const ev = await gatherModalityEvidenceCached(gene);
     const rows = assessModalities(ev, goal);          // already sorted best-tier-first
     const counts = { ...empty };
-    for (const r of rows) counts[r.tier]++;
+    const byCategory: Record<string, Tier> = {};
+    for (const r of rows) {
+      counts[r.tier]++;
+      const cur = byCategory[r.category];
+      if (!cur || TIER_RANK[r.tier] > TIER_RANK[cur]) byCategory[r.category] = r.tier;
+    }
     const top = rows[0] ?? null;
     return {
-      gene: gene.toUpperCase(), goal, counts,
+      gene: gene.toUpperCase(), goal, counts, byCategory,
       best: top ? { modality: top.modality, category: top.category, tier: top.tier } : null,
       blocked: rows.filter(r => r.tier === 'Blocked').map(r => r.modality),
     };
   } catch (e: any) {
-    return { gene: gene.toUpperCase(), goal, best: null, counts: { ...empty }, blocked: [], error: String(e?.message || e).slice(0, 160) };
+    return { gene: gene.toUpperCase(), goal, best: null, counts: { ...empty }, byCategory: {}, blocked: [], error: String(e?.message || e).slice(0, 160) };
   }
 }
 
