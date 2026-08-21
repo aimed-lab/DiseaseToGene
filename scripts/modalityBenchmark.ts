@@ -174,6 +174,84 @@ async function gatherAll(genes: string[]) {
   console.log(`  BASE-RATE (always SM): overall ${r(baseHit, tot)} · NON-SM 0% (cannot recover any non-SM modality)`);
   console.log(`  must-not-block-a-precedented-modality violations: ${blockFail}\n`);
 
+  // ── LEAKAGE ABLATION ────────────────────────────────────────────────────────
+  // The gold standard is "the modality that reached the clinic", and some of the evidence
+  // the rules read is DERIVED from that same clinical reality. Recall measured with it left
+  // in is therefore partly circular. This re-runs recall with that evidence removed, in two
+  // steps, so the contribution of each leak is visible rather than assumed.
+  //
+  //   L1  developed drugs removed (provenModalities) — the obvious leak: it is the only
+  //       thing that can award "Precedented".
+  //   L2  L1 plus the clinical-precedence labels inside Open Targets TRACTABILITY. This is
+  //       the subtle one: smBucket/prBucket fire on ANY true bucket, and OT's buckets
+  //       include "Approved Drug" / "Advanced Clinical" / "Phase 1 Clinical", plus an OC
+  //       modality that is clinical precedence and nothing else. Ablating developed drugs
+  //       alone would leave that channel wide open.
+  //
+  // What survives L2 is structure, pockets, localization, sequence, STRING, exons and
+  // MEASURED ChEMBL bioactivity. ChEMBL is not perfectly independent either — targets that
+  // went to the clinic attract more assays — but a measured binding molecule is legitimate
+  // chemical evidence, so it is kept and the caveat stated rather than hidden.
+  const CLINICAL_LABELS = /approved drug|advanced clinical|phase 1 clinical/i;
+  const ablate = (ev: any, level: 1 | 2) => {
+    const out = { ...ev, provenModalities: [] as any[] };
+    if (level === 2) {
+      out.tractabilityBuckets = (ev.tractabilityBuckets ?? [])
+        .filter((b: any) => b.code !== 'OC')                                  // OC is clinical precedence only
+        .map((b: any) => ({ ...b, labels: (b.labels ?? []).filter((l: string) => !CLINICAL_LABELS.test(l)) }))
+        .filter((b: any) => b.labels.length > 0);                             // a bucket with only clinical labels is gone
+    }
+    return out;
+  };
+
+  const recallAt = (transform: (ev: any) => any) => {
+    let h = 0, t = 0, sh = 0, st = 0, nh = 0, nt = 0;
+    for (const rc of RECALL) {
+      const ev = cache.get(rc.gene); if (!ev) continue;
+      const rows = assessModalities(transform(ev), 'inhibit');
+      for (const key of rc.truth) {
+        const tier = tierOf(rows, MOD_SUB[key]);
+        const ok = tier != null && TIER_RANK[tier] >= TIER_RANK['Plausible'];
+        const isSM = key === 'SM';
+        t++; if (ok) h++;
+        if (isSM) { st++; if (ok) sh++; } else { nt++; if (ok) nh++; }
+      }
+    }
+    return { overall: r(h, t), sm: r(sh, st), nonSm: r(nh, nt), hit: h, tot: t };
+  };
+
+  const abl0 = recallAt(ev => ev);
+  const abl1 = recallAt(ev => ablate(ev, 1));
+  const abl2 = recallAt(ev => ablate(ev, 2));
+
+  console.log('  LEAKAGE ABLATION — recall of the true modality with clinical-derived evidence removed:');
+  console.log(`     L0 full evidence                          overall ${abl0.overall} · SM ${abl0.sm} · NON-SM ${abl0.nonSm}`);
+  console.log(`     L1 no developed drugs                     overall ${abl1.overall} · SM ${abl1.sm} · NON-SM ${abl1.nonSm}`);
+  console.log(`     L2 also no clinical tractability labels   overall ${abl2.overall} · SM ${abl2.sm} · NON-SM ${abl2.nonSm}`);
+  console.log(`     base-rate (always SM)                     overall ${r(baseHit, tot)} · NON-SM 0%`);
+  console.log(`     → the L2 row is the non-circular number: it uses only structure, sequence,`);
+  console.log(`       localization, STRING, exons and measured ChEMBL bioactivity.\n`);
+
+  const ablationLines = [
+    '',
+    '## Leakage ablation (is the recall circular?)',
+    '',
+    'The gold standard is the clinically-precedented modality, and some evidence the rules read is derived',
+    'from that same clinical reality. Recall is re-measured with it removed.',
+    '',
+    '| Evidence available to the rules | Overall | SM | NON-SM |',
+    '|---|---|---|---|',
+    `| L0 — full (as shipped) | ${abl0.overall} | ${abl0.sm} | ${abl0.nonSm} |`,
+    `| L1 — developed drugs removed | ${abl1.overall} | ${abl1.sm} | ${abl1.nonSm} |`,
+    `| **L2 — also clinical tractability labels removed** | **${abl2.overall}** | **${abl2.sm}** | **${abl2.nonSm}** |`,
+    `| base-rate ("always small molecule") | ${r(baseHit, tot)} | 100% | 0% |`,
+    '',
+    'L2 is the non-circular figure: it uses only structure, pockets, localization, sequence, STRING partners,',
+    'exon count and measured ChEMBL bioactivity. ChEMBL is not fully independent of clinical attention either,',
+    'but a measured binding molecule is legitimate chemical evidence, so it is retained and the caveat stated.',
+    '',
+  ];
+
   // ── #6 extras: LR baseline · calibration · popularity-bias · reproducibility ──
   const CLASSES = Object.keys(MOD_SUB);   // SM, Antibody, RNA, PROTAC, Splice
   const targets = RECALL.filter(rc => cache.get(rc.gene));
@@ -266,6 +344,7 @@ async function gatherAll(genes: string[]) {
     `- A logistic-regression baseline on the deterministic features (does a simple model match the rules?).`,
     `- Popularity-bias probe (do tiers track PubMed volume rather than biology?).`,
     `- Known honest gap: splice-switching stays Speculative on multi-exon genes (needs SpliceAI/ClinVar for the specific event) — so SMN2's true modality is recovered as Speculative, not Plausible.`,
+    ...ablationLines,
   ].join('\n');
 
   const out = path.join('deliverables', 'modality_benchmark_results.md');
