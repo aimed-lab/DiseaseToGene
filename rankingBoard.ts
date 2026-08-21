@@ -361,14 +361,30 @@ export function buildBoard(genes: any[], modality: ModalityKey, weightOverride?:
   const pre = genes.map((g, i) => {
     const criteria = allCriteria[i];
     const gated = !!(profile.gate && !profile.gate(g));
-    // Weighted sum over present ACTIVE criteria (a missing one contributes 0). Weights sum to 1
-    // over the active set, so breadth of evidence still matters.
-    let overall = 0, coverage = 0;
+    // Weighted mean over the ACTIVE criteria, where CORE and CONTEXT criteria treat absence
+    // differently — which is the whole novelty-fairness rule, and was previously stated in the
+    // comments but not implemented:
+    //
+    //   CORE (genetics, expression, dependency, tractability, safety) — a missing one is a
+    //   real evidence gap. Its weight STAYS in the denominator, so the target is penalised.
+    //
+    //   CONTEXT (clinical, literature, network) — these reward ATTENTION. A first-in-class
+    //   target has no trials and few papers, and docking it for that buries exactly the
+    //   targets this tool exists to surface. A missing one is dropped from the denominator,
+    //   so it is neutral rather than a zero.
+    //
+    // A target with complete evidence is unaffected: the denominator is the full active
+    // weight budget, so its score is identical to the previous behaviour.
+    let num = 0, den = 0, coverage = 0;
     for (const c of CRITERIA) {
       const v = criteria[c.key], w = weights[c.key];
       if (w <= 0) continue;
-      if (v != null) { overall += v * w; coverage++; }
+      const isCore = CORE_CRITERIA.has(c.key);
+      if (v != null) { num += v * w; den += w; coverage++; }
+      else if (isCore) { den += w; }            // core gap: counted against the target
+      // context gap: neither numerator nor denominator — genuinely neutral
     }
+    let overall = den > 0 ? num / den : 0;
     if (gated) overall *= 0.05;                       // ineligible → sink, but a gate must gate (sorted last below)
     return { symbol: g.gene_symbol, sourceRank: g.rank ?? null, criteria, overall, coverage, gated, gateNote: gated ? profile.gateNote : undefined, raw: g };
   });
