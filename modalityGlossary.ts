@@ -61,6 +61,11 @@ export const MODALITY_GLOSSARY: ModalityGlossaryEntry[] = [
     plain: 'Change the protein’s behaviour without switching off its main chemical job, because healthy cells need that job too.',
     rule: `BLOCKS degraders and knockdown ("removes the protein — cannot spare its catalytic activity") and caps occupancy small molecules at Plausible, which must then bind allosterically. Having at least ${T.multiPocketMin} pockets is what makes an allosteric site plausible.` },
 
+  { term: 'Restore function (goal)', category: 'goal', definition: MECHANISTIC_GOALS.restore_function,
+    plain: 'Get more working protein, or make a broken one work again — the opposite of the other four goals.',
+    rule: 'BLOCKS degraders and RNA knockdown (they remove the target). PROMOTES splice-switching to Plausible on a multi-exon gene, since correcting splicing is the mechanism. Expression modulation is allowed because it can raise as well as lower protein. Occupancy modalities need an activating or corrector mechanism rather than blockade.',
+    caveat: 'The only gain-of-function goal. Nusinersen, eteplirsen and risdiplam belong here; running them under "inhibit" is a category error.' },
+
   // ── the 4 tiers ──────────────────────────────────────────────────────────
   { term: 'Precedented (tier)', category: 'tier', definition: TIER_DEF.Precedented,
     plain: 'A drug of this kind already exists for this exact protein. A database lookup, not a prediction.',

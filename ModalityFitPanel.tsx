@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { authenticatedFetch } from './supabase';
 import { setLastModalityResult } from './modalityStore';
+import type { MechanisticGoal } from './modalityConstants';
 
 // F-MOD (M4/M5/M6) — On-demand modality-fit chart for one target. A goal selector +
 // "Generate" button calls POST /api/modality-fit; the result renders as a horizontal
@@ -14,12 +15,15 @@ interface Props {
   autoRun?: boolean;   // generate once on mount (used by the full-page view arriving with a preselected gene)
 }
 
-type Goal = 'inhibit' | 'degrade' | 'reduce_level' | 'spare_catalytic';
+// The goal union comes from modalityConstants so the dropdown cannot drift out of step with
+// the rules — a locally retyped list is how a goal ends up in the UI that the engine ignores.
+type Goal = MechanisticGoal;
 const GOALS: { key: Goal; label: string }[] = [
   { key: 'inhibit', label: 'Inhibit function' },
   { key: 'degrade', label: 'Degrade protein' },
   { key: 'reduce_level', label: 'Reduce level (knockdown)' },
   { key: 'spare_catalytic', label: 'Spare catalytic activity' },
+  { key: 'restore_function', label: 'Restore / increase function' },
 ];
 
 const CATEGORY_COLOR: Record<string, string> = {

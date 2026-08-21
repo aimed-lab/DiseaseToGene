@@ -11,12 +11,16 @@
 // would let the documentation drift silently false.
 
 // ── Mechanistic goal — what the user wants done TO the target ──
-export type MechanisticGoal = 'inhibit' | 'degrade' | 'reduce_level' | 'spare_catalytic';
+export type MechanisticGoal = 'inhibit' | 'degrade' | 'reduce_level' | 'spare_catalytic' | 'restore_function';
 export const MECHANISTIC_GOALS: Record<MechanisticGoal, string> = {
   inhibit:        'Inhibit or block the target’s function (engage and antagonise it).',
   degrade:        'Remove the target protein entirely via induced degradation.',
   reduce_level:   'Lower the amount of target protein / mRNA (knockdown or expression modulation).',
   spare_catalytic:'Modulate the target WITHOUT abolishing its catalytic/enzymatic activity (spare the active site).',
+  // The first GAIN-of-function goal. The other four all reduce or block the target, which
+  // left drugs like nusinersen (more full-length SMN) and eteplirsen (a restored dystrophin
+  // reading frame) with no goal they could honestly be evaluated under.
+  restore_function:'Restore or increase functional target protein (splice correction, activation, expression increase).',
 };
 export const isGoal = (g: any): g is MechanisticGoal => typeof g === 'string' && g in MECHANISTIC_GOALS;
 

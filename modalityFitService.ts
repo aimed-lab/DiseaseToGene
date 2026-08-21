@@ -416,6 +416,27 @@ export function assessModalities(ev: ModalityEvidence, goal: MechanisticGoal): M
       if (isOccSM(modality) || isAntibody(modality) || isPeptide(modality) || isInterDis(modality)) {
         tier = cap(tier, 'Speculative'); if (!gate) gate = 'occupancy does not change protein level';
       }
+    } else if (goal === 'restore_function') {
+      // Gain of function inverts most of the scheme: anything that REMOVES the target
+      // defeats the goal, while splice correction becomes the lead modality rather than a
+      // capped afterthought (nusinersen, eteplirsen, risdiplam).
+      if (isDegrader(modality) || isKnockdown(modality)) {
+        if (modality.includes('Expression / genetic')) {
+          // Expression modulation is bidirectional — gene replacement and upregulation
+          // increase functional protein, so it is NOT blocked here.
+          basis.push('expression modulation can raise as well as lower protein level');
+        } else {
+          tier = 'Blocked'; gate = 'removes the target — cannot restore its function';
+        }
+      } else if (isSplice(modality)) {
+        // The exon gate above already Blocked single-exon transcripts; a multi-exon gene has
+        // a splicing event that CAN be redirected, which is exactly this goal's mechanism.
+        if (tier !== 'Blocked') { tier = 'Plausible'; basis.push('splice correction directly restores functional protein when a targetable event exists'); }
+      } else if (isInterDis(modality)) {
+        tier = cap(tier, 'Speculative'); basis.push('disrupting an interface does not restore function');
+      } else if (isOccSM(modality) || isAntibody(modality) || isPeptide(modality)) {
+        basis.push('requires an activating/corrector mechanism, not blockade — less common than inhibition');
+      }
     } else if (goal === 'degrade') {
       if (isOccSM(modality) || isAntibody(modality) || isPeptide(modality) || isInterDis(modality)) {
         tier = cap(tier, 'Speculative'); basis.push('inhibits but does not remove the protein');

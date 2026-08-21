@@ -34,6 +34,7 @@ const CONTROLS: Control[] = [
   { gene: 'AR',    goal: 'degrade',         note: 'AR degrader clinical (ARV-110)',        plausible: ['PROTAC'] },
   { gene: 'KRAS',  goal: 'inhibit',         note: 'intracellular — naked antibody must not pass', notPlausible: ['Antibody'] },
   { gene: 'PHGDH', goal: 'spare_catalytic', note: 'spare-catalytic blocks removal',        blocked: ['RNA knockdown', 'PROTAC', 'Expression / genetic'] },
+  { gene: 'SMN2',  goal: 'restore_function', note: 'gain of function — removal must fail, splice correction must not', blocked: ['RNA knockdown', 'PROTAC'], plausible: ['Splice-switching'] },
   { gene: 'JUN',   goal: 'inhibit',         note: 'single-exon — splice-switching ruled out', blocked: ['Splice-switching'] },
 ];
 
@@ -47,7 +48,11 @@ const MOD_SUB: Record<string, string> = {
   SM: 'Conventional small molecule', Antibody: 'Antibody',
   RNA: 'RNA knockdown', PROTAC: 'PROTAC', Splice: 'Splice-switching',
 };
-const RECALL: { gene: string; truth: (keyof typeof MOD_SUB)[]; drug: string }[] = [
+// `goal` is the mechanistic goal the DRUG actually pursues. It defaults to 'inhibit', which
+// was the blanket assumption before — wrong for the gain-of-function cases: nusinersen
+// raises full-length SMN and eteplirsen restores a dystrophin reading frame, so evaluating
+// them under "inhibit" asked the engine the wrong question.
+const RECALL: { gene: string; truth: (keyof typeof MOD_SUB)[]; drug: string; goal?: MechanisticGoal }[] = [
   { gene: 'EGFR',  truth: ['SM', 'Antibody'], drug: 'gefitinib + cetuximab' },
   { gene: 'BCL2',  truth: ['SM'],             drug: 'venetoclax' },
   { gene: 'MS4A1', truth: ['Antibody'],       drug: 'rituximab (CD20)' },
@@ -56,7 +61,7 @@ const RECALL: { gene: string; truth: (keyof typeof MOD_SUB)[]; drug: string }[] 
   { gene: 'SOD1',  truth: ['RNA'],            drug: 'tofersen (ASO)' },
   { gene: 'AR',    truth: ['SM', 'PROTAC'],   drug: 'enzalutamide + ARV-110' },
   { gene: 'KRAS',  truth: ['SM'],             drug: 'sotorasib' },
-  { gene: 'SMN2',  truth: ['Splice'],         drug: 'nusinersen' },
+  { gene: 'SMN2',  truth: ['Splice'],         drug: 'nusinersen', goal: 'restore_function' },
   { gene: 'PDCD1', truth: ['Antibody'],       drug: 'pembrolizumab (PD-1)' },
   { gene: 'BRAF',  truth: ['SM'],             drug: 'vemurafenib' },
   { gene: 'BTK',   truth: ['SM'],             drug: 'ibrutinib' },
@@ -65,7 +70,7 @@ const RECALL: { gene: string; truth: (keyof typeof MOD_SUB)[]; drug: string }[] 
   { gene: 'VEGFA', truth: ['Antibody'],       drug: 'bevacizumab (secreted)' },
   { gene: 'TTR',   truth: ['RNA'],            drug: 'patisiran + inotersen' },
   { gene: 'HTT',   truth: ['RNA'],            drug: 'tominersen (ASO)' },
-  { gene: 'DMD',   truth: ['Splice'],         drug: 'eteplirsen (exon-51 skip)' },
+  { gene: 'DMD',   truth: ['Splice'],         drug: 'eteplirsen (exon-51 skip)', goal: 'restore_function' },
   { gene: 'ESR1',  truth: ['SM', 'PROTAC'],   drug: 'tamoxifen + SERD/degrader' },
   { gene: 'IKZF1', truth: ['SM'],             drug: 'lenalidomide (molecular glue → SM class)' },
 ];
@@ -155,7 +160,7 @@ async function gatherAll(genes: string[]) {
   let baseHit = 0;                                   // base-rate-SM: only "predicts" SM feasible
   for (const rc of RECALL) {
     const ev = cache.get(rc.gene); if (!ev) { console.log(`SKIP ${rc.gene}`); continue; }
-    const rows = assessModalities(ev, 'inhibit');
+    const rows = assessModalities(ev, rc.goal ?? 'inhibit');
     const per: string[] = [];
     for (const key of rc.truth) {
       const t = tierOf(rows, MOD_SUB[key]);
@@ -173,6 +178,33 @@ async function gatherAll(genes: string[]) {
   console.log(`\n  TOOL recall: overall ${r(hit, tot)} · SM ${r(smHit, smTot)} · NON-SM ${r(nsHit, nsTot)}`);
   console.log(`  BASE-RATE (always SM): overall ${r(baseHit, tot)} · NON-SM 0% (cannot recover any non-SM modality)`);
   console.log(`  must-not-block-a-precedented-modality violations: ${blockFail}\n`);
+
+  // ── PROTOCOL COMPARISON: does the fifth goal explain the change? ────────────
+  // Adding a goal AND changing how cases are evaluated could look like fitting to the test,
+  // so both protocols are reported side by side. The old one asked every drug the same
+  // question ("can this target be inhibited?"); the new one asks each drug the question it
+  // actually answers. The difference is a protocol correction, not a rule tweak.
+  const recallUnder = (goalFor: (rc: typeof RECALL[number]) => MechanisticGoal) => {
+    let h = 0, t = 0, nh = 0, nt = 0;
+    for (const rc of RECALL) {
+      const ev = cache.get(rc.gene); if (!ev) continue;
+      const rows = assessModalities(ev, goalFor(rc));
+      for (const key of rc.truth) {
+        const tier = tierOf(rows, MOD_SUB[key]);
+        const ok = tier != null && TIER_RANK[tier] >= TIER_RANK['Plausible'];
+        t++; if (ok) h++;
+        if (key !== 'SM') { nt++; if (ok) nh++; }
+      }
+    }
+    return { overall: r(h, t), nonSm: r(nh, nt) };
+  };
+  const pOld = recallUnder(() => 'inhibit');
+  const pNew = recallUnder(rc => rc.goal ?? 'inhibit');
+  console.log('  PROTOCOL — every drug evaluated under the goal it actually pursues:');
+  console.log(`     all-inhibit (previous protocol)     overall ${pOld.overall} · NON-SM ${pOld.nonSm}`);
+  console.log(`     per-drug goal (corrected)           overall ${pNew.overall} · NON-SM ${pNew.nonSm}`);
+  console.log('     Only SMN2 and DMD differ: both are gain-of-function drugs that had no');
+  console.log('     correct goal before restore_function existed.\n');
 
   // ── LEAKAGE ABLATION ────────────────────────────────────────────────────────
   // The gold standard is "the modality that reached the clinic", and some of the evidence
@@ -208,7 +240,9 @@ async function gatherAll(genes: string[]) {
     let h = 0, t = 0, sh = 0, st = 0, nh = 0, nt = 0;
     for (const rc of RECALL) {
       const ev = cache.get(rc.gene); if (!ev) continue;
-      const rows = assessModalities(transform(ev), 'inhibit');
+      // Same per-drug goal as the headline recall, so the ablation measures the SAME metric
+      // rather than silently reporting the old all-inhibit protocol alongside it.
+      const rows = assessModalities(transform(ev), rc.goal ?? 'inhibit');
       for (const key of rc.truth) {
         const tier = tierOf(rows, MOD_SUB[key]);
         const ok = tier != null && TIER_RANK[tier] >= TIER_RANK['Plausible'];
