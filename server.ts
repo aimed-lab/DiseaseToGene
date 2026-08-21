@@ -927,6 +927,23 @@ function setupRoutes() {
   app.get("/api/expression", serveRef('expression_paad.json', 'Expression'));
   app.get("/api/gnomad", serveRef('gnomad_constraint.json', 'gnomAD'));
 
+  // ── Cell-type resolution (HPA single-cell) ──────────────────────────────────
+  // Not a serveRef reference table: HPA has no reachable bulk single-cell file and its API
+  // answers one gene per call, so this is a cached live lookup instead. Same public-data
+  // posture as the other reference endpoints, so no auth.
+  app.get("/api/singlecell", async (req, res) => {
+    const gene = String(req.query.gene || '').toUpperCase().trim();
+    if (!gene) return res.status(400).json({ error: "Missing gene param" });
+    try {
+      const { getSingleCellProfile } = await import('./singleCellService.js');
+      const profile = await getSingleCellProfile(gene);
+      if (!profile.resolved) return res.status(404).json({ error: `No HPA single-cell data for "${gene}"`, notLoaded: true });
+      res.json(profile);
+    } catch (e: any) {
+      res.status(502).json({ error: e?.message || 'single-cell lookup failed' });
+    }
+  });
+
   // ── Live per-gene clinical / literature (same providers the harvest stores) ──
   // Power the gene-drawer Clinical & Literature panels so the drill-down shows the
   // SAME numbers the funnel filters on (the funnel reads these from stored Oracle

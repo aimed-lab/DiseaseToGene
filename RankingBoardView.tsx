@@ -6,7 +6,7 @@
 // Reads /api/dashboard/genes (no new endpoint); all scoring is client-side via
 // rankingBoard.ts.
 import React, { useEffect, useMemo, useState } from 'react';
-import { Loader2, Trophy, Search, X, Sliders, RotateCcw, Award, ChevronDown, BookOpen, FileText, Atom } from 'lucide-react';
+import { Loader2, Trophy, Search, X, Sliders, RotateCcw, Award, ChevronDown, BookOpen, FileText, Atom, Microscope } from 'lucide-react';
 import { fetchSnapshots, authenticatedFetch, type RankingSnapshotMeta } from './supabase';
 import { navigate } from './nav';
 import { CRITERIA, MODALITY_PROFILES, buildBoard, criterionBreakdown, computeVerdict, findBetterAlternatives, type CriterionKey, type ModalityKey, type ScoredGene, type SubMetric, type CriterionBreakdown } from './rankingBoard';
@@ -42,6 +42,17 @@ async function getJson(url: string): Promise<any> {
   return j;
 }
 
+interface SingleCellProfile {
+  gene: string;
+  specificity: string | null;
+  distribution: string | null;
+  specificityScore: number | null;
+  cellTypes: { cellType: string; ncpm: number }[];
+  nSpecificCellTypes: number;
+  resolved: boolean;
+  source: string;
+}
+
 export default function RankingBoardView({ theme, diseaseName }: { theme: Theme; diseaseName?: string }) {
   const isDark = theme === 'dark';
   // One calm accent for every criterion bar — the shade deepens with the score, so value
@@ -64,6 +75,11 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
   const [pinned, setPinned] = useState<string | null>(null);
   const [neighborSet, setNeighborSet] = useState<Set<string>>(new Set());
   const [neighborsLoading, setNeighborsLoading] = useState(false);
+  // Cell-type resolution for the selected target (HPA single-cell). Fetched lazily per
+  // selection, not for the whole board: it is drill-down context, not a ranking input.
+  const [scProfile, setScProfile] = useState<SingleCellProfile | null>(null);
+  const [scLoading, setScLoading] = useState(false);
+
   const [liveConnectivity, setLiveConnectivity] = useState<number | null>(null);   // fallback network signal from the same neighbours call
 
   // ── load snapshots, then the disease's gene set ──
@@ -192,6 +208,18 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
     const rest = top.filter(s => s.symbol !== pinnedGene.symbol);
     return [pinnedGene, ...rest].slice(0, 150);
   }, [board, pinnedGene]);
+
+  useEffect(() => {
+    let alive = true;
+    setScProfile(null);
+    if (!selectedSym) return;
+    setScLoading(true);
+    getJson(`/api/singlecell?gene=${encodeURIComponent(selectedSym)}`)
+      .then(p => { if (alive) setScProfile(p as SingleCellProfile); })
+      .catch(() => { if (alive) setScProfile(null); })   // 404 = HPA has nothing; the panel just hides
+      .finally(() => { if (alive) setScLoading(false); });
+    return () => { alive = false; };
+  }, [selectedSym]);
 
   const runFind = () => {
     const q = query.trim().toUpperCase(); if (!q) return;
@@ -495,6 +523,51 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
                   )}
                 </div>
               ); })}
+              {/* Cell-type resolution — the cell-level counterpart of tissue tau. Read-only
+                  context: it does NOT feed the score, so it cannot silently move a ranking. */}
+              {(scLoading || scProfile?.resolved) && (
+                <div className={`mt-1 p-2.5 rounded-lg border ${card}`}>
+                  <div className="flex items-center gap-1.5 mb-1.5">
+                    <Microscope className="w-3.5 h-3.5 text-violet-500" />
+                    <span className={`text-[10px] font-black uppercase tracking-widest ${isDark ? 'text-slate-400' : 'text-slate-600'}`}>Cell types</span>
+                    {scProfile?.specificity && (
+                      <span className="ml-auto text-[9.5px] font-bold text-violet-500">{scProfile.specificity}</span>
+                    )}
+                  </div>
+                  {scLoading && <div className="text-[11px] text-slate-500">Looking up cell-type expression…</div>}
+                  {!scLoading && scProfile?.resolved && (
+                    <>
+                      {scProfile.cellTypes.length > 0 ? (
+                        <div className="flex flex-col gap-1">
+                          {scProfile.cellTypes.slice(0, 4).map(c => {
+                            const max = scProfile.cellTypes[0].ncpm || 1;
+                            return (
+                              <div key={c.cellType} className="flex items-center gap-2">
+                                <span className={`text-[10.5px] truncate flex-1 ${isDark ? 'text-slate-300' : 'text-slate-700'}`} title={c.cellType}>{c.cellType}</span>
+                                <div className={`h-1.5 w-14 rounded-full shrink-0 ${isDark ? 'bg-slate-800' : 'bg-slate-100'}`}>
+                                  <div className="h-1.5 rounded-full bg-violet-500" style={{ width: `${Math.max(6, (c.ncpm / max) * 100)}%` }} />
+                                </div>
+                                <span className="text-[10px] tabular-nums text-slate-400 w-14 text-right shrink-0">{c.ncpm.toLocaleString()}</span>
+                              </div>
+                            );
+                          })}
+                          {scProfile.cellTypes.length > 4 && (
+                            <span className="text-[10px] text-slate-400 mt-0.5">+{scProfile.cellTypes.length - 4} more cell types</span>
+                          )}
+                        </div>
+                      ) : (
+                        <div className="text-[11px] text-slate-500">
+                          {scProfile.distribution ?? 'Broadly expressed'} — no cell type stands out.
+                        </div>
+                      )}
+                      <p className="text-[9.5px] text-slate-400 mt-2 leading-snug">
+                        HPA single-cell, <strong>normal tissue</strong> — where the target is expressed, not where it is
+                        dysregulated in disease.
+                      </p>
+                    </>
+                  )}
+                </div>
+              )}
               {/* Modality fit opens on its own full-width page, with this target preselected */}
               <button onClick={() => navigate(`/Modality?gene=${encodeURIComponent(selected.symbol)}`)}
                 title={`Which therapeutic modality suits ${selected.symbol}? Opens the full Modality Fit page.`}
