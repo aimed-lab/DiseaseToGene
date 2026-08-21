@@ -21,6 +21,8 @@
 //
 // PURE: no I/O, no React. Callers hand it rows; it returns the dossier.
 
+import { isSurfaceOrSecreted } from './targetProfileService.js';
+
 export type EvidenceLevel = 'fact' | 'prediction' | 'annotation';
 export type Confidence = 'high' | 'medium' | 'low' | 'not_fetched';
 

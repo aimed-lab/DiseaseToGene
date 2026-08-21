@@ -48,6 +48,54 @@ omitted, the most recently loaded snapshot is used.
 
 ---
 
+## What it can and cannot answer
+
+Tested against a real PDAC case-study brief. Read this before planning an analysis around it —
+the gaps are gaps in the underlying data, not in the tools, so no amount of prompting closes them.
+
+### Answers well
+
+| Question | Tool | What you get |
+|---|---|---|
+| Which genes are most important in this cancer? | `rank_targets` | 6,189 genes ranked for PDAC — KRAS, TP53, SMAD4, CDKN2A at the top |
+| Which genes are linked to specific drugs? | `get_target_dossier` | e.g. KRAS → ADAGRASIB, SOTORASIB, SALIRASIB |
+| Which targets are being pursued clinically? | `get_clinical_trials` | NCT id, phase, status, and the stated reason a trial stopped |
+| Which druggable targets has nobody pursued? | `find_novel_tractable` | 1,653 for PDAC — no drug anywhere, no trial here, ≥1 tractable modality |
+| What is known about one target? | `get_target_dossier` | mutation % + hotspot, tumour-vs-normal RNA and protein, DepMap dependency, gnomAD constraint, GTEx tissue specificity, STRING centrality, patents, literature |
+
+### Answers partially
+
+- **Drug *resistance*** — you get which drugs exist and which trials stopped, but the stated
+  reasons are commercial ("Funder Decision", "Business objectives have changed"), not
+  biological. There are no resistance mutations or resistance signatures in the store.
+- **Groups of genes sharing a mechanism** — there is no cross-gene aggregation tool, so
+  grouping means pulling dossiers one at a time. The STRING network axis (WINNER / RWR) is
+  the only mechanistic handle.
+
+### Cannot answer
+
+- **Aggressive disease / poor survival.** There is no survival, stage or grade data anywhere
+  in the platform. Dependency and expression magnitude are sometimes offered as proxies —
+  they are not prognosis. A model asked this question will produce a confident answer built
+  on the wrong variable.
+- **Subtypes.** No Moffitt basal/classical, no Bailey subtypes, no molecular subtype labels.
+- **Pathway ↔ phenotype associations.** No pathway axis is stored (the annotation axis
+  returns the protein class, not pathways), and there is no phenotype data to associate
+  anything with.
+- **Therapeutic modality.** The platform's Modality Fit engine (12 modalities, 5 mechanistic
+  goals) is computed live from public APIs and is **not** part of the ORDS bridge, so it is
+  not exposed here. Use the web app for "how would you drug this?".
+
+### One data caveat worth knowing
+
+`surface_or_secreted` is frozen into each snapshot at harvest time, so older snapshots carry
+whatever the classifier said that day — #102 (2026-07-24) stores `true` for KRAS, a
+lipid-anchored cytoplasmic-side protein. This server therefore **re-derives** antibody
+accessibility from the stored `subcellular_locations` on every read, so the answer is correct
+regardless of snapshot age. If you query the raw ORDS rows yourself, do the same.
+
+---
+
 ## Connect it to a client
 
 The server speaks MCP over **stdio** — a client launches it with `node server.js`.

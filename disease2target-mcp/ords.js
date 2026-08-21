@@ -13,6 +13,7 @@
 const DEFAULT_BASE = 'https://aimed.uab.edu/apex/d2towner';
 const MODULE = 'd2t';
 const PAGE = 500;
+const PAGE_CONCURRENCY = 6;   // parallel page requests per wave
 
 export const baseUrl = () => (process.env.ORDS_BASE_URL || DEFAULT_BASE).replace(/\/+$/, '');
 
@@ -27,16 +28,33 @@ async function ordsGet(path, params = {}) {
   return r.json();
 }
 
-// Collect every row of a paginated ORDS query (follows hasMore/offset).
+// One page, with a single retry — a transient blip on one page of a parallel wave should
+// not sink the whole pull.
+async function ordsPage(path, params, offset) {
+  const call = () => ordsGet(path, { ...params, limit: PAGE, offset })
+    .then(j => (Array.isArray(j.items) ? j.items : []));
+  try { return await call(); } catch { return await call(); }
+}
+
+// Collect every row of a paginated ORDS query. Fetch page 0 to learn whether there is more,
+// then fan the remaining pages out in parallel waves rather than walking them one at a time.
+// The sequential walk was the dominant cost of the heaviest tool (find_novel_tractable scans
+// a snapshot's whole evidence set): measured ~39s -> ~8s on #102's 53k evidence rows.
 async function ordsGetAll(path, params = {}) {
-  const all = [];
-  let offset = 0;
+  const first = await ordsGet(path, { ...params, limit: PAGE, offset: 0 });
+  const firstItems = Array.isArray(first.items) ? first.items : [];
+  const all = [...firstItems];
+  if (!first.hasMore || firstItems.length < PAGE) return all;
+
+  let offset = firstItems.length;
   for (;;) {
-    const j = await ordsGet(path, { ...params, limit: PAGE, offset });
-    const items = Array.isArray(j.items) ? j.items : [];
-    all.push(...items);
-    if (!j.hasMore || items.length === 0) break;
-    offset += items.length;
+    const offsets = Array.from({ length: PAGE_CONCURRENCY }, (_, i) => offset + i * PAGE);
+    const waves = await Promise.all(offsets.map(o => ordsPage(path, params, o)));
+    let ended = false;
+    for (const items of waves) { all.push(...items); if (items.length < PAGE) ended = true; }
+    if (ended) break;
+    offset += PAGE_CONCURRENCY * PAGE;
+    if (offset > 5_000_000) break;   // backstop against an unbounded loop
   }
   return all;
 }

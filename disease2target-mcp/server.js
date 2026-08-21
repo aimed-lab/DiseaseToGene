@@ -109,7 +109,8 @@ async function toolGetDossier(args) {
     if (ann.approved_name) o += `- **Name:** ${ann.approved_name}\n`;
     if (ann.target_class) o += `- **Class:** ${ann.target_class}\n`;
     if (ann.uniprot_id) o += `- **UniProt:** ${ann.uniprot_id}\n`;
-    if (ann.surface_or_secreted != null) o += `- **Surface/secreted:** ${ann.surface_or_secreted ? 'yes (antibody-reachable)' : 'no'}\n`;
+    const surface = surfaceFromLocations(ann.subcellular_locations, ann.surface_or_secreted);
+    if (surface != null) o += `- **Surface/secreted:** ${surface ? 'yes (antibody-reachable)' : 'no — intracellular'}\n`;
     if (ann.is_common_essential != null) o += `- **Common-essential:** ${ann.is_common_essential ? 'yes — pan-essential, a safety flag' : 'no'}\n`;
     if (ann.n_safety_liabilities) o += `- **Safety liabilities:** ${ann.n_safety_liabilities}\n`;
     if (ann.function_description) o += `- **Function:** ${String(ann.function_description).slice(0, 500)}\n`;
@@ -227,6 +228,35 @@ const diseaseArg = {
   disease: { type: 'string', description: 'Disease name or MONDO id (e.g. "pancreatic adenocarcinoma" or "MONDO_0006047"). Optional — defaults to the most recently loaded snapshot.' },
   snapshot_id: { type: 'number', description: 'Exact snapshot id (from list_diseases). Overrides `disease` when given.' },
 };
+
+
+// Antibody accessibility, RE-DERIVED from the stored subcellular locations rather than read
+// from the snapshot's cached boolean.
+//
+// Why: the flag is frozen at harvest time, so a snapshot keeps whatever the classifier said
+// on the day it ran. Snapshot #102 (2026-07-24) stores surface_or_secreted:true for KRAS —
+// a lipid-anchored, cytoplasmic-side protein and the textbook intracellular target. The
+// locations it stores say so plainly ("Cell membrane ; Lipid-anchor ; Cytoplasmic side"),
+// and the current classifier gets it right; only the cached boolean is stale.
+//
+// Deriving it here fixes the answer for every existing snapshot with no re-harvest, and
+// keeps it correct as older snapshots are queried. Mirrors isSurfaceOrSecreted() in
+// targetProfileService.ts — keep the two in step.
+const SURFACE_RE = /(cell|plasma) membrane|cell surface|cell projection|\bsecreted\b|extracellular (space|region|matrix)|gpi-anchor/i;
+const INTERNAL_RE = /mitochondri|endoplasmic|golgi|nucle|lysosom|peroxisom|endosom|vacuol|exosome/i;
+const TRANSMEMBRANE_RE = /single-pass|multi-pass|transmembrane/i;
+const CYTO_ANCHOR_RE = /cytoplasmic side|lipid-anchor|myristoyl|palmitoyl|prenyl|farnesyl|geranylgeranyl/i;
+
+function surfaceFromLocations(locs, fallback) {
+  if (!Array.isArray(locs) || locs.length === 0) return fallback ?? null;
+  const hasSurface = locs.some(l => SURFACE_RE.test(l) && !INTERNAL_RE.test(l));
+  if (!hasSurface) return false;
+  // A membrane-spanning or GPI-anchored protein has genuine extracellular exposure.
+  if (locs.some(l => TRANSMEMBRANE_RE.test(l) || /gpi/i.test(l))) return true;
+  // Otherwise peripheral: veto if anything anchors or orients it toward the cytoplasm
+  // (RAS family, SRC family, myristoylated/prenylated kinases — all unreachable).
+  return !locs.some(l => CYTO_ANCHOR_RE.test(l));
+}
 
 const TOOLS = [
   {
