@@ -12,6 +12,7 @@ import { queryParam } from './nav';
 type CmpTier = 'Precedented' | 'Plausible' | 'Speculative' | 'Blocked';
 interface CmpRow {
   gene: string;
+  resolved: boolean;          // false = no source recognised this symbol (usually a typo)
   best: { modality: string; category: string; tier: CmpTier } | null;
   byCategory: Record<string, CmpTier>;
   counts: Record<CmpTier, number>;
@@ -207,6 +208,18 @@ export default function ModalityFitView({ isDark, onClose, chatOpen, onToggleCha
                   <tbody>
                     {cmpGenes.filter(g => cmpRows[g]).map(g => {
                       const row = cmpRows[g];
+                      // An unrecognised symbol gets no tiers at all. Showing a row of codes for
+                      // a typo reads as a result, and the codes would be meaningless.
+                      if (!row.resolved) {
+                        return (
+                          <tr key={g} style={{ borderTop: `1px solid ${border}` }}>
+                            <td style={{ padding: '9px 12px 9px 0', fontWeight: 800, color: muted, whiteSpace: 'nowrap', textDecoration: 'line-through' }}>{g}</td>
+                            <td colSpan={CMP_CATEGORIES.length + 1} style={{ padding: '9px 0', color: muted, fontSize: 11.5 }}>
+                              Not found — check the symbol. UniProt, Open Targets, STRING and Ensembl all returned nothing for it.
+                            </td>
+                          </tr>
+                        );
+                      }
                       return (
                         <tr key={g} style={{ borderTop: `1px solid ${border}` }}>
                           <td style={{ padding: '9px 12px 9px 0', fontWeight: 800, color: ink, whiteSpace: 'nowrap' }}>{g}</td>

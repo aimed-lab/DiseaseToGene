@@ -7,7 +7,7 @@ import { createHash } from "crypto";
 import { fetchCohortMutations, fetchDruggability, fetchClinical, fetchLiterature, fetchPubmedLiterature, resolveCbioStudy, resolveDiseaseScope } from "./evidenceProviders.js";
 import { getPocketStructure } from "./dogsiteService.js";
 import { getModalityProfile } from "./modalityService.js";
-import { gatherModalityEvidence, assessModalities, buildRationalePrompt, attachRationales, summariseModalityBatch, MECHANISTIC_GOALS, isGoal, type MechanisticGoal } from "./modalityFitService.js";
+import { gatherModalityEvidence, assessModalities, buildRationalePrompt, attachRationales, summariseModalityBatch, isEvidenceResolved, MECHANISTIC_GOALS, isGoal, type MechanisticGoal } from "./modalityFitService.js";
 import { enrichGene, enrichGenes } from "./enrichService.js";
 import * as ordsSvc from "./ordsService.js"; // pure fetch client → safe to bundle for Vercel
 // NOTE: relative imports carry an explicit .js extension (Node-ESM requirement). On Vercel
@@ -1711,6 +1711,13 @@ Rules: prefer tools over guessing; call several tools when a question spans sour
     if (!gene) { res.status(400).json({ error: 'gene is required' }); return; }
     try {
       const evidence = await gatherModalityEvidence(gene);
+      // A symbol no source recognises gets no tiers: the rules would happily return
+      // "Plausible" for a structure-independent modality on zero evidence, which reads as
+      // an answer rather than as a bad gene symbol.
+      if (!isEvidenceResolved(evidence)) {
+        res.status(404).json({ error: `No target data found for "${gene}". Check the gene symbol — UniProt, Open Targets, STRING and Ensembl all returned nothing for it.` });
+        return;
+      }
       // Tiers are DETERMINISTIC (reproducible, auditable). The LLM only writes the one-line
       // rationale for each fixed tier, at temperature 0, restricted to the deterministic basis.
       const rows = assessModalities(evidence, goal);

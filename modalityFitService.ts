@@ -220,6 +220,27 @@ function druggabilityProxy(p: any): number | null {
   return Number((0.5 * vol + 0.3 * enc + 0.2 * hyd).toFixed(3));
 }
 
+// ── Did this symbol resolve to a real protein at all? ───────────────────────
+// Every source degrades gracefully, which is right for a real gene whose structure or
+// ChEMBL entry is missing — and wrong for a symbol that does not exist. A typo used to
+// return a confident-looking result, because RNA/genetic modalities are structure-
+// independent and therefore Plausible on no evidence whatsoever: "PHDGH" and
+// "NOTAGENE123" both came back "Plausible · Expression / genetic modulation".
+//
+// Four independent services can each resolve a symbol (UniProt, Open Targets, STRING,
+// Ensembl), so a real gene answers on at least one of them. Requiring ALL of them to be
+// silent before declaring "not resolved" keeps a single API outage from wrongly rejecting
+// a genuine target.
+export function isEvidenceResolved(ev: ModalityEvidence): boolean {
+  return !!ev.uniprot
+    || ev.pocket.hasStructure
+    || ev.chemblActivities != null
+    || ev.ppiPartners != null
+    || ev.exonCount != null
+    || ev.tractabilityBuckets.length > 0
+    || ev.provenModalities.length > 0;
+}
+
 // ── Evidence cache ──────────────────────────────────────────────────────────
 // gatherModalityEvidence hits eight APIs and is dominated by one slow call (Ensembl: 25-36s
 // cold). That is tolerable once for a single gene, and hopeless for a 50-gene board column.
@@ -247,6 +268,8 @@ export async function gatherModalityEvidenceCached(gene: string): Promise<Modali
 export interface ModalitySummary {
   gene: string;
   goal: MechanisticGoal;
+  resolved: boolean;          // false = no source recognised this symbol; tiers are meaningless
+
   best: { modality: string; category: string; tier: Tier } | null;
   // Best tier reached within each of the 5 categories — this is what a comparison across
   // targets needs: "which of these is the better small-molecule target?" is a per-category
@@ -261,6 +284,11 @@ export async function summariseModality(gene: string, goal: MechanisticGoal): Pr
   const empty: Record<Tier, number> = { Precedented: 0, Plausible: 0, Speculative: 0, Blocked: 0 };
   try {
     const ev = await gatherModalityEvidenceCached(gene);
+    // Do not tier an unrecognised symbol. Returning "Plausible" for a typo is worse than
+    // returning nothing, because it looks like an answer.
+    if (!isEvidenceResolved(ev)) {
+      return { gene: gene.toUpperCase(), goal, resolved: false, best: null, counts: { ...empty }, byCategory: {}, blocked: [] };
+    }
     const rows = assessModalities(ev, goal);          // already sorted best-tier-first
     const counts = { ...empty };
     const byCategory: Record<string, Tier> = {};
@@ -271,12 +299,12 @@ export async function summariseModality(gene: string, goal: MechanisticGoal): Pr
     }
     const top = rows[0] ?? null;
     return {
-      gene: gene.toUpperCase(), goal, counts, byCategory,
+      gene: gene.toUpperCase(), goal, resolved: true, counts, byCategory,
       best: top ? { modality: top.modality, category: top.category, tier: top.tier } : null,
       blocked: rows.filter(r => r.tier === 'Blocked').map(r => r.modality),
     };
   } catch (e: any) {
-    return { gene: gene.toUpperCase(), goal, best: null, counts: { ...empty }, byCategory: {}, blocked: [], error: String(e?.message || e).slice(0, 160) };
+    return { gene: gene.toUpperCase(), goal, resolved: false, best: null, counts: { ...empty }, byCategory: {}, blocked: [], error: String(e?.message || e).slice(0, 160) };
   }
 }
 
