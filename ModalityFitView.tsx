@@ -231,11 +231,36 @@ export default function ModalityFitView({ isDark, onClose, chatOpen, onToggleCha
                     })}
                   </tbody>
                 </table>
-                <p style={{ fontSize: 11, color: muted, marginTop: 10, maxWidth: '70ch', lineHeight: 1.45 }}>
-                  Each cell is the best tier reached within that category for the chosen goal. Tiers are
-                  deterministic; open a target in <strong style={{ color: ink }}>One target</strong> for the full 12-modality
-                  breakdown and the evidence behind it.
-                </p>
+                {/* The cells are four-letter codes, which are unreadable without a key. The
+                    definitions sit directly under the table rather than in a tooltip: this is
+                    the first table most people meet, and the codes carry the entire result. */}
+                <div style={{ marginTop: 14, padding: '12px 14px', borderRadius: 10, background: card, border: `1px solid ${border}` }}>
+                  <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: '0.09em', textTransform: 'uppercase', color: muted, marginBottom: 9 }}>
+                    What the codes mean
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(232px, 1fr))', gap: '9px 20px' }}>
+                    {([
+                      ['Precedented', 'A drug of this kind already exists for this exact target. A database lookup, not a prediction.'],
+                      ['Plausible',   'No drug of this kind yet, but the evidence supports it — a pocket, measured chemistry, or an interface.'],
+                      ['Speculative', 'No evidence either way. Not ruled out, just unsupported.'],
+                      ['Blocked',     'Physically ruled out by a hard rule — not a weak score, an impossibility.'],
+                    ] as [CmpTier, string][]).map(([tier, def]) => (
+                      <div key={tier} style={{ display: 'flex', gap: 9, alignItems: 'flex-start' }}>
+                        <span style={{ flexShrink: 0, minWidth: 54, textAlign: 'center', borderRadius: 6, padding: '3px 7px', fontSize: 9.5, fontWeight: 800, letterSpacing: '0.04em',
+                                       color: CMP_COLOR[tier], background: CMP_TINT(tier, isDark), border: `1px solid ${CMP_COLOR[tier]}33` }}>{CMP_SHORT[tier]}</span>
+                        <span style={{ fontSize: 11.5, lineHeight: 1.45, color: ink, opacity: 0.85 }}>
+                          <strong style={{ fontWeight: 700 }}>{tier}</strong> — {def}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                  <p style={{ fontSize: 11, color: muted, margin: '11px 0 0', maxWidth: '70ch', lineHeight: 1.45 }}>
+                    Each cell is the best tier reached within that category for the chosen goal, so a target
+                    can be Precedented for one kind of drug and Blocked for another. Tiers are set by
+                    deterministic rules, not by a model. Open a target in <strong style={{ color: ink }}>One target</strong> for
+                    the full 12-modality breakdown and the evidence behind it.
+                  </p>
+                </div>
               </div>
             )}
           </div>
