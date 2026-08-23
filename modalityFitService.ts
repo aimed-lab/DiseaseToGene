@@ -81,14 +81,27 @@ export interface ModalityFitResult {
 }
 
 // ── UniProt: subcellular location, TRANSMEMBRANE + SIGNAL peptide (5a), active sites, sequence ──
-async function fetchUniProt(gene: string): Promise<Partial<ModalityEvidence> & { _keywords?: string }> {
+async function fetchUniProt(gene: string): Promise<Partial<ModalityEvidence> & { _keywords?: string; _locationFromGO?: boolean }> {
   try {
     const q = `gene_exact:${encodeURIComponent(gene)} AND organism_id:9606 AND reviewed:true`;
-    const url = `https://rest.uniprot.org/uniprotkb/search?query=${encodeURIComponent(q)}&fields=accession,cc_subcellular_location,ft_act_site,ft_transmem,ft_signal,keyword,sequence&format=json&size=1`;
+    // go_c carries the GO cellular-component terms, used as a FALLBACK below when the
+    // curated SUBCELLULAR LOCATION comment is absent — which it is for PHGDH (O43175
+    // has no such comment at all, verified against the live entry), and that was the
+    // whole reason its antibody verdict read Speculative instead of Blocked.
+    const url = `https://rest.uniprot.org/uniprotkb/search?query=${encodeURIComponent(q)}&fields=accession,gene_names,cc_subcellular_location,go_c,ft_act_site,ft_transmem,ft_signal,keyword,sequence&format=json&size=5`;
     const r = await fetch(url, { headers: { Accept: 'application/json' } });
     if (!r.ok) return {};
     const j: any = await r.json();
-    const e = j?.results?.[0];
+    // Prefer the entry whose PRIMARY gene name is the one we asked for. gene_exact
+    // also matches synonyms, and UniProt does not rank the exact gene first: querying
+    // ALB returned Q8TES7 "Fas-binding factor 1" (also called Albatross) ahead of
+    // albumin P02768, so every ALB verdict described a different protein. Measured
+    // across 66 genes, this is the only true collision - 64 resolved exactly and SMN2
+    // legitimately has no entry of its own (UniProt models it under SMN1). Falling back
+    // to the first result keeps that case working.
+    const results: any[] = j?.results || [];
+    const wanted = gene.toUpperCase();
+    const e = results.find(x => String(x?.genes?.[0]?.geneName?.value || '').toUpperCase() === wanted) || results[0];
     if (!e) return {};
     const seq: string = e.sequence?.value || '';
     const locs: string[] = [];
@@ -105,14 +118,31 @@ async function fetchUniProt(gene: string): Promise<Partial<ModalityEvidence> & {
     // 5f — ubiquitination evidence: the "Ubl conjugation" keyword, or a ubiquitin isopeptide cross-link.
     const isUbiquitinated = /ubl conjugation/.test(keywords) ||
       feats.some(f => f.type === 'Cross-link' && /isopeptide|ubiquitin/i.test(f.description || ''));
-    const locStr = locs.join(' ').toLowerCase();
+    // GO cellular-component fallback. Only consulted when the curated comment is
+    // missing — the comment is the better annotation where it exists.
+    const goCC: string[] = [];
+    for (const x of e.uniProtKBCrossReferences || []) {
+      if (x.database !== 'GO') continue;
+      for (const p of x.properties || []) {
+        if (p.key === 'GoTerm' && typeof p.value === 'string' && p.value.startsWith('C:')) goCC.push(p.value.slice(2));
+      }
+    }
+    const locationFromGO = locs.length === 0 && goCC.length > 0;
+    const effectiveLocs = locs.length ? locs : goCC;
+
+    // "extracellular exosome" must NEVER read as secreted. Exosome preparations are
+    // contaminated with cytosolic protein, so thousands of intracellular proteins carry
+    // that GO term — PHGDH among them. Matching it would flip PHGDH to antibody-ACCESSIBLE,
+    // which is a worse error than the "unknown" this fallback exists to fix.
+    const locStr = effectiveLocs.join(' ').toLowerCase().replace(/extracellular exosome/g, '');
     const isMembrane = hasTransmembrane || /membrane/.test(locStr) || /membrane/.test(keywords);
     const isSecreted = /secreted|extracellular/.test(locStr) || /secreted/.test(keywords);
     return {
       uniprot: e.primaryAccession || null,
-      subcellularLocations: locs,
+      subcellularLocations: effectiveLocs,
+      _locationFromGO: locationFromGO,
       isMembrane, isSecreted,
-      isIntracellular: locs.length > 0 && !isSecreted && !isMembrane,
+      isIntracellular: effectiveLocs.length > 0 && !isSecreted && !isMembrane,
       hasTransmembrane, hasSignalPeptide,
       sequenceLength: seq.length || null,
       cysCount: seq ? (seq.match(/C/g) || []).length : null,
@@ -380,7 +410,7 @@ export async function gatherModalityEvidence(gene: string): Promise<ModalityEvid
   const srcBits: string[] = [];
   if (uni.hasTransmembrane) srcBits.push('UniProt transmembrane');
   if (uni.hasSignalPeptide) srcBits.push('UniProt signal peptide');
-  if (uni.subcellularLocations?.length) srcBits.push('UniProt location');
+  if (uni.subcellularLocations?.length) srcBits.push((uni as any)._locationFromGO ? 'UniProt GO cellular component' : 'UniProt location');
   if (!uKnown && hpa.hpaSurface) srcBits.push('HPA membrane class');
   const surfaceSource = srcBits.join(' + ') || 'no accessibility evidence';
   if (surfaceAccess === 'unknown') notes.push('No localization/surfaceome evidence — antibody accessibility unconfirmed.');
