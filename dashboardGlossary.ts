@@ -33,7 +33,16 @@ export const GLOSSARY: GlossaryEntry[] = [
   { term: 'GET score', abbr: 'GET', category: 'metric', aliases: ['get_score', 'open targets association'],
     definition: 'Open Targets overall gene–disease association used for eligibility.',
     range: '0–1.', formula: 'Aggregate of all Open Targets datatypes (genetic, somatic, literature, clinical…).', source: 'Open Targets', level: 'fact',
-    caveat: 'Used for eligibility only, never scored — it double-counts the somatic-mutation axis.' },
+    caveat: 'Used for eligibility only, never scored — it double-counts the somatic-mutation axis. NOT the same number as the Target List GET composite below, despite sharing the name.' },
+  // The browser-side namesake. It exists (api.ts computes it on every target the
+  // Target List loads) and users see it, so the reference has to name it — otherwise
+  // "what is the GET score?" has two true answers and no way to tell them apart.
+  { term: 'Target List GET composite', abbr: 'GET (Target List)', category: 'metric',
+    aliases: ['get composite', 'target list get', 'getscore', 'GET weights'],
+    definition: 'D2T’s own weighted blend of the three GET axes, computed in the browser for each target as it loads. A DIFFERENT number from the stored GET score, which is the Open Targets association.',
+    range: '0–1.', formula: 'genetic × 0.50 + expression × 0.25 + target × 0.25 (api.ts). Re-weighted live when the user changes the GET weights.',
+    source: 'Disease2Target, computed client-side', level: 'prediction',
+    caveat: 'Exists only in the loaded Target List — it is never written to a snapshot, so it will not match the GET score shown on the Ranking Board or in a dossier.' },
   { term: 'Rank', category: 'column', definition: 'The target’s position in this snapshot after scoring.', range: '1 = top.', source: 'Disease2Target', level: 'fact' },
 
   // ── genetic / mutation ──

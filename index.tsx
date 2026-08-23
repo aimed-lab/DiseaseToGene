@@ -115,8 +115,8 @@ import { navigate, isMethodologyPath, isModalityPath, isResetPasswordPath, catch
 // URL hash): if a password-recovery link landed on any path with a #...type=recovery hash,
 // move it to /reset-password preserving the hash. Handles old emails that pointed at the root.
 catchRecoveryHash();
-import { glossaryPromptBlock } from './dashboardGlossary';
-import { modalityPromptBlock, modalityResultBlock } from './modalityGlossary';
+import { glossaryPromptBlock, GLOSSARY } from './dashboardGlossary';
+import { modalityPromptBlock, modalityResultBlock, MODALITY_GLOSSARY } from './modalityGlossary';
 import { getLastModalityResult } from './modalityStore';
 import JobsView from './JobsView';
 import { getCbioMutations } from './cbioportalService';
@@ -3835,6 +3835,46 @@ const App = () => {
   const [chatInput, setChatInput] = useState("");
   const [dashboardCmd, setDashboardCmd] = useState<DashboardCommand | null>(null);   // co-pilot → DashboardView control channel
   const [isChatting, setIsChatting] = useState(false);
+
+  // ── Co-pilot upstream (Gemini or PLEASER/Hermes) ────────────────────────────
+  // Hermes cannot take D2T's tools — PLEASER drops request-level tool
+  // declarations — so `tools: false` on a choice means this co-pilot can explain
+  // but not drive the app. The UI says that out loud instead of leaving the user
+  // to discover that "filter to novel targets" quietly does nothing.
+  interface AiModelChoice { id: string; label: string; upstream: string; tools: boolean; available: boolean; }
+  const [aiModels, setAiModels] = useState<AiModelChoice[]>([]);
+  const [aiModel, setAiModel] = useState('gemini');
+  const chatSessionIdRef = useRef<string>(`d2t-${Math.random().toString(36).slice(2)}-${Date.now()}`);
+  const activeModel = aiModels.find(m => m.id === aiModel);
+  const modelHasTools = activeModel ? activeModel.tools : true;
+  const upstreamIsHermes = activeModel?.upstream === 'hermes';
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    (async () => {
+      try {
+        const r = await authenticatedFetch('/api/ai/models');
+        if (!r.ok) return;
+        const j = await r.json();
+        if (Array.isArray(j.models)) setAiModels(j.models);
+      } catch { /* picker just stays on Gemini */ }
+    })();
+  }, [isAuthenticated]);
+
+  // Leaving a PLEASER model ends its chat — the pk_ token is one shared PLEASER
+  // account, so we don't leave D2T transcripts sitting in it.
+  const endHermesSession = () => {
+    void authenticatedFetch('/api/ai/chat-session', {
+      method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId: chatSessionIdRef.current }),
+    }).catch(() => { /* best effort */ });
+  };
+  const switchAiModel = (id: string) => {
+    if (id === aiModel) return;
+    if (activeModel?.upstream === 'hermes') endHermesSession();
+    setAiModel(id);
+  };
+
   const [isLeftSidebarOpen, setIsLeftSidebarOpen] = useState(true);
   const [scoreRangeFilter, setScoreRangeFilter] = useState<Record<string, [number, number]>>({});
   const [rankRangeFilter, setRankRangeFilter]   = useState<Record<string, [number, number]>>({});
@@ -5398,7 +5438,20 @@ CRITICAL RULES:
         case 'focus_gene': {
           const sym = String(args.symbol || '').toUpperCase();
           const t = researchState.targets.find(g => g.symbol.toUpperCase() === sym);
-          if (!t) return `${args.symbol} isn't in the current target list. Load its disease first (e.g. "load pancreatic cancer"), then ask again.`;
+          // "Not in the loaded list" is NOT "not in the database". The list holds
+          // the top of the ranking — a few hundred rows — while a snapshot holds
+          // thousands. PHGDH sits at rank 2575 of 6000 in Alzheimer's, and the old
+          // wording ("load its disease first") let the co-pilot report a loaded
+          // disease's gene as absent from every snapshot. Say which it is, and
+          // name the next step, so a model cannot generalise the gap into a claim.
+          if (!t) {
+            if (!researchState.activeDisease) {
+              return `No disease is loaded yet, so there is no target list to search. Load one first (e.g. "load pancreatic cancer"), then ask again.`;
+            }
+            return `${args.symbol} is not among the ${researchState.targets.length} targets currently loaded for ${researchState.activeDisease.name}. `
+              + `The loaded list is only the top of the ranking, so this does NOT mean the gene is absent from the snapshot or the database — it is probably ranked lower down. `
+              + `Do not report it as missing. Call get_gene_evidence for ${args.symbol} to check the full snapshot, or load more targets.`;
+          }
           setViewMode('list');
           setResearchState(prev => ({ ...prev, focusSymbol: t.symbol }));
           return `Opened **${t.symbol}**'s detail view.`;
@@ -5525,8 +5578,11 @@ CRITICAL RULES:
         });
         const j = await resp.json();
         if (!resp.ok) throw new Error(j.error || `agent failed (${resp.status})`);
+        // The research agent is a server-side tool loop and runs on Gemini whatever
+        // the picker says — say so rather than let the answer look like Hermes's.
+        const via = modelHasTools ? '' : `\n\n_Answered by the research agent on Gemini — it needs tool calling, which the selected model can't do._`;
         const used = Array.isArray(j.trace) && j.trace.length ? `\n\n_🔬 tools used: ${[...new Set(j.trace.map((t: any) => t.tool))].join(', ')}_` : '';
-        setMessages(prev => [...prev, { role: 'assistant', content: (j.answer || 'No answer.') + used, timestamp: new Date() }]);
+        setMessages(prev => [...prev, { role: 'assistant', content: (j.answer || 'No answer.') + via + used, timestamp: new Date() }]);
       } catch (e: any) {
         setMessages(prev => [...prev, { role: 'assistant', content: `Research agent error: ${e.message}`, timestamp: new Date() }]);
       } finally { setIsChatting(false); }
@@ -5539,32 +5595,50 @@ CRITICAL RULES:
     
     try {
       const tools = [
-        { name: 'search_diseases', parameters: { type: Type.OBJECT, properties: { query: { type: Type.STRING } }, required: ['query'] } },
-        { name: 'get_genes', parameters: { type: Type.OBJECT, properties: { id: { type: Type.STRING }, name: { type: Type.STRING } }, required: ['id', 'name'] } },
-        { name: 'load_more', parameters: { type: Type.OBJECT, properties: {}, required: [] } },
-        { name: 'update_view', parameters: { type: Type.OBJECT, properties: { mode: { type: Type.STRING, enum: ['board', 'dashboard', 'list', 'funnel', 'rankings', 'graph', 'enrichment', 'raw', 'pubtator'] } }, required: ['mode'] } },
-        { name: 'focus_gene', parameters: { type: Type.OBJECT, properties: { symbol: { type: Type.STRING } }, required: ['symbol'] } },
-        { name: 'set_weights', parameters: { type: Type.OBJECT, properties: { genetic: { type: Type.NUMBER }, expression: { type: Type.NUMBER }, target: { type: Type.NUMBER }, velocity: { type: Type.NUMBER } } } },
-        { name: 'dashboard_search', parameters: { type: Type.OBJECT, properties: { query: { type: Type.STRING } }, required: ['query'] } },
-        { name: 'dashboard_filter', parameters: { type: Type.OBJECT, properties: { chips: { type: Type.ARRAY, items: { type: Type.STRING, enum: ['novel_tractable', 'in_trials', 'no_precedent', 'has_drugs', 'complete', 'tissue_restricted', 'not_common_essential', 'antibody_reachable', 'trial_stopped', 'legacy_only'] } }, toggle: { type: Type.STRING, enum: ['novel_tractable', 'in_trials', 'no_precedent', 'has_drugs', 'complete', 'tissue_restricted', 'not_common_essential', 'antibody_reachable', 'trial_stopped', 'legacy_only'] }, reset: { type: Type.BOOLEAN } } } },
-        { name: 'dashboard_sort', parameters: { type: Type.OBJECT, properties: { column: { type: Type.STRING, enum: ['rank', 'score', 'n_drugs', 'tractable_modalities', 'n_disease_trials', 'n_publications', 'velocity', 'completeness', 'tissue_tau', 'n_patents', 'winner_score'] }, direction: { type: Type.STRING, enum: ['asc', 'desc'] } }, required: ['column'] } },
-        { name: 'dashboard_open_gene', parameters: { type: Type.OBJECT, properties: { symbol: { type: Type.STRING } }, required: ['symbol'] } },
-        { name: 'get_target_list', parameters: { type: Type.OBJECT, properties: { limit: { type: Type.NUMBER } } } },
-        { name: 'get_active_filters', parameters: { type: Type.OBJECT, properties: {} } },
-        { name: 'apply_filters', parameters: { type: Type.OBJECT, properties: { conditions: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { field: { type: Type.STRING }, operator: { type: Type.STRING, enum: ['>', '<', '>=', '<=', '=', '!=', 'between', 'contains', 'not_contains'] }, value: { type: Type.NUMBER }, value2: { type: Type.NUMBER }, boolValue: { type: Type.BOOLEAN }, stringValue: { type: Type.STRING } }, required: ['field', 'operator'] } }, logic: { type: Type.STRING, enum: ['AND', 'OR'] } }, required: ['conditions'] } },
-        { name: 'remove_filters', parameters: { type: Type.OBJECT, properties: { fields: { type: Type.ARRAY, items: { type: Type.STRING } }, all: { type: Type.BOOLEAN } } } },
-        { name: 'replace_filters', parameters: { type: Type.OBJECT, properties: { old_field: { type: Type.STRING }, new_condition: { type: Type.OBJECT, properties: { field: { type: Type.STRING }, operator: { type: Type.STRING }, value: { type: Type.NUMBER }, boolValue: { type: Type.BOOLEAN }, stringValue: { type: Type.STRING } } } }, required: ['old_field', 'new_condition'] } },
-        { name: 'reset_target_list_view', parameters: { type: Type.OBJECT, properties: {} } },
-        { name: 'preview_filter_effect', parameters: { type: Type.OBJECT, properties: { condition: { type: Type.OBJECT, properties: { field: { type: Type.STRING }, operator: { type: Type.STRING }, value: { type: Type.NUMBER } } } }, required: ['condition'] } },
-        { name: 'filter_targets', parameters: { type: Type.OBJECT, properties: { conditions: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { field: { type: Type.STRING }, operator: { type: Type.STRING, enum: ['>', '<', '>=', '<=', '=', '!=', 'between', 'contains', 'not_contains'] }, value: { type: Type.NUMBER }, value2: { type: Type.NUMBER }, boolValue: { type: Type.BOOLEAN }, stringValue: { type: Type.STRING } }, required: ['field', 'operator'] } }, logic: { type: Type.STRING, enum: ['AND', 'OR'] } }, required: ['conditions'] } },
-        { name: 'sort_targets', parameters: { type: Type.OBJECT, properties: { sorts: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { field: { type: Type.STRING }, direction: { type: Type.STRING, enum: ['asc', 'desc'] } }, required: ['field', 'direction'] } } }, required: ['sorts'] } },
-        { name: 'compare_targets', parameters: { type: Type.OBJECT, properties: { symbols: { type: Type.ARRAY, items: { type: Type.STRING } } }, required: ['symbols'] } },
-        { name: 'summarize_targets', parameters: { type: Type.OBJECT, properties: { target_set: { type: Type.STRING, enum: ['current', 'filtered', 'top_literature', 'high_overall_low_target'] } }, required: ['target_set'] } },
-        { name: 'explain_target', parameters: { type: Type.OBJECT, properties: { symbol: { type: Type.STRING } }, required: ['symbol'] } },
-        { name: 'get_target_details', parameters: { type: Type.OBJECT, properties: { symbol: { type: Type.STRING } }, required: ['symbol'] } },
-        { name: 'suggest_filters', parameters: { type: Type.OBJECT, properties: { query: { type: Type.STRING } }, required: ['query'] } },
-        { name: 'rank_targets', parameters: { type: Type.OBJECT, properties: { priorities: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { field: { type: Type.STRING }, weight: { type: Type.NUMBER } }, required: ['field'] } } }, required: ['priorities'] } }
+        { name: 'search_diseases', description: 'Search Open Targets for a disease by name. Use when the user names a disease that is not loaded yet.', parameters: { type: Type.OBJECT, properties: { query: { type: Type.STRING } }, required: ['query'] } },
+        { name: 'get_genes', description: 'Load a disease into the Target List by its Open Targets id. Follows search_diseases.', parameters: { type: Type.OBJECT, properties: { id: { type: Type.STRING }, name: { type: Type.STRING } }, required: ['id', 'name'] } },
+        { name: 'load_more', description: 'Fetch the next page of targets for the disease already loaded.', parameters: { type: Type.OBJECT, properties: {}, required: [] } },
+        { name: 'update_view', description: 'Switch the main view. board = Target Ranking Board; dashboard = data-quality explorer; funnel = prioritisation funnel; graph = knowledge graph; rankings = ranking dashboard; list = target list.', parameters: { type: Type.OBJECT, properties: { mode: { type: Type.STRING, enum: ['board', 'dashboard', 'list', 'funnel', 'rankings', 'graph', 'enrichment', 'raw', 'pubtator'] } }, required: ['mode'] } },
+        { name: 'focus_gene', description: 'Open the detail view for one gene. Only works for genes already in the Target List.', parameters: { type: Type.OBJECT, properties: { symbol: { type: Type.STRING } }, required: ['symbol'] } },
+        { name: 'set_weights', description: 'Change the GET scoring weights (0-1 each) and rescore the Target List.', parameters: { type: Type.OBJECT, properties: { genetic: { type: Type.NUMBER }, expression: { type: Type.NUMBER }, target: { type: Type.NUMBER }, velocity: { type: Type.NUMBER } } } },
+        { name: 'dashboard_search', description: 'Type a gene symbol into the dashboard search box (substring match). Switches to the dashboard.', parameters: { type: Type.OBJECT, properties: { query: { type: Type.STRING } }, required: ['query'] } },
+        { name: 'dashboard_filter', description: 'Apply the dashboard evidence chips. novel_tractable = druggable but no drug or trial; tissue_restricted = GTEx tau >= 0.6; antibody_reachable = surface or secreted. Pass chips to set the whole set, toggle to flip one, reset to clear.', parameters: { type: Type.OBJECT, properties: { chips: { type: Type.ARRAY, items: { type: Type.STRING, enum: ['novel_tractable', 'in_trials', 'no_precedent', 'has_drugs', 'complete', 'tissue_restricted', 'not_common_essential', 'antibody_reachable', 'trial_stopped', 'legacy_only'] } }, toggle: { type: Type.STRING, enum: ['novel_tractable', 'in_trials', 'no_precedent', 'has_drugs', 'complete', 'tissue_restricted', 'not_common_essential', 'antibody_reachable', 'trial_stopped', 'legacy_only'] }, reset: { type: Type.BOOLEAN } } } },
+        { name: 'dashboard_sort', description: 'Sort the dashboard grid by a column.', parameters: { type: Type.OBJECT, properties: { column: { type: Type.STRING, enum: ['rank', 'score', 'n_drugs', 'tractable_modalities', 'n_disease_trials', 'n_publications', 'velocity', 'completeness', 'tissue_tau', 'n_patents', 'winner_score'] }, direction: { type: Type.STRING, enum: ['asc', 'desc'] } }, required: ['column'] } },
+        { name: 'dashboard_open_gene', description: 'Open the dossier panel for one gene in the dashboard.', parameters: { type: Type.OBJECT, properties: { symbol: { type: Type.STRING } }, required: ['symbol'] } },
+        { name: 'get_target_list', description: 'Return the current Target List as it stands after active filters and sorts.', parameters: { type: Type.OBJECT, properties: { limit: { type: Type.NUMBER } } } },
+        { name: 'get_active_filters', description: 'Report which filter conditions are currently applied.', parameters: { type: Type.OBJECT, properties: {} } },
+        { name: 'apply_filters', description: 'ADD filter conditions to the ones already active on the Target List.', parameters: { type: Type.OBJECT, properties: { conditions: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { field: { type: Type.STRING }, operator: { type: Type.STRING, enum: ['>', '<', '>=', '<=', '=', '!=', 'between', 'contains', 'not_contains'] }, value: { type: Type.NUMBER }, value2: { type: Type.NUMBER }, boolValue: { type: Type.BOOLEAN }, stringValue: { type: Type.STRING } }, required: ['field', 'operator'] } }, logic: { type: Type.STRING, enum: ['AND', 'OR'] } }, required: ['conditions'] } },
+        { name: 'remove_filters', description: 'Remove specific filter fields, or all of them.', parameters: { type: Type.OBJECT, properties: { fields: { type: Type.ARRAY, items: { type: Type.STRING } }, all: { type: Type.BOOLEAN } } } },
+        { name: 'replace_filters', description: 'Change an existing filter condition in place.', parameters: { type: Type.OBJECT, properties: { old_field: { type: Type.STRING }, new_condition: { type: Type.OBJECT, properties: { field: { type: Type.STRING }, operator: { type: Type.STRING }, value: { type: Type.NUMBER }, boolValue: { type: Type.BOOLEAN }, stringValue: { type: Type.STRING } } } }, required: ['old_field', 'new_condition'] } },
+        { name: 'reset_target_list_view', description: 'Clear every filter and sort on the Target List.', parameters: { type: Type.OBJECT, properties: {} } },
+        { name: 'preview_filter_effect', description: 'Report how many targets a condition would leave, without applying it.', parameters: { type: Type.OBJECT, properties: { condition: { type: Type.OBJECT, properties: { field: { type: Type.STRING }, operator: { type: Type.STRING }, value: { type: Type.NUMBER } } } }, required: ['condition'] } },
+        { name: 'filter_targets', description: 'Replace the whole filter set on the Target List. Use apply_filters to add to it instead.', parameters: { type: Type.OBJECT, properties: { conditions: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { field: { type: Type.STRING }, operator: { type: Type.STRING, enum: ['>', '<', '>=', '<=', '=', '!=', 'between', 'contains', 'not_contains'] }, value: { type: Type.NUMBER }, value2: { type: Type.NUMBER }, boolValue: { type: Type.BOOLEAN }, stringValue: { type: Type.STRING } }, required: ['field', 'operator'] } }, logic: { type: Type.STRING, enum: ['AND', 'OR'] } }, required: ['conditions'] } },
+        { name: 'sort_targets', description: 'Sort the Target List by one or more fields.', parameters: { type: Type.OBJECT, properties: { sorts: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { field: { type: Type.STRING }, direction: { type: Type.STRING, enum: ['asc', 'desc'] } }, required: ['field', 'direction'] } } }, required: ['sorts'] } },
+        { name: 'compare_targets', description: 'Compare named genes side by side across their evidence.', parameters: { type: Type.OBJECT, properties: { symbols: { type: Type.ARRAY, items: { type: Type.STRING } } }, required: ['symbols'] } },
+        { name: 'summarize_targets', description: 'Summarise a set of targets in prose.', parameters: { type: Type.OBJECT, properties: { target_set: { type: Type.STRING, enum: ['current', 'filtered', 'top_literature', 'high_overall_low_target'] } }, required: ['target_set'] } },
+        { name: 'explain_target', description: 'Explain why one gene scores as it does, from its stored evidence.', parameters: { type: Type.OBJECT, properties: { symbol: { type: Type.STRING } }, required: ['symbol'] } },
+        { name: 'get_target_details', description: 'Return every stored field for one gene in the Target List.', parameters: { type: Type.OBJECT, properties: { symbol: { type: Type.STRING } }, required: ['symbol'] } },
+        { name: 'suggest_filters', description: 'Propose filter conditions matching a vague request, for the user to pick from.', parameters: { type: Type.OBJECT, properties: { query: { type: Type.STRING } }, required: ['query'] } },
+        { name: 'rank_targets', description: 'Re-rank the loaded Target List by weighted priorities. Operates on what is on screen.', parameters: { type: Type.OBJECT, properties: { priorities: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { field: { type: Type.STRING }, weight: { type: Type.NUMBER } }, required: ['field'] } } }, required: ['priorities'] } }
       ];
+
+      // ── The reference material, sized to the upstream ────────────────────
+      // The two glossary blocks are ~24,000 characters. Gemini takes them inline
+      // and answers a definition with no round trip. PLEASER replays the entire
+      // transcript to its model on EVERY turn, so inline meant paying 24k again
+      // and again — measured at 75s for a first turn and ~25s after. There, the
+      // model gets the term NAMES and calls lookup_reference for the one it needs.
+      const referenceSection = upstreamIsHermes
+        ? `      REFERENCE — you do NOT have the definitions inline. Call lookup_reference { term } to fetch one.
+      When the user asks what a term/column/metric/abbreviation/modality/goal/tier MEANS, or asks for its RANGE, FORMULA, DATA SOURCE or evidence level, you MUST call lookup_reference first and answer only from what it returns. Never answer a definition from memory, and never invent a range, formula or source. If the lookup reports the term is unknown, say so plainly.
+      Terms available: ${[...new Set([...GLOSSARY.map(e => e.term), ...MODALITY_GLOSSARY.map(e => e.term)])].sort((a, b) => a.localeCompare(b)).join(', ')}`
+        : `      DASHBOARD REFERENCE — the meaning of every dashboard term, column, abbreviation, range, formula and data source:
+      When the user asks what a term/column/metric/abbreviation means, or asks for its RANGE, FORMULA, DATA SOURCE, or evidence level, answer ONLY from this reference. Quote the range and formula verbatim when present, and always name the exact source. If a value has a caveat, include it. Never invent a range, formula or source; if a term is not in this reference, say so plainly rather than guessing. These are explanatory questions — answer them directly in prose, no tool call needed.
+${glossaryPromptBlock()}
+
+      MODALITY FIT REFERENCE — the meaning of every modality term: the 4 mechanistic goals, the 4 tiers, the 12 modalities, and every evidence field with the threshold it turns on.
+      When the user asks what a modality/goal/tier/evidence term MEANS, answer ONLY from this reference. Quote thresholds and sources verbatim. If a term is not here, say so plainly rather than guessing. Prefer the "Plain:" wording — many users are not bioinformaticians.
+${modalityPromptBlock()}`;
 
       const systemInstruction = `You are the DiseaseToTarget AI Assistant, an intelligent terminal for Target List exploration and literature discovery.
 
@@ -5585,7 +5659,14 @@ CRITICAL RULES:
       
       Fields Available:
       - Gene Info: gene (symbol), gene_name (name).
-      - Scores (0.0 - 1.0): overall_score, get_score (50% Genetic, 25% Exp, 25% Target), genetic_score, literature_score, expression_score, target_score.
+      - Scores (0.0 - 1.0): overall_score, get_score, genetic_score, literature_score, expression_score, target_score.
+      - CAREFUL — "GET" names two different numbers, and they are not interchangeable:
+        · get_score on a STORED SNAPSHOT (board, dossier, rankings, evidence) is the Open Targets
+          overall association, written by the harvest. It is an eligibility signal and is NOT scored.
+        · getScore on the LOADED TARGET LIST in the browser is D2T's own composite,
+          genetic*0.50 + expression*0.25 + target*0.25, computed client-side at load time.
+        Say which one you mean when a user asks, and never quote a board figure as the composite
+        or the reverse. If the user just says "GET score", they mean the stored Open Targets one.
       - Evidence Metrics: 
         - Literature: paper_count (Europe PMC count), recent_paper_count (Europe PMC 3y), total_signals (Literature Count), recent_signals (Recent signals), signal_velocity (Velocity percentage), latest_publication_date (string/date).
         - Clinical Flags (array of strings): clinical_flags. Use operator 'contains' or 'not_contains' with stringValue.
@@ -5623,14 +5704,8 @@ CRITICAL RULES:
       - 'dashboard_filter' { chips[] | toggle | reset } — apply the dashboard's evidence chips. Chip meanings: novel_tractable = druggable but no drug/trial yet; in_trials = has a disease trial; no_precedent = no disease trial; has_drugs = has a developed drug; complete = full evidence coverage; tissue_restricted = GTEx tau ≥ 0.6; not_common_essential = excludes pan-essential genes; antibody_reachable = surface/secreted; trial_stopped = a disease trial was halted; legacy_only = pre-fix rows. Pass chips[] to set the whole set, toggle to flip one, reset:true to clear.
       - 'dashboard_sort' { column, direction } — sort the dashboard grid. Columns: rank, score, n_drugs, tractable_modalities, n_disease_trials, n_publications, velocity, completeness, tissue_tau, n_patents, winner_score.
       - 'dashboard_open_gene' { symbol } — open a gene's dossier panel in the dashboard.
+${referenceSection}
 
-      DASHBOARD REFERENCE — the meaning of every dashboard term, column, abbreviation, range, formula and data source:
-      When the user asks what a term/column/metric/abbreviation means, or asks for its RANGE, FORMULA, DATA SOURCE, or evidence level, answer ONLY from this reference. Quote the range and formula verbatim when present, and always name the exact source. If a value has a caveat, include it. Never invent a range, formula or source; if a term is not in this reference, say so plainly rather than guessing. These are explanatory questions — answer them directly in prose, no tool call needed.
-${glossaryPromptBlock()}
-
-      MODALITY FIT REFERENCE — the meaning of every modality term: the 4 mechanistic goals, the 4 tiers, the 12 modalities, and every evidence field with the threshold it turns on.
-      When the user asks what a modality/goal/tier/evidence term MEANS, answer ONLY from this reference. Quote thresholds and sources verbatim. If a term is not here, say so plainly rather than guessing. Prefer the "Plain:" wording — many users are not bioinformaticians.
-${modalityPromptBlock()}
 
       EXPLAINING A TIER — the rule you must not break:
       Modality tiers are assigned by DETERMINISTIC rules, not by you. Your job is to EXPLAIN a tier, never to assign, revise, second-guess or argue with one.
@@ -5645,7 +5720,13 @@ ${modalityResultBlock(getLastModalityResult()) || '      (No modality analysis h
         const res = await authenticatedFetch('/api/ai/gemini-chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ messages, systemInstruction, tools }),
+          // Tools are omitted on an upstream that cannot honour them, so the model
+          // is never shown capabilities it will not be able to use.
+          body: JSON.stringify({
+            messages, systemInstruction,
+            tools: modelHasTools ? tools : undefined,
+            model: aiModel, sessionId: chatSessionIdRef.current,
+          }),
         });
         const data = await res.json();
         // Surface server-side errors (missing key, Gemini API errors) instead of silently returning empty
@@ -5916,6 +5997,45 @@ ${modalityResultBlock(getLastModalityResult()) || '      (No modality analysis h
                  </button>
                </div>
              </div>
+
+             {/* Model selector, in the composer under the input — the place every
+                 chat app puts it. Rendered only when there is more than one choice:
+                 with PLEASER unreachable the server lists Gemini alone and the
+                 composer looks exactly as it did before this existed. */}
+             {aiModels.length > 1 && (
+               <div className="mt-2 flex items-center gap-2">
+                 <div className="relative shrink-0">
+                   <Sparkles className={`pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 ${theme === 'dark' ? 'text-slate-500' : 'text-slate-400'}`} />
+                   <ChevronDown className={`pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 w-3 h-3 ${theme === 'dark' ? 'text-slate-500' : 'text-slate-400'}`} />
+                   {/* Native select, styled flat: the OS popup is keyboard- and
+                       screen-reader-correct for free, and a hand-rolled menu in a
+                       340px sidebar would clip against the scroll container. */}
+                   <select
+                     aria-label="Model"
+                     value={aiModel}
+                     onChange={e => switchAiModel(e.target.value)}
+                     disabled={isChatting}
+                     title={modelHasTools ? 'Model answering in this chat' : 'Explain-only: cannot filter, sort or open targets'}
+                     className={`appearance-none cursor-pointer rounded-full border pl-6 pr-5 py-1 text-[11px] font-semibold outline-none transition-colors disabled:opacity-50 disabled:cursor-not-allowed max-w-[190px] truncate ${
+                       theme === 'dark'
+                         ? 'bg-transparent border-slate-800 text-slate-300 hover:bg-slate-800/60 hover:text-white'
+                         : 'bg-transparent border-slate-200 text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                     }`}
+                   >
+                     {aiModels.map(m => (
+                       <option key={m.id} value={m.id} disabled={!m.available}>
+                         {m.label}{m.available ? '' : ' (not configured)'}
+                       </option>
+                     ))}
+                   </select>
+                 </div>
+                 {!modelHasTools && (
+                   <span className={`text-[10px] leading-tight ${theme === 'dark' ? 'text-amber-400/80' : 'text-amber-700'}`}>
+                     Explain-only — can’t filter, sort or open targets.
+                   </span>
+                 )}
+               </div>
+             )}
            </form>
         </aside>
         <CohortFilterSidebar theme={theme} targets={researchState.targets} activeDisease={researchState.activeDisease} onScoreRangesChange={setScoreRangeFilter} onRankRangesChange={setRankRangeFilter} visibleCols={visibleColumns} onVisibleColsChange={setVisibleColumns} visibleBioTissues={visibleBioTissues} onVisibleBioTissuesChange={setVisibleBioTissues} currentUser={currentUser} globalWeights={globalWeights} onWeightsSave={handleWeightsSave} onAssessRun={handleAssessRun} activeNav={sidebarNav} onActiveNavChange={setSidebarNav} />

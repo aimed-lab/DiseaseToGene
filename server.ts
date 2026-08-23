@@ -10,6 +10,9 @@ import { getModalityProfile } from "./modalityService.js";
 import { gatherModalityEvidence, assessModalities, buildRationalePrompt, attachRationales, summariseModalityBatch, isEvidenceResolved, MECHANISTIC_GOALS, isGoal, type MechanisticGoal } from "./modalityFitService.js";
 import { enrichGene, enrichGenes } from "./enrichService.js";
 import * as ordsSvc from "./ordsService.js"; // pure fetch client → safe to bundle for Vercel
+import * as hermes from "./hermesService.js"; // PLEASER chat upstream — pure fetch client
+import { GLOSSARY } from "./dashboardGlossary.js";        // pure data — safe on the server
+import { MODALITY_GLOSSARY } from "./modalityGlossary.js"; // pure data — safe on the server
 // NOTE: relative imports carry an explicit .js extension (Node-ESM requirement). On Vercel
 // the server ships as unbundled ESM, so extensionless specifiers fail with ERR_MODULE_NOT_FOUND.
 // .js resolves to the .ts source under tsx / esbuild / tsc alike.
@@ -247,6 +250,204 @@ const geminiGenerate = async (contents: object[], model = GEMINI_MODEL, response
   return out;
 };
 
+// ── Co-pilot upstreams ────────────────────────────────────────────────────────
+// The co-pilot can run on Gemini (default) or on PLEASER's Hermes agent. They are
+// NOT interchangeable: Gemini gets D2T's function declarations and can drive the
+// app; Hermes ignores request-level tools entirely (see hermesService.ts), so it
+// answers explanatory questions only. `tools` on each entry is what the client
+// reads to say so in the UI rather than silently losing the ability to filter.
+const GEMINI_CHOICE = { id: 'gemini', label: `Google ${GEMINI_MODEL}`, upstream: 'gemini' as const, tools: true };
+
+// Which Hermes models can be trusted with prompt-described tools. This is a
+// per-MODEL property, not a per-upstream one, and it was measured rather than
+// assumed: glm-air scored 13/13 across two probes (18 tools + glossary, and
+// correctly declining to call anything on explanatory questions), while
+// best-reasoning scored 1/4 — it knows its own PLEASER toolset and replies that
+// the tools "don't exist here". Re-measure before adding a model to this list.
+const HERMES_TOOL_MODELS = (process.env.HERMES_TOOL_MODELS || 'glm-air')
+  .split(',').map(s => s.trim()).filter(Boolean);
+
+let hermesModelCache: { at: number; models: hermes.HermesModel[] } | null = null;
+const HERMES_MODEL_TTL_MS = 5 * 60_000;
+const hermesModels = async (): Promise<hermes.HermesModel[]> => {
+  if (!hermes.hermesEnabled()) return [];
+  if (hermesModelCache && Date.now() - hermesModelCache.at < HERMES_MODEL_TTL_MS) return hermesModelCache.models;
+  try {
+    const models = await hermes.listModels();
+    hermesModelCache = { at: Date.now(), models };
+    return models;
+  } catch (e: any) {
+    // Unreachable PLEASER (off-network) must not break the picker — the user
+    // still gets Gemini, and the reason is logged rather than thrown at them.
+    console.warn('[Hermes] model list unavailable:', e?.message || e);
+    return [];
+  }
+};
+
+// One PLEASER chat per co-pilot session. PLEASER keeps the conversation
+// server-side, so we hold the chat id and post only each new turn. Keyed by the
+// caller's bearer token + their session id so one user's id cannot address
+// another's chat. Chats are deleted on sign-off or after going idle: the pk_
+// token is a single shared PLEASER account and we do not want every D2T user's
+// transcript accumulating in it.
+interface HermesSession { chatId: string; lastUsed: number; }
+const hermesSessions = new Map<string, HermesSession>();
+const HERMES_IDLE_MS = 30 * 60_000;
+const hermesSessionKey = (req: express.Request, sessionId: string) =>
+  createHash('sha256').update(`${req.headers.authorization || ''}|${sessionId}`).digest('hex');
+
+// ── Prompt-described tool calling for Hermes ──────────────────────────────────
+// PLEASER drops request-level tool declarations, so the tools are described in
+// the message text and the reply is parsed back. Renders Gemini's
+// functionDeclarations into a compact spec; enum values are kept because they
+// are what stop the model inventing a view mode or a filter chip.
+export const renderToolSpec = (tools: any[]): string => tools.map(t => {
+  const props = t?.parameters?.properties || {};
+  const req: string[] = t?.parameters?.required || [];
+  const args = Object.entries(props).map(([k, v]: [string, any]) => {
+    const enums = v?.enum || v?.items?.enum;
+    const type = enums ? enums.join('|') : String(v?.type || 'any').toLowerCase();
+    return `${k}${req.includes(k) ? '' : '?'}:${type}`;
+  }).join(', ');
+  return `- ${t.name} {${args}}${t.description ? ` — ${t.description}` : ''}`;
+}).join('\n');
+
+// ── Reference lookup, so the glossaries stop riding in every prompt ───────────
+// The two glossary blocks are ~24,000 characters, and PLEASER replays the whole
+// transcript each turn — so that cost was paid on EVERY message, not just the
+// first. Measured: 75s for a first turn, ~25s after. Hermes now gets the list of
+// term NAMES (cheap, and it needs them to know what is available) and fetches a
+// definition only when someone actually asks for one. Gemini keeps the full
+// blocks inline: it is fast enough that the round trip would be the worse trade.
+
+/** Every term Hermes may look up — names only, no definitions. */
+export const referenceTermIndex = (): string => {
+  const names = [
+    ...GLOSSARY.map(e => e.term),
+    ...MODALITY_GLOSSARY.map(e => e.term),
+  ];
+  return [...new Set(names)].sort((a, b) => a.localeCompare(b)).join(', ');
+};
+
+/** Resolve a term to its full entry. Matches term, abbreviation or alias. */
+export const lookupReference = (rawTerm: string): any => {
+  const q = String(rawTerm || '').toLowerCase().trim();
+  if (!q) return { error: 'term is required' };
+  const hit = (s?: string) => Boolean(s && s.toLowerCase() === q);
+  const loose = (s?: string) => Boolean(s && s.toLowerCase().includes(q));
+
+  const dash = GLOSSARY.filter(e => hit(e.term) || hit(e.abbr) || (e.aliases || []).some(hit))
+    .concat(GLOSSARY.filter(e => loose(e.term) || loose(e.abbr) || (e.aliases || []).some(loose)));
+  const mod = MODALITY_GLOSSARY.filter(e => hit(e.term))
+    .concat(MODALITY_GLOSSARY.filter(e => loose(e.term)));
+
+  // Exact matches are concatenated ahead of loose ones, so dedupe keeps the
+  // exact hit first — "tau" must not be beaten by a term that merely contains it.
+  const entries = [...new Map([...dash, ...mod].map(e => [e.term, e])).values()].slice(0, 4);
+  if (!entries.length) {
+    return { term: rawTerm, found: false, note: 'No such term in the reference. Say so plainly rather than inventing a definition.' };
+  }
+  return { term: rawTerm, found: true, entries };
+};
+
+const REFERENCE_TOOL = {
+  name: 'lookup_reference',
+  description: 'Definition of any D2T term, column, metric, abbreviation, modality, goal or tier — with its range, formula, source and caveat. Call this whenever the user asks what something MEANS. Never answer a definition from memory.',
+  parameters: { type: 'OBJECT', properties: { term: { type: 'STRING' } }, required: ['term'] },
+};
+
+export const HERMES_TOOL_PROTOCOL = `
+
+TOOL CALLING — how you act on the application:
+To call a tool, reply with ONLY a JSON object and nothing else:
+{"tool":"<name>","args":{...}}
+Rules:
+- At most ONE tool per reply. No prose around the JSON, no code fences.
+- Use the exact tool and argument names listed below.
+- You may ALSO have disease2target tools of your own from an MCP server. Ignore
+  them completely here. Only the tools listed below are scoped to the disease,
+  snapshot and filters this user is actually looking at; yours are not, and mixing
+  the two produces answers about a different dataset than the one on their screen.
+- If a listed tool reports that something is missing or not loaded, that is a real
+  answer about this user's session. It does NOT mean a server or an MCP is broken.
+- For explanatory questions ("what does X mean?", "how is Y calculated?"), answer
+  in plain prose with NO JSON — those are answered from the reference material above.
+- If no tool fits, answer in prose.
+
+AVAILABLE TOOLS:
+`;
+
+/**
+ * Pull a tool call out of a Hermes reply. Returns null for ordinary prose, which
+ * is the designed failure mode: an unparseable or unknown call degrades to being
+ * shown as text rather than raising an error at the user. Validating the name
+ * against the known set also stops prose that merely contains braces (a formula,
+ * a JSON example) from being mistaken for a call.
+ */
+export const parseHermesToolCall = (text: string, known: Set<string>): { name: string; args: any } | null => {
+  // Scan for the first BALANCED object rather than slicing first-{ to last-}.
+  // glm-air intermittently emits a stray trailing brace
+  // (`{"tool":"get_gene_evidence","args":{"gene":"PHGDH"}}}` — seen in the
+  // benchmark), and the naive slice fails to parse that, which would have shown
+  // the user raw JSON instead of an answer.
+  const start = text.indexOf('{');
+  if (start < 0) return null;
+  let depth = 0, inString = false, escaped = false, obj: any = null;
+  for (let i = start; i < text.length; i++) {
+    const c = text[i];
+    if (escaped) { escaped = false; continue; }
+    if (c === '\\') { escaped = true; continue; }
+    if (c === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (c === '{') depth++;
+    else if (c === '}' && --depth === 0) {
+      try { obj = JSON.parse(text.slice(start, i + 1)); } catch { return null; }
+      break;
+    }
+  }
+  if (!obj || typeof obj.tool !== 'string' || !known.has(obj.tool)) return null;
+  return { name: obj.tool, args: obj.args && typeof obj.args === 'object' ? obj.args : {} };
+};
+
+// How to handle whatever a tool hands back. Written after glm-air received the
+// perfectly clear result "KRAS isn't in the current target list. Load its disease
+// first" and, instead of relaying it, apologised for a broken "MCP tools
+// interface" and offered to try other data sources. Two causes worth blocking:
+// a tool result is often an INSTRUCTION rather than data, and Hermes has its own
+// PLEASER MCP tooling it can confuse this with.
+const TOOL_RESULT_RULES = `Now answer the user in prose. Do NOT call another tool.
+- These results came from the Disease2Target application itself. They did NOT come
+  from MCP, and nothing here is broken — do not diagnose, speculate about servers,
+  configuration or interfaces, and do not offer other data sources.
+- A result is often an INSTRUCTION rather than data. If it says something is not
+  loaded, not found, or asks the user to do something first, relay exactly that in
+  one plain sentence and stop. That is a correct answer, not a failure.
+- Report only what the result says. Do not add numbers or findings it does not contain.
+- NEVER WIDEN THE SCOPE OF A NEGATIVE. "Not in the loaded list" is not "not in the
+  snapshot", and "not in this snapshot" is not "not in the database" or "not a
+  known gene". Repeat the exact scope the tool reported and nothing larger. A gene
+  ranked below the loaded page is present in the data and simply not fetched yet —
+  reporting it as absent is a factual error a researcher may act on.
+- If a tool errors, say only that the lookup failed and what you were trying to
+  fetch. Do not diagnose the cause and do not conclude anything about the data
+  from a failure to retrieve it.`;
+
+/**
+ * Did the model try to call a tool and produce something we could not read?
+ * Such a reply must never reach the user as-is — "degrade to prose" is only
+ * sensible when the reply IS prose, and a broken call is raw JSON.
+ */
+export const looksLikeToolAttempt = (text: string): boolean => /"tool"\s*:/.test(text);
+
+const reapIdleHermesChats = () => {
+  const now = Date.now();
+  for (const [key, s] of hermesSessions) {
+    if (now - s.lastUsed < HERMES_IDLE_MS) continue;
+    hermesSessions.delete(key);
+    void hermes.deleteChat(s.chatId);
+  }
+};
+
 // ── setupRoutes — synchronous, called at module level so Vercel gets a
 //    fully-configured app immediately on import (fixes critical async race) ────
 function setupRoutes() {
@@ -295,6 +496,30 @@ function setupRoutes() {
     next();
   });
 
+  // Which co-pilot upstreams this deployment can offer. Gemini is always listed
+  // (the key is checked at call time); Hermes appears only when PLEASER is
+  // configured AND currently reachable, so an off-network user sees one option
+  // instead of a dropdown entry that always errors.
+  app.get("/api/ai/models", async (_req, res) => {
+    const models: any[] = [{ ...GEMINI_CHOICE, available: Boolean(process.env.GEMINI_API_KEY) }];
+    for (const m of await hermesModels()) {
+      models.push({ id: `hermes:${m.id}`, label: `${m.label} · PLEASER`, upstream: 'hermes', tools: HERMES_TOOL_MODELS.includes(m.id), available: true });
+    }
+    res.json({ models, default: GEMINI_CHOICE.id });
+  });
+
+  // End a Hermes co-pilot session and delete its chat from the shared PLEASER
+  // account. Idempotent — an unknown session is a no-op, not a 404.
+  app.delete("/api/ai/chat-session", async (req, res) => {
+    const sessionId = String((req.body || {}).sessionId || '').trim();
+    if (!sessionId) return res.status(400).json({ error: 'sessionId required' });
+    const key = hermesSessionKey(req, sessionId);
+    const sess = hermesSessions.get(key);
+    if (!sess) return res.json({ ended: false });
+    hermesSessions.delete(key);
+    res.json({ ended: await hermes.deleteChat(sess.chatId) });
+  });
+
   // Generic AI generate — text prompt → text response
   app.post("/api/ai/generate", async (req, res) => {
     const { prompt } = req.body || {};
@@ -315,10 +540,132 @@ function setupRoutes() {
     }
   });
 
-  // Multi-turn Gemini chat with optional tools + systemInstruction
+  // Multi-turn co-pilot chat with optional tools + systemInstruction.
+  // Kept at its original path so existing callers are unaffected; `model` selects
+  // the upstream and defaults to Gemini.
   app.post("/api/ai/gemini-chat", async (req, res) => {
-    const { messages, systemInstruction, tools } = req.body || {};
+    const { messages, systemInstruction, tools, model, sessionId } = req.body || {};
     if (!messages?.length) return res.status(400).json({ error: "messages required" });
+
+    // ── Hermes upstream ───────────────────────────────────────────────────────
+    // PLEASER drops request-level tool declarations, so `tools` is never
+    // forwarded as a field — it is rendered into the prompt and the reply is
+    // parsed back. The co-pilot's tools are two different species and each needs
+    // a different answer:
+    //   DATA tools (get_gene_evidence, get_clinical_trials, …) read the store, so
+    //     they run HERE and loop the result back for synthesis.
+    //   ACTION tools (focus_gene, dashboard_filter, …) mutate React state in the
+    //     browser, so they are returned as `functionCalls` for the client's
+    //     existing executor. Hermes runs on PLEASER's server and can never reach
+    //     the user's browser itself — this is the half an MCP server could not do.
+    if (typeof model === 'string' && model.startsWith('hermes:')) {
+      if (!hermes.hermesEnabled()) return res.status(503).json({ error: 'PLEASER is not configured on this server' });
+      const hermesModel = model.slice('hermes:'.length);
+      const known = await hermesModels();
+      if (known.length && !known.some(m => m.id === hermesModel)) {
+        return res.status(400).json({ error: `Unknown PLEASER model "${hermesModel}"` });
+      }
+      const toolsOn = HERMES_TOOL_MODELS.includes(hermesModel) && Array.isArray(tools) && tools.length > 0;
+
+      // A name sent by the client wins over the same name in AGENT_TOOLS
+      // (`rank_targets` exists in both with different arguments) — the client's
+      // version re-ranks what is actually on screen, which is what the user means.
+      const clientNames = new Set<string>((tools || []).map((t: any) => t?.name).filter(Boolean));
+      const dataTools = [...AGENT_TOOLS.filter(t => !clientNames.has(t.name)), REFERENCE_TOOL];
+      const dataNames = new Set(dataTools.map(t => t.name));
+      const knownTools = new Set<string>([...clientNames, ...dataNames]);
+
+      const lastUserIdx = messages.map((m: any) => m.role).lastIndexOf('user');
+      if (lastUserIdx < 0) return res.status(400).json({ error: 'no user message to send' });
+      // Anything after the last user turn is the client reporting back what it did
+      // with an action tool (its second pass). Forward those as the new turn rather
+      // than resending the original question, which would just repeat the request.
+      const clientToolResults = messages.slice(lastUserIdx + 1)
+        .map((m: any) => String(m.content || '').trim()).filter(Boolean);
+      const turnText = clientToolResults.length
+        ? `Results of the tool you called:\n${clientToolResults.join('\n')}\n\n${TOOL_RESULT_RULES}`
+        : String(messages[lastUserIdx].content || '');
+      if (!turnText) return res.status(400).json({ error: 'no user message to send' });
+
+      try {
+        reapIdleHermesChats();
+        const key = hermesSessionKey(req, String(sessionId || 'default'));
+        let sess = hermesSessions.get(key);
+        let text: string;
+
+        if (!sess) {
+          // First turn of a session. PLEASER has no system-prompt field, so the
+          // instruction rides in front of the first question rather than as a
+          // separate priming turn — one round trip instead of two, and PLEASER's
+          // server-side history carries it forward to every later turn.
+          const preamble = [
+            systemInstruction || '',
+            toolsOn ? HERMES_TOOL_PROTOCOL + renderToolSpec([...(tools || []), ...dataTools]) : '',
+          ].filter(Boolean).join('\n');
+          const chatId = await hermes.createChat('Disease2Target co-pilot');
+          const primed = preamble
+            ? `${preamble}\n\n--- The user's question follows. Answer it under the instructions above. ---\n\n${turnText}`
+            : turnText;
+          try {
+            text = await hermes.sendMessage(chatId, primed, hermesModel);
+          } catch (e) {
+            // Don't register a session whose priming turn never landed, or the
+            // retry would reuse the chat and skip the instruction entirely.
+            void hermes.deleteChat(chatId);
+            throw e;
+          }
+          sess = { chatId, lastUsed: Date.now() };
+          hermesSessions.set(key, sess);
+        } else {
+          text = await hermes.sendMessage(sess.chatId, turnText, hermesModel);
+        }
+        sess.lastUsed = Date.now();
+
+        if (!toolsOn) return res.json({ text, functionCalls: [], upstream: 'hermes', model });
+
+        // Resolve data tools here, up to a small step budget. Each hop is a full
+        // Hermes round trip (6–15s measured), so the ceiling is deliberately low —
+        // an unbounded loop would be minutes of silence for the user.
+        const trace: string[] = [];
+        for (let step = 0; step < 3; step++) {
+          const call = parseHermesToolCall(text, knownTools);
+          if (!call) break;                                    // prose — done
+          if (!dataNames.has(call.name)) {
+            // An action tool: hand it to the browser, which owns that state.
+            return res.json({ text: '', functionCalls: [call], upstream: 'hermes', model, trace });
+          }
+          let result: any;
+          try {
+            // Reference lookups are a local data read, not a store query — they
+            // resolve in microseconds, which is the whole point of moving the
+            // glossaries out of the prompt.
+            result = call.name === REFERENCE_TOOL.name
+              ? lookupReference(call.args?.term)
+              : await execAgentTool(call.name, call.args, { disease: req.body?.disease, snapshotId: req.body?.snapshotId });
+          } catch (e: any) { result = { error: String(e?.message || e) }; }
+          trace.push(call.name);
+          // Cap the payload: a full evidence dossier can dwarf the context and the
+          // useful part is always at the top of the object.
+          const payload = JSON.stringify(result).slice(0, 20_000);
+          text = await hermes.sendMessage(
+            sess.chatId,
+            `Result of ${call.name}:\n${payload}\n\n${TOOL_RESULT_RULES.replace('Do NOT call another tool.', 'Call another tool only if you genuinely cannot answer yet.')}`,
+            hermesModel,
+          );
+          sess.lastUsed = Date.now();
+        }
+        // Never return JSON to the chat bubble: either a call survived the step
+        // budget, or the model attempted one we could not parse. Both would render
+        // as raw braces to the user.
+        if (parseHermesToolCall(text, knownTools) || looksLikeToolAttempt(text)) {
+          text = 'I could not finish gathering that in the available steps. Try a narrower question, or switch to Gemini.';
+        }
+        return res.json({ text, functionCalls: [], upstream: 'hermes', model, trace });
+      } catch (err: any) {
+        return res.status(502).json({ error: err.message });
+      }
+    }
+
     const key = process.env.GEMINI_API_KEY;
     if (!key) return res.status(503).json({ error: "GEMINI_API_KEY not configured" });
     try {
