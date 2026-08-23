@@ -117,6 +117,7 @@ import { navigate, isMethodologyPath, isModalityPath, isResetPasswordPath, catch
 catchRecoveryHash();
 import { glossaryPromptBlock, GLOSSARY } from './dashboardGlossary';
 import { modalityPromptBlock, modalityResultBlock, MODALITY_GLOSSARY } from './modalityGlossary';
+import { boardSnapshotBlock, getActiveBoardSnapshot } from './boardStore';
 import { getLastModalityResult } from './modalityStore';
 import JobsView from './JobsView';
 import { getCbioMutations } from './cbioportalService';
@@ -5574,7 +5575,13 @@ CRITICAL RULES:
       try {
         const resp = await authenticatedFetch('/api/ai/agent', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ question: q, disease: researchState.activeDisease?.name || '' }),
+          // Same scoping as the chat path: answer about the snapshot the user has
+          // open on the board, falling back to the loaded disease.
+          body: JSON.stringify({
+            question: q,
+            disease: getActiveBoardSnapshot()?.disease_name || researchState.activeDisease?.name || '',
+            snapshotId: getActiveBoardSnapshot()?.id ?? undefined,
+          }),
         });
         const j = await resp.json();
         if (!resp.ok) throw new Error(j.error || `agent failed (${resp.status})`);
@@ -5640,6 +5647,10 @@ ${glossaryPromptBlock()}
       When the user asks what a modality/goal/tier/evidence term MEANS, answer ONLY from this reference. Quote thresholds and sources verbatim. If a term is not here, say so plainly rather than guessing. Prefer the "Plain:" wording — many users are not bioinformaticians.
 ${modalityPromptBlock()}`;
 
+      // What the Ranking Board is showing. Without this the co-pilot only knew the
+      // browser's loaded page and reported genes ranked below it as absent.
+      const boardBlock = boardSnapshotBlock();
+
       const systemInstruction = `You are the DiseaseToTarget AI Assistant, an intelligent terminal for Target List exploration and literature discovery.
 
       Core Capabilities:
@@ -5704,6 +5715,8 @@ ${modalityPromptBlock()}`;
       - 'dashboard_filter' { chips[] | toggle | reset } — apply the dashboard's evidence chips. Chip meanings: novel_tractable = druggable but no drug/trial yet; in_trials = has a disease trial; no_precedent = no disease trial; has_drugs = has a developed drug; complete = full evidence coverage; tissue_restricted = GTEx tau ≥ 0.6; not_common_essential = excludes pan-essential genes; antibody_reachable = surface/secreted; trial_stopped = a disease trial was halted; legacy_only = pre-fix rows. Pass chips[] to set the whole set, toggle to flip one, reset:true to clear.
       - 'dashboard_sort' { column, direction } — sort the dashboard grid. Columns: rank, score, n_drugs, tractable_modalities, n_disease_trials, n_publications, velocity, completeness, tissue_tau, n_patents, winner_score.
       - 'dashboard_open_gene' { symbol } — open a gene's dossier panel in the dashboard.
+${boardBlock}
+
 ${referenceSection}
 
 
@@ -5726,6 +5739,9 @@ ${modalityResultBlock(getLastModalityResult()) || '      (No modality analysis h
             messages, systemInstruction,
             tools: modelHasTools ? tools : undefined,
             model: aiModel, sessionId: chatSessionIdRef.current,
+            // So evidence lookups answer about the snapshot on screen, not the newest.
+            snapshotId: getActiveBoardSnapshot()?.id ?? undefined,
+            disease: getActiveBoardSnapshot()?.disease_name || researchState.activeDisease?.name || undefined,
           }),
         });
         const data = await res.json();

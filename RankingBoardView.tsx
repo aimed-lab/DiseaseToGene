@@ -12,6 +12,7 @@ import { navigate } from './nav';
 import { CRITERIA, MODALITY_PROFILES, buildBoard, criterionBreakdown, computeVerdict, findBetterAlternatives, type CriterionKey, type ModalityKey, type ScoredGene, type SubMetric, type CriterionBreakdown } from './rankingBoard';
 import { buildTargetReportHTML, type ReportCriterion } from './targetReport';
 import type { Theme } from './types';
+import { setActiveBoardSnapshot } from './boardStore';
 
 // Only READY modalities are offered. The others (antibody/PROTAC/RNA/gene therapy) are
 // deferred until they have modality-specific criteria — see rankingBoard.ts `ready`.
@@ -249,6 +250,24 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
 
   const card = isDark ? 'bg-slate-900 border-slate-700' : 'bg-white border-slate-200';
   const snapMeta = snapshots.find(s => String(s.id) === snapId);
+
+  // Tell the co-pilot what the board is showing. The board deliberately does NOT
+  // write researchState.activeDisease (see boardStore.ts) - this publishes the fact
+  // without triggering the reload cascade that would cause.
+  useEffect(() => {
+    setActiveBoardSnapshot(snapMeta ? {
+      id: Number(snapMeta.id),
+      disease_name: String(snapMeta.disease_name || ''),
+      gene_count: snapMeta.gene_count != null ? Number(snapMeta.gene_count) : null,
+      version: (snapMeta as any).version != null ? Number((snapMeta as any).version) : null,
+      // Which axes this snapshot actually scores on. The methodology page documents
+      // the published weights; without this it cannot say that some were dropped and
+      // the budget renormalised over the rest.
+      activeCriteria: [...activeKeys],
+      inactiveCriteria: CRITERIA.map(c => c.key).filter(k => !activeKeys.includes(k)),
+      modality,
+    } : null);
+  }, [snapMeta?.id, snapMeta?.disease_name, snapMeta?.gene_count, activeSig, modality]);
 
   if (loading) {
     // Rotating status so the user sees it's actively working, not frozen.

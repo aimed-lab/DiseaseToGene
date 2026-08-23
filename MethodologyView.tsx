@@ -7,6 +7,7 @@
 import React from 'react';
 import { X, Trophy, ShieldCheck, FlaskConical, Ban, Scale, Gauge } from 'lucide-react';
 import { CRITERIA, MODALITY_PROFILES, CORE_CRITERIA, criterionBreakdown, type ModalityKey, type CriterionKey } from './rankingBoard';
+import { getActiveBoardSnapshot } from './boardStore';
 
 // Only validated modalities appear in the weights table; the rest are documented as
 // "in development" below (they re-weight SM-oriented criteria but lack their own biology).
@@ -28,6 +29,15 @@ function criterionKind(k: CriterionKey): 'fact' | 'prediction' {
 }
 
 export default function MethodologyView({ isDark, onClose }: { isDark: boolean; onClose: () => void }) {
+  // Which snapshot the board has open, and which axes it actually scores on. The
+  // weights table below is the PUBLISHED weighting; a snapshot missing an axis drops
+  // it and renormalises the budget over the rest, so without this the page documents
+  // a weighting the reader is not getting. Read at render time from boardStore rather
+  // than threaded as a prop - this page is opened from several places.
+  const boardSnap = getActiveBoardSnapshot();
+  const dropped = (boardSnap?.inactiveCriteria || [])
+    .map(k => CRITERIA.find(c => c.key === k)?.label || k);
+
   const card = isDark ? 'bg-[#0d1424] border-slate-800' : 'bg-white border-slate-200';
   const sub = isDark ? 'text-slate-400' : 'text-slate-600';
   const heading = isDark ? 'text-slate-100' : 'text-slate-900';
@@ -56,6 +66,27 @@ export default function MethodologyView({ isDark, onClose }: { isDark: boolean; 
 
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-4xl mx-auto px-6 py-8 space-y-9">
+
+          {/* What this page is describing right now. */}
+          {boardSnap && (
+            <div className={`rounded-xl border px-4 py-3 ${isDark ? 'bg-slate-900/60 border-slate-700' : 'bg-amber-50 border-amber-200'}`}>
+              <p className={`text-[12px] font-bold ${heading}`}>
+                Describing snapshot #{boardSnap.id} — {boardSnap.disease_name}
+                {boardSnap.modality ? ` · ${MODALITY_SHORT[boardSnap.modality as ModalityKey] || boardSnap.modality}` : ''}
+              </p>
+              {dropped.length > 0 ? (
+                <p className={`mt-1 text-[11px] leading-snug ${sub}`}>
+                  <strong>{dropped.length} of {CRITERIA.length} criteria have no data in this snapshot</strong>{' '}
+                  ({dropped.join(', ')}). Those are dropped and their weight is redistributed across the
+                  remaining criteria, so the effective weighting here is <em>not</em> the published one below.
+                </p>
+              ) : (
+                <p className={`mt-1 text-[11px] leading-snug ${sub}`}>
+                  All {CRITERIA.length} criteria have data in this snapshot, so the weights below apply as published.
+                </p>
+              )}
+            </div>
+          )}
 
           {/* ── The approach ── */}
           <section className="space-y-3">

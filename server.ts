@@ -1341,7 +1341,9 @@ function setupRoutes() {
   // ── Knowledge Graph (KG_NODES / KG_EDGES, projected by `d2t.ts kg <id>`) ──────
   // The unified, queryable graph: genes/diseases/drugs/trials/pathways/tissues/papers/
   // variants as nodes, the evidence relationships (incl. persisted STRING PPI) as edges.
-  // Reads the internal Oracle service (the new tables aren't on the ORDS bridge yet).
+  // Reads through readSvc(), so the graph works over ORDS (no VPN) as well as Oracle —
+  // ordsService.kgGraph/kgStats mirror the Oracle ones (needs docs/sql/kg_ords_module.sql
+  // run once). The comment here used to say the KG tables were Oracle-only; they are not.
   // Resolve ?snapshot=<id> directly, or ?disease=<name> → that disease's newest snapshot.
   async function resolveKgSnapshot(svc: any, snapshotQ: string, diseaseQ: string): Promise<any | null> {
     const snaps: any[] = await svc.listSnapshots();
