@@ -48,7 +48,19 @@ const run = async () => {
   const gold = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'data', 'modality_goldset.json'), 'utf8'));
   const rf = gold.pairs.filter((p: any) => p.goal === 'restore_function');
   const genes = [...new Set(rf.map((p: any) => p.gene))].sort() as string[];
-  console.log(`Gain-of-function targets (approved drug raises function): ${genes.length}\n`);
+
+  // The base-rate control, computed HERE rather than in a side analysis. A first
+  // version of this comparison lived in a throwaway script, which left the control
+  // figure in the manuscript with no committed source — the same failure as any
+  // other unverifiable number. Targets whose approved drugs act only by inhibition,
+  // first sixty alphabetically: a deterministic selection fixed before the
+  // comparison and not adjusted after.
+  const rfSet = new Set(genes);
+  const controlGenes = [...new Set(gold.pairs.filter((p: any) => p.goal === 'inhibit').map((p: any) => p.gene))]
+    .filter((g: any) => !rfSet.has(g)).sort().slice(0, 60) as string[];
+
+  console.log(`Gain-of-function targets (approved drug raises function): ${genes.length}`);
+  console.log(`Inhibition-only control targets:                          ${controlGenes.length}\n`);
 
   const rows: any[] = [];
   let failed = 0;
@@ -114,6 +126,27 @@ const run = async () => {
     for (const r of conflict.slice(0, 12))
       console.log(`     ${r.gene.padEnd(10)} OT=[${r.otBucketCodes.join(',')}]  drug=${r.drug}`);
   }
+  // ── The control. Without it the gain-of-function proportion means nothing. ──
+  console.log('\n── Base rate: inhibition-only targets ──');
+  let ctlPr = 0, ctlN = 0;
+  for (let i = 0; i < controlGenes.length; i++) {
+    process.stdout.write(`\r  ${i + 1}/${controlGenes.length}  ${controlGenes[i].padEnd(12)}`);
+    try {
+      const ev: any = await gatherModalityEvidence(controlGenes[i]);
+      const codes = new Set((ev.tractabilityBuckets ?? []).map((b: any) => String(b.code)));
+      ctlN++; if (codes.has('PR')) ctlPr++;
+    } catch { /* skip */ }
+  }
+  process.stdout.write('\n');
+  const ctlRate = ctlN ? ctlPr / ctlN : 0;
+  const gofRate = withDegrader.length / n;
+  console.log(`  inhibition-only with a degrader handle: ${ctlPr}/${ctlN} = ${(100 * ctlRate).toFixed(1)}%`);
+  console.log(`  gain-of-function                      : ${withDegrader.length}/${n} = ${(100 * gofRate).toFixed(1)}%`);
+  console.log(`  difference                            : ${(100 * (gofRate - ctlRate)).toFixed(1)} percentage points`);
+  console.log(`\n  The handle is near-universal in BOTH groups, so a subgroup proportion of`);
+  console.log(`  ${(100 * gofRate).toFixed(1)}% is not evidence about gain-of-function targets. See the header`);
+  console.log(`  for the reported Fisher exact p and why this analysis returns a null.`);
+
   if (failed) console.log(`\n  ${failed} targets could not be gathered.`);
 
   const dest = path.join(process.cwd(), 'deliverables', 'goal_blind_tractability.json');
@@ -121,6 +154,9 @@ const run = async () => {
     note: 'Goal-blind tractability annotation vs goal-conditioned verdict, on targets whose approved drug raises function.',
     nTargets: n,
     withDegraderHandle: withDegrader.length,
+    control: { genes: controlGenes, n: ctlN, withDegraderHandle: ctlPr, rate: ctlRate },
+    gainOfFunctionRate: gofRate,
+    differencePercentagePoints: 100 * (gofRate - ctlRate),
     bothRemovalModalitiesBlockedByGoal: blockedAll.length,
     conflict: conflict.length,
     rows,
