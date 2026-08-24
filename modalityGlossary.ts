@@ -13,7 +13,7 @@
 
 import {
   MODALITY_THRESHOLDS as T, MECHANISTIC_GOALS, MODALITY_TAXONOMY, TIER_DEF,
-} from './modalityConstants';
+} from './modalityConstants.js';
 
 export interface ModalityGlossaryEntry {
   term: string;
