@@ -86,6 +86,22 @@ interface Level {
 }
 const emptyLevel = (): Level => ({ hits: [], admittedShare: [], realisedTiers: [], otherTiers: [] });
 
+// Per-assessment records, written alongside the aggregates. Two things need them
+// and neither can be reconstructed from a mean: the distribution of how many
+// modalities are admitted per target, and a gene-level bootstrap of the exclusion
+// contrast — the aggregate CI treats 4,268 assessments as independent when they
+// cluster within ~389 assessments and 354 genes.
+interface AssessmentRecord {
+  gene: string;
+  goal: string;
+  level: number;
+  admitted: number;
+  total: number;
+  /** One entry per modality: whether it is the clinically developed one, and its tier. */
+  modalities: { modality: string; tier: Tier; developed: boolean }[];
+}
+const perAssessment: AssessmentRecord[] = [];
+
 const run = async () => {
   const file = path.join(process.cwd(), 'data', 'modality_goldset.json');
   if (!fs.existsSync(file)) {
@@ -130,10 +146,18 @@ const run = async () => {
 
         const lv = L[level];
         lv.admittedShare.push(rows.filter(r => TIER_RANK[r.tier] >= PLAUSIBLE).length / rows.length);
+        const modalityRecords: AssessmentRecord['modalities'] = [];
         for (const r of rows) {
           const isRealised = [...realisedSubs].some(sub => r.modality.includes(sub));
           (isRealised ? lv.realisedTiers : lv.otherTiers).push(r.tier);
+          modalityRecords.push({ modality: r.modality, tier: r.tier, developed: isRealised });
         }
+        perAssessment.push({
+          gene, goal, level,
+          admitted: rows.filter(r => TIER_RANK[r.tier] >= PLAUSIBLE).length,
+          total: rows.length,
+          modalities: modalityRecords,
+        });
         for (const p of rowsForGene.filter((x: any) => x.goal === goal)) {
           const sub = MOD_SUB[p.modality];
           const tier = (sub ? rows.find(r => r.modality.includes(sub))?.tier : null) ?? null;
@@ -299,7 +323,16 @@ const run = async () => {
       return [`L${l}`, { hit: n.filter(h => h.hit).length, total: n.length }];
     })),
   }, null, 2));
+  // Per-assessment dump. Figure 3's histogram and a gene-level bootstrap of the
+  // exclusion contrast both need the individual records, not the means above.
+  const dumpDest = path.join(process.cwd(), 'deliverables', 'modality_per_assessment.json');
+  fs.writeFileSync(dumpDest, JSON.stringify({
+    note: 'One record per (gene, goal, ablation level). `developed` marks the clinically realised modality.',
+    genes: genes.length,
+    records: perAssessment,
+  }));
   console.log(`\nWrote ${dest}`);
+  console.log(`Wrote ${dumpDest} (${perAssessment.length} records)`);
 };
 
 run().catch(e => { console.error('FAILED:', e?.message || e); process.exit(1); });
