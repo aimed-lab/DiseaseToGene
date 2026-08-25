@@ -899,6 +899,16 @@ function setupRoutes() {
     const modelCount = (info.gemini?.key_set ? 1 : 0) + (info.pleaser.liveTest?.models ?? 0);
     info.modelPicker = { modelCount, visible: modelCount > 1, rule: 'index.tsx renders the picker only when modelCount > 1' };
 
+    // Which of the expected variables this running function can actually SEE. Names only —
+    // never values. "Set it in the dashboard and redeploy" fails silently in several ways
+    // that look identical from outside: added to Preview/Development instead of Production,
+    // a trailing space or typo in the key, or a redeploy served from build cache. Listing
+    // the keys that matched distinguishes all of them at a glance, and a key that is absent
+    // here was never delivered to this process regardless of what the dashboard shows.
+    info.envKeysSeen = Object.keys(process.env)
+      .filter(k => /^(PLEASER|GEMINI|ORDS|USE_|SUPABASE)/i.test(k))
+      .sort();
+
     res.json(info);
   });
 
