@@ -72,13 +72,26 @@ const r0 = (x: number) => Math.round(x);
 const r1 = (x: number) => Math.round(x * 10) / 10;
 const r2 = (x: number) => Math.round(x * 100) / 100;
 
-async function pollJob(path: string, tries = 40, waitMs = 3000): Promise<any> {
-  for (let i = 0; i < tries; i++) {
+// Poll budget. DoGSite runs as a submit-and-poll job on proteins.plus, and the ORIGINAL
+// budget here (40 tries x 3s) allowed 120s PER JOB — twice per structure, so up to 240s.
+// A serverless function is capped far below that (vercel.json maxDuration), so a cold gene
+// exceeded the whole request budget on pocket detection alone and the caller got a 504.
+//
+// The budget is now WALL-CLOCK and shared across both jobs of one structure, so the worst
+// case is predictable rather than a function of how many polls happened to fit. Losing the
+// pocket data is safe: gatherModalityEvidence already degrades to a stated note
+// ("No 3D structure resolved — pocket-based reasoning is limited") rather than guessing.
+const POCKET_BUDGET_MS = Number(process.env.DOGSITE_BUDGET_MS || 20_000);
+const POLL_WAIT_MS = 1_500;
+
+async function pollJob(path: string, deadline: number): Promise<any> {
+  while (Date.now() < deadline) {
     const j = await jget(path);
     const st = String(j.status || '').toLowerCase();
     if (st === 'success' || st === 'completed') return j;
     if (st === 'failure' || st === 'error') throw new Error('job failed: ' + (j.error || 'unknown'));
-    await sleep(waitMs);
+    if (Date.now() + POLL_WAIT_MS >= deadline) break;
+    await sleep(POLL_WAIT_MS);
   }
   throw new Error('job timed out');
 }
@@ -141,13 +154,16 @@ async function pocketsViaProteinsPlus(structure: StructureRef): Promise<RawPocke
   const uploadBody = structure.kind === 'experimental'
     ? { pdb_code: structure.id, use_cache: true }
     : { uniprot_code: structure.id, use_cache: true };
+  // One deadline shared by BOTH jobs — upload and DoGSite together cannot outlive the budget.
+  const deadline = Date.now() + POCKET_BUDGET_MS;
+
   const up = await jpost('/molecule_handler/upload/', uploadBody);
-  const upJob = await pollJob(`/molecule_handler/upload/jobs/${up.job_id}/`);
+  const upJob = await pollJob(`/molecule_handler/upload/jobs/${up.job_id}/`, deadline);
   const proteinId = upJob.output_protein;
   if (!proteinId) throw new Error('structure upload produced no protein');
 
   const ds = await jpost('/dogsite/', { protein_id: String(proteinId), calc_subpockets: false, ligand_bias: false });
-  const dsJob = await pollJob(`/dogsite/jobs/${ds.job_id}/`);
+  const dsJob = await pollJob(`/dogsite/jobs/${ds.job_id}/`, deadline);
   const info = await jget(`/dogsite/info/${dsJob.dogsite_info}/`);
   const list: any[] = Array.isArray(info.info) ? info.info : [];
   return list

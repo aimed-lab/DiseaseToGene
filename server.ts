@@ -2057,7 +2057,11 @@ Rules: prefer tools over guessing; call several tools when a question spans sour
   app.post("/api/modality-fit/batch", requireUser, async (req, res) => {
     const raw = Array.isArray(req.body?.genes) ? req.body.genes : [];
     const goal: MechanisticGoal = isGoal(req.body?.goal) ? req.body.goal : 'inhibit';
-    const genes: string[] = [...new Set(raw.map((g: any) => String(g || '').trim().toUpperCase()).filter(Boolean) as string[])].slice(0, 60);
+    // Capped to what can actually FINISH inside the function budget. Evidence is gathered
+    // per gene and a cold gene costs tens of seconds, so the old cap of 60 could not return
+    // under any circumstances — it just burned the budget and 504'd. The UI offers 12; the
+    // API must not promise more than the UI, and neither may exceed the deadline.
+    const genes: string[] = [...new Set(raw.map((g: any) => String(g || '').trim().toUpperCase()).filter(Boolean) as string[])].slice(0, 12);
     if (!genes.length) { res.status(400).json({ error: 'genes[] is required' }); return; }
     try {
       const rows = await summariseModalityBatch(genes, goal);

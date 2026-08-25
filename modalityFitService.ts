@@ -357,14 +357,30 @@ export async function summariseModalityBatch(genes: string[], goal: MechanisticG
 }
 
 // ── M1: gather the evidence (each source independent; a failure degrades gracefully) ──
+// Per-source wall-clock ceiling. The six sources run in parallel, so the gather costs the
+// SLOWEST of them — which meant one stalled upstream could push the whole request past the
+// serverless limit and return a 504 with no partial answer. Every source below is optional
+// by construction (each has a stated "unavailable" note and a null-safe path through the
+// rules), so cutting a slow one loses resolution, never correctness.
+const SOURCE_TIMEOUT_MS = Number(process.env.MODALITY_SOURCE_TIMEOUT_MS || 25_000);
+
+function withTimeout<T>(p: Promise<T>, label: string): Promise<T> {
+  return Promise.race([
+    p,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error(`${label} timed out after ${SOURCE_TIMEOUT_MS}ms`)), SOURCE_TIMEOUT_MS).unref?.(),
+    ),
+  ]);
+}
+
 export async function gatherModalityEvidence(gene: string): Promise<ModalityEvidence> {
   const [modR, pkR, uniR, hpaR, strR, ensR] = await Promise.allSettled([
-    getModalityProfile(gene),
-    getPocketStructure(gene),
-    fetchUniProt(gene),
-    fetchHPA(gene),
-    fetchSTRING(gene),
-    fetchEnsembl(gene),
+    withTimeout(getModalityProfile(gene), 'Open Targets'),
+    withTimeout(getPocketStructure(gene), 'DoGSite pocket'),
+    withTimeout(fetchUniProt(gene), 'UniProt'),
+    withTimeout(fetchHPA(gene), 'HPA'),
+    withTimeout(fetchSTRING(gene), 'STRING'),
+    withTimeout(fetchEnsembl(gene), 'Ensembl'),
   ]);
   const mod = modR.status === 'fulfilled' ? modR.value : null;
   const pk = pkR.status === 'fulfilled' ? pkR.value : null;
@@ -373,7 +389,16 @@ export async function gatherModalityEvidence(gene: string): Promise<ModalityEvid
   const ppi = strR.status === 'fulfilled' ? strR.value : { ppiPartners: null };
   const ens = ensR.status === 'fulfilled' ? ensR.value : { exonCount: null };
   // ChEMBL depends on the resolved UniProt accession, so fetch it after UniProt.
-  const chembl = await fetchChEMBL(uni.uniprot ?? pk?.uniprot ?? null).catch(() => ({ chemblActivities: null }));
+  const chembl = await withTimeout(fetchChEMBL(uni.uniprot ?? pk?.uniprot ?? null), 'ChEMBL')
+    .catch(() => ({ chemblActivities: null }));
+
+  // A source that TIMED OUT is not the same as a source that had nothing to say, and the
+  // difference changes what the tier means. Report it as its own note so a thin verdict is
+  // never read as a confident one.
+  const timedOut = ([['Open Targets', modR], ['pocket detection', pkR], ['UniProt', uniR],
+                     ['HPA', hpaR], ['STRING', strR], ['Ensembl', ensR]] as const)
+    .filter(([, r]) => r.status === 'rejected' && /timed out/i.test(String((r as PromiseRejectedResult).reason?.message ?? '')))
+    .map(([label]) => label);
 
   const top = pk?.pockets?.[0] || null;
   // 5g — classify EACH detected pocket by druggable SHAPE, not just size. Per the review, a
@@ -386,6 +411,7 @@ export async function gatherModalityEvidence(gene: string): Promise<ModalityEvid
   const druggablePockets = druggable.length;
   const bestEnclosure = druggable.length ? Math.max(...druggable.map(p => p.enclosure ?? 0)) : null;
   const notes: string[] = [];
+  if (timedOut.length) notes.push(`${timedOut.join(', ')} did not respond in time — those axes are MISSING, not negative. Re-run to gather them.`);
   if (!pk || pk.structure?.kind === 'none') notes.push('No 3D structure resolved — pocket-based (small-molecule/covalent) reasoning is limited.');
   if (pk && pk.structure?.kind === 'alphafold') notes.push('Pocket assessment is on an AlphaFold model (one, often-closed conformation) — a hypothesis, not a measurement.');
   if (pk && pk.structure?.kind !== 'none' && druggablePockets === 0 && (pk.totalPockets ?? 0) > 0) notes.push('No druggable-shaped pocket in this structure — cryptic/allosteric pockets are NOT predicted (apo/AF structures can hide sites; FTMap/PocketMiner not integrated).');
