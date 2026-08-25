@@ -872,6 +872,33 @@ function setupRoutes() {
       }
     }
 
+    // ── PLEASER / Hermes ──────────────────────────────────────────────────────
+    // The composer's model picker renders only when MORE THAN ONE model is available
+    // (index.tsx: `aiModels.length > 1`), which is deliberate — an unreachable PLEASER
+    // should change nothing visually rather than offer a dropdown entry that always
+    // errors. The consequence is that "the picker is missing" and "PLEASER is not
+    // configured on this host" look identical from the browser, so report both halves:
+    // whether the two variables are present, and whether the upstream actually answers.
+    // The token is never echoed.
+    let pleaserHost: string | null = null;
+    try { pleaserHost = process.env.PLEASER_BASE_URL ? new URL(process.env.PLEASER_BASE_URL).host : null; }
+    catch { pleaserHost = 'INVALID_URL'; }
+    info.pleaser = {
+      base_url_set: !!process.env.PLEASER_BASE_URL,
+      host: pleaserHost,
+      token_set: !!process.env.PLEASER_TOKEN,
+    };
+    try {
+      const t0 = Date.now();
+      const ms = await hermesModels();
+      info.pleaser.liveTest = { ok: true, ms: Date.now() - t0, models: ms.length, ids: ms.map(m => m.id).slice(0, 8) };
+    } catch (e: any) {
+      info.pleaser.liveTest = { ok: false, error: String(e?.message || e).slice(0, 300) };
+    }
+    // What the composer will actually render, so the answer needs no cross-referencing.
+    const modelCount = (info.gemini?.key_set ? 1 : 0) + (info.pleaser.liveTest?.models ?? 0);
+    info.modelPicker = { modelCount, visible: modelCount > 1, rule: 'index.tsx renders the picker only when modelCount > 1' };
+
     res.json(info);
   });
 
