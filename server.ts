@@ -842,6 +842,36 @@ function setupRoutes() {
     } catch (e: any) {
       info.liveTest = { ok: false, error: String(e?.message || e).slice(0, 400) };
     }
+
+    // ── Gemini ────────────────────────────────────────────────────────────────
+    // "The key does not work in production" has several distinct causes that look
+    // identical from the browser: the variable is unset on this host, the key carries an
+    // HTTP-referrer/IP restriction that a serverless egress address fails, the model name
+    // has been retired upstream, or quota is exhausted. Each returns a DIFFERENT upstream
+    // error, so the fix is to surface that error rather than guess between them. The key
+    // itself is never echoed — only whether it is present, and what Google said about it.
+    const gkey = process.env.GEMINI_API_KEY || '';
+    info.gemini = { key_set: !!gkey, key_length: gkey.length || null, model: GEMINI_MODEL };
+    if (gkey) {
+      try {
+        const t0 = Date.now();
+        const r = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${gkey}`,
+          { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ contents: [{ parts: [{ text: 'ping' }] }], generationConfig: { maxOutputTokens: 1 } }) },
+        );
+        const raw = await r.text();
+        let parsed: any = null; try { parsed = JSON.parse(raw); } catch { /* non-JSON body */ }
+        info.gemini.liveTest = r.ok && !parsed?.error
+          ? { ok: true, ms: Date.now() - t0, status: r.status }
+          : { ok: false, status: r.status, code: parsed?.error?.code ?? null,
+              upstreamStatus: parsed?.error?.status ?? null,
+              error: String(parsed?.error?.message || raw).slice(0, 300) };
+      } catch (e: any) {
+        info.gemini.liveTest = { ok: false, error: String(e?.message || e).slice(0, 300) };
+      }
+    }
+
     res.json(info);
   });
 
