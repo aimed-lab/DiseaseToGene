@@ -6,7 +6,7 @@
 // Reads /api/dashboard/genes (no new endpoint); all scoring is client-side via
 // rankingBoard.ts.
 import React, { useEffect, useMemo, useState } from 'react';
-import { Loader2, Trophy, Search, X, Sliders, RotateCcw, Award, ChevronDown, BookOpen, FileText, Atom, Microscope } from 'lucide-react';
+import { Loader2, Trophy, Search, X, Sliders, RotateCcw, Award, ChevronDown, BookOpen, FileText, Atom, Microscope, Download } from 'lucide-react';
 import { fetchSnapshots, authenticatedFetch, type RankingSnapshotMeta } from './supabase';
 import { navigate } from './nav';
 import { CRITERIA, MODALITY_PROFILES, buildBoard, criterionBreakdown, computeVerdict, findBetterAlternatives, type CriterionKey, type ModalityKey, type ScoredGene, type SubMetric, type CriterionBreakdown } from './rankingBoard';
@@ -228,6 +228,87 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
     if (hit) { setPinned(hit.symbol); setSelectedSym(hit.symbol); }
   };
   // ── 100-point weight budget (over the criteria with data in this snapshot) ──
+  // ── Export ────────────────────────────────────────────────────────────────
+  // Everything the board shows is ALREADY in the browser — the whole gene set is
+  // fetched once and scored client-side — so the export costs the server nothing and
+  // is instant. It must not go back to /api/dashboard/genes, which is the slow path.
+  //
+  // The file carries its own provenance header. The ranking is a function of the
+  // MODALITY and the WEIGHTS the user chose, so the same snapshot exports differently
+  // depending on settings that live only in this component. A CSV without them cannot
+  // be reproduced or even correctly interpreted later. '#' comments are the convention
+  // for scientific data files (VCF/GTF) and are skippable: pandas read_csv(comment='#').
+  const [exportN, setExportN] = useState<string>('500');
+
+  const exportCsv = () => {
+    const snap = snapshots.find(s => String(s.id) === String(snapId));
+    const total = board.scored.length;
+    const n = exportN === 'all' ? total : Math.min(Number(exportN) || 500, total);
+    const rows = board.scored.slice(0, n);
+
+    // Raw evidence columns — the measured values behind the scores, not the scores.
+    const RAW: [string, (r: any) => any][] = [
+      ['genetic_score', r => r.genetic_score], ['mutation_freq', r => r.mutation_freq],
+      ['expr_log2fc', r => r.expr_log2fc], ['expr_low_confidence', r => r.expr_low_conf],
+      ['prot_log2fc', r => r.prot_log2fc], ['chronos', r => r.chronos],
+      ['frac_dependent', r => r.frac_dependent], ['loeuf', r => r.loeuf],
+      ['druggability_score', r => r.druggability_score], ['tractability', r => r.tractability],
+      ['proven_modalities', r => r.proven_modalities], ['n_drugs', r => r.n_drugs],
+      ['n_disease_trials', r => r.n_disease_trials], ['max_disease_phase', r => r.max_disease_phase],
+      ['n_stopped_trials', r => r.n_stopped_trials], ['n_publications', r => r.n_publications],
+      ['literature_velocity', r => r.velocity], ['n_patents', r => r.n_patents],
+      ['target_class', r => r.target_class], ['is_common_essential', r => r.is_common_essential],
+      ['surface_or_secreted', r => r.surface_or_secreted], ['tissue_tau', r => r.tissue_tau],
+      ['n_safety_liabilities', r => r.n_safety_liabilities],
+      ['winner_score', r => r.winner_score], ['rwr_score', r => r.rwr_score],
+      ['evidence_completeness', r => r.completeness],
+    ];
+
+    const head = [
+      'gene_symbol', 'board_rank', 'source_rank', 'score_0_100', 'weighted_score_0_1',
+      'criteria_with_data', 'gated', 'gate_reason',
+      ...activeKeys.map(k => `score__${k}`),   // normalised 0-1 inputs to the weighted sum
+      ...RAW.map(([h]) => h),                  // the measured evidence behind them
+    ];
+
+    const cell = (v: any) => {
+      if (v == null) return '';
+      const s = typeof v === 'number' ? (Number.isInteger(v) ? String(v) : v.toFixed(4)) : String(v);
+      return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+    };
+
+    const body = rows.map(s => [
+      s.symbol, s.boardRank, s.sourceRank, s.display, s.overall,
+      s.coverage, s.gated ? 'yes' : 'no', s.gateNote ?? '',
+      ...activeKeys.map(k => s.criteria[k]),
+      ...RAW.map(([, get]) => get(s.raw || {})),
+    ].map(cell).join(','));
+
+    const dropped = ALL_KEYS.filter(k => !activeKeys.includes(k));
+    const meta = [
+      `# Disease2Target — Target Ranking Board export`,
+      `# snapshot: #${snapId}${snap ? ` — ${snap.disease_name}` : ''}`,
+      `# modality: ${MODALITY_PROFILES[modality].label}`,
+      `# weights (applied, renormalised over criteria with data):`,
+      ...activeDefs.map(c => `#   ${c.label.padEnd(14)} ${Math.round((effWeights[c.key] || 0) * 100)}%   [${c.source}]`),
+      dropped.length
+        ? `# criteria DROPPED — no data in this snapshot, so they scored nothing: ${dropped.join(', ')}`
+        : `# all 8 criteria carry data in this snapshot`,
+      `# rows: ${rows.length.toLocaleString()} of ${total.toLocaleString()} ranked targets`,
+      `# score_0_100 is relative to this snapshot's leader; it is NOT comparable across snapshots`,
+      `# exported: ${new Date().toISOString()}`,
+      `#`,
+    ];
+
+    const blob = new Blob(['﻿' + [...meta, head.join(','), ...body].join('\n')],
+      { type: 'text/csv;charset=utf-8;' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `ranking_board_snapshot${snapId}_${modality}_top${rows.length}.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
+
   const draftTotal = activeKeys.reduce((s, k) => s + (draft[k] || 0), 0);
   const draftValid = draftTotal === 100;
   const appliedPoints = pointsOfWeights(weightOverride || MODALITY_PROFILES[modality].weights, activeKeys);
@@ -306,6 +387,23 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
           <div className={`flex items-center gap-1 rounded-md border px-2 ${card}`}>
             <Search className="w-3.5 h-3.5 text-slate-400" />
             <input value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => e.key === 'Enter' && runFind()} placeholder="Is my target…?" className={`bg-transparent text-xs py-1.5 w-32 outline-none ${isDark ? 'text-white placeholder:text-slate-600' : 'text-slate-900 placeholder:text-slate-400'}`} />
+          </div>
+          {/* Export — the row count sits beside the button so the scope is visible before
+              clicking, rather than hidden behind a menu. */}
+          <div className={`flex items-center rounded-md border ${card}`}>
+            <select value={exportN} onChange={e => setExportN(e.target.value)}
+              title="How many ranked targets to include, taken from the top of the current ranking"
+              className={`bg-transparent text-[11px] font-semibold pl-2 pr-1 py-1.5 outline-none ${isDark ? 'text-slate-200' : 'text-slate-700'}`}>
+              <option value="100">Top 100</option>
+              <option value="500">Top 500</option>
+              <option value="1000">Top 1000</option>
+              <option value="all">All {board.scored.length.toLocaleString()}</option>
+            </select>
+            <button onClick={exportCsv} disabled={!board.scored.length}
+              title="Download these targets as CSV — scores, the criteria behind them, and the raw evidence values. Includes the modality and weights used, without which the ranking cannot be reproduced."
+              className={`flex items-center gap-1.5 pl-1.5 pr-2.5 py-1.5 text-[11px] font-semibold border-l ${isDark ? 'border-slate-700 text-slate-200' : 'border-slate-200 text-slate-700'} ${board.scored.length ? '' : 'opacity-40'}`}>
+              <Download className="w-3.5 h-3.5" /> CSV
+            </button>
           </div>
           <button onClick={() => setShowWeights(v => !v)} className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border text-[11px] font-semibold ${card} ${isDark ? 'text-slate-200' : 'text-slate-700'}`}><Sliders className="w-3.5 h-3.5" /> Weights</button>
           <button onClick={() => navigate('/Methodologies')} title="How the board scores and ranks targets — opens /Methodologies" className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border text-[11px] font-semibold ${card} ${isDark ? 'text-slate-200' : 'text-slate-700'}`}><BookOpen className="w-3.5 h-3.5" /> Methodology</button>
