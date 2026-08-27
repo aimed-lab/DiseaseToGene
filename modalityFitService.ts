@@ -549,7 +549,25 @@ export function assessModalities(ev: ModalityEvidence, goal: MechanisticGoal): M
         if (ev.lysineCount != null) basis.push(`${ev.lysineCount} lysines for ubiquitin transfer`);   // 5e
         basis.push('CRBN/VHL E3 ligases broadly expressed (confirm in disease tissue)');
       } else { tier = 'Speculative'; basis.push('no ligandable handle (pocket) found'); }
-      if (modality.includes('Molecular glue')) { tier = cap(tier, 'Speculative'); basis.push('glues are largely serendipity-driven'); }
+      // v2 (2026-08): the unconditional `cap(tier,'Speculative')` here was removed.
+      // It encoded a pre-2023 prior — that glue discovery is serendipitous — as a ceiling no
+      // evidence could lift, which made this modality's verdict a constant rather than an
+      // assessment. Rationally designed, clinical-stage glues have overtaken that prior; the
+      // RAS tri-complex series (RMC-6236, RMC-6291) glues KRAS to cyclophilin A and reached
+      // phase 3, so "Speculative for KRAS regardless of evidence" is no longer defensible.
+      // Glue now follows the same evidence path as PROTAC — which is correct, since the two
+      // share every physical requirement — with the discovery-difficulty caveat recorded as
+      // a basis note rather than a cap.
+      //
+      // NOTE for the manuscript: the reported evaluation was run BEFORE this change. Its exact
+      // effect is quantified in deliverables/modality_extended_analyses.md §E, computed from the
+      // asserted identity tier(glue) === min(tier(PROTAC), Speculative). Re-run the gold-set
+      // benchmark to make the corrected rule the reported one.
+      if (modality.includes('Molecular glue')) basis.push('glue discovery has less predictive structural rationale than PROTAC design');
+      // Neither degrader modality can reach Precedented, and this is a source limitation rather
+      // than an omission: Open Targets records PROTACs and glues under drugType 'Small molecule'
+      // (chemically correct), so no induced-proximity clinical-precedence signal exists to read.
+      // Disclosed in the manuscript rather than papered over with a heuristic.
     } else if (isKnockdown(modality)) {
       tier = provenOligo && modality.includes('RNA knockdown') ? 'Precedented' : 'Plausible';
       basis.push('acts at the transcript level (structure-independent)'); basis.push('delivery to the disease tissue is the real constraint');
@@ -562,6 +580,11 @@ export function assessModalities(ev: ModalityEvidence, goal: MechanisticGoal): M
       if (hasPPI) { tier = 'Plausible'; basis.push(`${ev.ppiPartners} high-confidence STRING partners — a PPI interface to target`); }
       else { tier = 'Speculative'; basis.push('no clear interaction interface'); }
       basis.push('intracellular delivery/permeability is the constraint');
+      // DISCLOSED CONSTANT: this cap is unconditional, so a linear peptide can never be admitted
+      // for any target. Unlike the glue cap it is retained — poor permeability and proteolytic
+      // instability are general properties of unmodified linear peptides, not a stale prior — but
+      // it is a fixed rule rather than an evidence-driven verdict, and the manuscript reports it
+      // as such (it is one of the two modalities excluded from the reachable denominator).
       if (modality.includes('Linear')) { tier = cap(tier, 'Speculative'); basis.push('linear peptides: poor permeability & stability'); }
     }
 

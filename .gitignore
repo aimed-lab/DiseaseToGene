@@ -44,3 +44,7 @@ exports/
 
 # Office lock files
 ~$*
+
+# Unpublished manuscript — drafts, figures and result files.
+# Deliberately untracked: the repo is public and this work is pre-submission.
+manuscript/
