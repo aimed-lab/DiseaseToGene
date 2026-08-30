@@ -10,6 +10,15 @@
 // AND in what the assistant tells users, at the same time. A second hand-typed copy
 // would let the documentation drift silently false.
 
+// ── Rule version ──
+// Stamped into every generated artifact alongside the git SHA. Bump it when a rule,
+// gate or threshold below changes the OUTPUT of assessModalities — not for comments
+// or refactors. v2's published numbers were produced under 2.x and were superseded
+// by the molecular-glue correction; 3.0 is the first version whose results carry
+// their own provenance, so "which rules produced this table?" is answerable from the
+// table rather than from a changelog someone has to be trusted to have updated.
+export const RULE_VERSION = '3.0';
+
 // ── Mechanistic goal — what the user wants done TO the target ──
 export type MechanisticGoal = 'inhibit' | 'degrade' | 'reduce_level' | 'spare_catalytic' | 'restore_function';
 export const MECHANISTIC_GOALS: Record<MechanisticGoal, string> = {

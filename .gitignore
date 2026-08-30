@@ -48,3 +48,31 @@ exports/
 # Unpublished manuscript — drafts, figures and result files.
 # Deliberately untracked: the repo is public and this work is pre-submission.
 manuscript/
+
+# ── Non-code working files ────────────────────────────────────────────────────
+# Policy: only code needed to run the app is tracked. Everything below is data,
+# decks, generated output or session notes — kept locally, never pushed.
+
+# Moved out of the repo root; raw GEO/TCGA downloads, case-study data, manuscript
+# drafts. ~148 MB, and pre-submission material does not belong in a public repo.
+assets/
+
+# Generated decks, HTML reports and benchmark JSON — regenerate with scripts/.
+deliverables/
+
+# Root-level decks, spreadsheets and archives. Anchored to the root on purpose:
+# docs/decks/ and documentation/ hold deliberately tracked files.
+/*.pptx
+/*.xlsx
+/*.docx
+/*.zip
+/*.ipynb
+/*.csv
+
+# Per-session handoff notes. docs/HANDOFF.md (no underscore) stays tracked.
+docs/HANDOFF_*.md
+docs/CollaboFest_Phase0_User_Requirements.md
+docs/Funnel_Design.md
+docs/Funnel_Design_v2.md
+docs/Funnel_Design_Review_Request.md
+docs/Pocket_Druggability_Feature.md
