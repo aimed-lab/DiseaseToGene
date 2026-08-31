@@ -488,7 +488,7 @@ export async function listRankingScores(snapshotId: number): Promise<any[]> {
               bimodality_max AS "bimodality_max", bimodality_tissue AS "bimodality_tissue",
               pubtator_score AS "pubtator_score"
        FROM ${T('ranking_scores')} WHERE snapshot_id = :id ORDER BY rank_position`,
-      { id: snapshotId }, { outFormat: oracledb.OUT_FORMAT_OBJECT }
+      { id: snapshotId }, { outFormat: oracledb.OUT_FORMAT_OBJECT, fetchArraySize: 5000, prefetchRows: 5000 }
     );
     return r.rows as any[];
   } finally { await conn.close(); }
@@ -501,7 +501,7 @@ export async function snapshotEvidence(snapshotId: number): Promise<any[]> {
       `SELECT gene_symbol AS "gene_symbol", evidence_type AS "evidence_type", source AS "source",
               value_text AS "value_text", value_json AS "value_json"
        FROM ${T('evidence')} WHERE snapshot_id = :id`,
-      { id: snapshotId }, { outFormat: oracledb.OUT_FORMAT_OBJECT }
+      { id: snapshotId }, { outFormat: oracledb.OUT_FORMAT_OBJECT, fetchArraySize: 5000, prefetchRows: 5000 }
     );
     return r.rows as any[];
   } finally { await conn.close(); }

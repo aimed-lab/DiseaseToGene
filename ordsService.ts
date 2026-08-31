@@ -61,8 +61,8 @@ async function ordsGet(path: string, params: Record<string, any> = {}): Promise<
 
 // One page fetch with a single retry (a transient blip on one parallel page
 // shouldn't sink the whole pull).
-async function ordsPage(path: string, params: Record<string, any>, offset: number): Promise<any[]> {
-  const call = () => ordsGet(path, { ...params, limit: PAGE, offset }).then(j => (Array.isArray(j.items) ? j.items : []));
+async function ordsPage(path: string, params: Record<string, any>, offset: number, limit: number = PAGE): Promise<any[]> {
+  const call = () => ordsGet(path, { ...params, limit, offset }).then(j => (Array.isArray(j.items) ? j.items : []));
   try { return await call(); } catch { return await call(); }
 }
 
@@ -114,6 +114,37 @@ export async function listRankingScores(snapshotId: number): Promise<any[]> {
 
 export async function snapshotEvidence(snapshotId: number): Promise<any[]> {
   return ordsGetAll(`snapshots/${snapshotId}/evidence`);
+}
+
+// Evidence in WAVES, for the progressive board. Rows come back grouped by axis, so a
+// wave is a contiguous block of complete-ish axes rather than a slice of every gene —
+// which is what makes a partially-loaded board meaningful instead of merely short.
+// Parallel WITHIN a wave (throughput), sequential ACROSS waves (so each onWave block is
+// contiguous and the caller can reason about which axes are finished).
+export const PROGRESSIVE_PAGE = 3000;
+export async function snapshotEvidenceWaves(
+  snapshotId: number,
+  onWave: (rows: any[], loaded: number, done: boolean) => void,
+): Promise<void> {
+  const path = `snapshots/${snapshotId}/evidence`;
+  let offset = 0, loaded = 0, wave = 0;
+  for (;;) {
+    // Ramp the wave: the FIRST one is small so a board appears in ~3s rather than ~9s,
+    // then widen to full concurrency because from then on throughput is what matters
+    // and the user is already looking at a usable board.
+    const width = wave === 0 ? 2 : wave === 1 ? 4 : PAGE_CONCURRENCY;
+    const offsets = Array.from({ length: width }, (_, i) => offset + i * PROGRESSIVE_PAGE);
+    const pages = await Promise.all(offsets.map(o => ordsPage(path, {}, o, PROGRESSIVE_PAGE)));
+    const rows: any[] = [];
+    let ended = false;
+    for (const items of pages) { rows.push(...items); if (items.length < PROGRESSIVE_PAGE) ended = true; }
+    loaded += rows.length;
+    onWave(rows, loaded, ended);
+    if (ended) return;
+    offset += width * PROGRESSIVE_PAGE;
+    wave++;
+    if (offset > 5_000_000) { onWave([], loaded, true); return; }  // same backstop as ordsGetAll
+  }
 }
 
 export async function evidenceGeneSymbols(diseaseId?: string): Promise<string[]> {

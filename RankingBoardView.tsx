@@ -64,6 +64,10 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
   const [genes, setGenes] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [elapsed, setElapsed] = useState(0);   // seconds spent on the current fetch (so the wait feels alive)
+  // Null once the whole set has landed; while set, the board is ranking on a SUBSET of
+  // the criteria and must say so rather than look finished.
+  const [progress, setProgress] = useState<{ complete: boolean; axesReady: string[]; evidenceLoaded: number } | null>(null);
+  const stillLoading = !!progress && !progress.complete;
   const [error, setError] = useState<string | null>(null);
 
   const [modality, setModality] = useState<ModalityKey>('small_molecule');
@@ -96,10 +100,27 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
   useEffect(() => {
     if (!snapId) return;
     let alive = true;
-    setLoading(true); setError(null); setSelectedSym(null);
-    getJson(`/api/dashboard/genes?snapshotId=${encodeURIComponent(snapId)}&limit=20000`)
-      .then(j => { if (alive) { setGenes(j?.rows || []); setLoading(false); } })
-      .catch(e => { if (alive) { setError(String(e?.message || e)); setLoading(false); } });
+    setLoading(true); setError(null); setSelectedSym(null); setGenes([]); setProgress(null);
+    (async () => {
+      while (alive) {
+        let j: any;
+        try {
+          j = await getJson(`/api/dashboard/genes?snapshotId=${encodeURIComponent(snapId)}&limit=20000&progressive=1`);
+        } catch (e: any) {
+          if (alive) { setError(String(e?.message || e)); setLoading(false); }
+          return;
+        }
+        if (!alive) return;
+        const rows: any[] = j?.rows || [];
+        const p = j?.progressive ?? { complete: true, axesReady: [], evidenceLoaded: 0 };
+        // Only leave the spinner once there is a board worth showing — rows arrive
+        // only after at least one axis is COMPLETE, so this is never a partial-axis board.
+        if (rows.length) { setGenes(rows); setLoading(false); }
+        setProgress(p);
+        if (p.complete) { setLoading(false); return; }
+        await new Promise(r => setTimeout(r, 1500));
+      }
+    })();
   return () => { alive = false; };
   }, [snapId]);
 
@@ -374,6 +395,17 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
     <div className="h-full flex flex-col">
       {/* header */}
       <div className={`px-4 py-2.5 border-b ${isDark ? 'border-slate-800' : 'border-slate-200'} space-y-2.5`}>
+        {stillLoading && (
+          <div className={`flex items-center gap-2 rounded-md border px-2.5 py-1.5 ${isDark ? 'border-amber-500/30 bg-amber-500/10' : 'border-amber-300 bg-amber-50'}`}>
+            <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-600 dark:text-amber-400 shrink-0" />
+            <span className={`text-[11px] font-semibold ${isDark ? 'text-amber-300' : 'text-amber-800'}`}>
+              Provisional ranking — {activeKeys.length} of {CRITERIA.length} criteria loaded
+            </span>
+            <span className="text-[11px] text-amber-700/80 dark:text-amber-400/70 truncate">
+              · still fetching {CRITERIA.filter(c => !activeKeys.includes(c.key)).map(c => c.label).join(', ')}. Order will change as they arrive.
+            </span>
+          </div>
+        )}
         <div className="flex items-center gap-3 flex-wrap">
           <div className="flex items-center gap-2">
             <Trophy className="w-4 h-4 text-amber-500" />

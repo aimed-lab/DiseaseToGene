@@ -944,10 +944,7 @@ function setupRoutes() {
   // raw Oracle read was cached, so each board load paid the whole derivation again.
   // Keyed on the raw entry's timestamp: when that refreshes, this derives afresh.
   const dashRowsCache = new Map<number, { at: number; rows: any[] }>();
-  const dashboardRows = (id: number, entry: { at: number; scores: any[]; evidence: any[] }) => {
-    const hit = dashRowsCache.get(id);
-    if (hit && hit.at === entry.at) return hit.rows;
-    const { scores, evidence } = entry;
+  const deriveRows = (scores: any[], evidence: any[]) => {
     const evByGene: Record<string, Record<string, any>> = {};
     for (const e of evidence as any[]) {
       let j: any = null; try { j = typeof e.value_json === 'string' ? JSON.parse(e.value_json) : e.value_json; } catch { /* ignore */ }
@@ -1003,8 +1000,67 @@ function setupRoutes() {
           legacy: drugLegacy || clinLegacy,
         };
       });
-    dashRowsCache.set(id, { at: entry.at, rows: rowsAll });
     return rowsAll;
+  };
+
+  const dashboardRows = (id: number, entry: { at: number; scores: any[]; evidence: any[] }) => {
+    const hit = dashRowsCache.get(id);
+    if (hit && hit.at === entry.at) return hit.rows;
+    const rows = deriveRows(entry.scores, entry.evidence);
+    dashRowsCache.set(id, { at: entry.at, rows });
+    return rows;
+  };
+
+  // ── Progressive board load ─────────────────────────────────────────────
+  // ORDS delivers ~2,400 rows/sec and a snapshot carries ~55k evidence rows, so the
+  // whole set cannot arrive quickly — but it arrives grouped BY AXIS, one axis at a
+  // time across every gene. buildBoard() already drops criteria with no coverage and
+  // renormalises the weight budget over the rest, so a board built from the axes that
+  // HAVE landed is internally consistent: it ranks on what it has, and sharpens as more
+  // arrives. That is worth showing at 5s. A board built from a partial axis would not
+  // be — it would score some genes on a criterion and not others — so the trailing,
+  // possibly-incomplete axis is withheld until the next wave proves it finished.
+  interface ProgLoad {
+    meta: any | null; scores: any[]; evidence: any[];
+    loaded: number; done: boolean; error: string | null;
+    derivedFor: number; derived: any[];   // memo, keyed on evidence length, so polling is free
+  }
+  const progLoads = new Map<number, ProgLoad>();
+
+  const completeAxisRows = (rows: any[], done: boolean): any[] => {
+    if (done || rows.length === 0) return rows;
+    const trailing = rows[rows.length - 1].evidence_type;
+    let end = rows.length;
+    while (end > 0 && rows[end - 1].evidence_type === trailing) end--;
+    return end === rows.length ? rows : rows.slice(0, end);
+  };
+
+  const startProgressive = (id: number): ProgLoad => {
+    const existing = progLoads.get(id);
+    if (existing) return existing;
+    const st: ProgLoad = { meta: null, scores: [], evidence: [], loaded: 0, done: false, error: null, derivedFor: -1, derived: [] };
+    progLoads.set(id, st);
+    void (async () => {
+      const svc = await readSvc();
+      const [meta, scores] = await Promise.all([svc.getSnapshot(id), svc.listRankingScores(id)]);
+      st.meta = meta; st.scores = scores || [];
+      if (typeof svc.snapshotEvidenceWaves !== 'function') {
+        // Non-ORDS (internal node-oracledb) path has no wave fetcher — one shot.
+        st.evidence = (await svc.snapshotEvidence(id)) || [];
+        st.loaded = st.evidence.length; st.done = true;
+      } else {
+        await svc.snapshotEvidenceWaves(id, (rows: any[], loaded: number, done: boolean) => {
+          st.evidence.push(...rows); st.loaded = loaded; if (done) st.done = true;
+        });
+        st.done = true;
+      }
+      // Hand the finished set to the normal caches so non-progressive readers
+      // (DashboardView, exports) take the fast path instead of re-fetching.
+      const entry = { at: Date.now(), meta: st.meta, scores: st.scores, evidence: st.evidence };
+      dashCache.set(id, entry as any);
+      dashRowsCache.set(id, { at: entry.at, rows: deriveRows(st.scores, st.evidence) });
+    })().catch(e => { st.error = String(e?.message ?? e); st.done = true; });
+    return st;
   };
 
   app.get("/api/dashboard/overview", requireUser, async (req, res) => {
@@ -1101,6 +1157,22 @@ function setupRoutes() {
       const limit = Math.min(20000, Math.max(1, Number(req.query.limit) || 100));
       const offset = Math.max(0, Number(req.query.offset) || 0);
       const q = String(req.query.q || '').toUpperCase().trim();
+      // Progressive: return whatever complete axes have landed and say how far along we
+      // are, so the board can render at ~5s instead of waiting ~26s for the whole set.
+      if (req.query.progressive === '1') {
+        const st = startProgressive(id);
+        if (st.error) return res.status(502).json({ error: st.error });
+        const usable = completeAxisRows(st.evidence, st.done);
+        if (st.derivedFor !== usable.length) { st.derived = deriveRows(st.scores, usable); st.derivedFor = usable.length; }
+        const axes = [...new Set(usable.map((e: any) => e.evidence_type))];
+        const filtered = q ? st.derived.filter((r: any) => String(r.gene_symbol).toUpperCase().includes(q)) : st.derived;
+        return res.json({
+          total: filtered.length,
+          rows: filtered.slice(offset, offset + limit),
+          progressive: { complete: st.done, evidenceLoaded: st.loaded, axesReady: axes, scoresReady: st.scores.length > 0 },
+        });
+      }
+
       const snapEntry = await loadSnapshotCached(id);
       if (!snapEntry.meta) return res.status(404).json({ error: `Snapshot #${id} not found` });
 
