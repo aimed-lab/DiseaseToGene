@@ -5698,10 +5698,6 @@ ${modalityResultBlock(getLastModalityResult()) || '      (No modality analysis h
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <h1 className="text-base md:text-lg font-black tracking-tight">Disease<span className="text-blue-600 dark:text-blue-400">2</span>Target</h1>
-              <span className="hidden sm:inline-flex items-center gap-1 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-emerald-600 dark:text-emerald-400">
-                <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                AI native
-              </span>
             </div>
             {/* Which disease is loaded is the single most important piece of state in the
                 app, and until now it was legible only from the breadcrumb — which is hidden

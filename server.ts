@@ -1,4 +1,5 @@
 import express from "express";
+import compression from "compression";
 // Vite is a dev-only dependency — imported dynamically so it's never loaded in production
 import path from "path";
 import fs from "fs";
@@ -452,6 +453,11 @@ const reapIdleHermesChats = () => {
 //    fully-configured app immediately on import (fixes critical async race) ────
 function setupRoutes() {
   app.set('trust proxy', 1);
+
+  // The dashboard and Ranking Board each pull a whole snapshot's gene set in one
+  // response — megabytes of highly repetitive JSON, which was going over the wire
+  // uncompressed. gzip is the cheapest win available on that payload.
+  app.use(compression());
 
   // Fix #6 CORS — allow same-origin and configured origin
   app.use((_req, res, next) => {
@@ -931,6 +937,76 @@ function setupRoutes() {
     return entry;
   };
 
+
+  // Building the dashboard row set costs a JSON.parse per evidence CLOB — nine to
+  // eleven per gene, so tens of thousands of parses for a full snapshot. That ran on
+  // EVERY request, and then most of the result was discarded by the limit. Only the
+  // raw Oracle read was cached, so each board load paid the whole derivation again.
+  // Keyed on the raw entry's timestamp: when that refreshes, this derives afresh.
+  const dashRowsCache = new Map<number, { at: number; rows: any[] }>();
+  const dashboardRows = (id: number, entry: { at: number; scores: any[]; evidence: any[] }) => {
+    const hit = dashRowsCache.get(id);
+    if (hit && hit.at === entry.at) return hit.rows;
+    const { scores, evidence } = entry;
+    const evByGene: Record<string, Record<string, any>> = {};
+    for (const e of evidence as any[]) {
+      let j: any = null; try { j = typeof e.value_json === 'string' ? JSON.parse(e.value_json) : e.value_json; } catch { /* ignore */ }
+      (evByGene[String(e.gene_symbol).toUpperCase()] ??= {})[e.evidence_type] = j || {};
+    }
+    // dedupe by symbol (keep best rank) so the grid never shows a gene twice
+    const seen = new Set<string>();
+    const rowsAll = (scores as any[])
+      .filter(r => { const g = String(r.gene_symbol).toUpperCase(); if (seen.has(g)) return false; seen.add(g); return true; })
+      .map(r => {
+        const g = String(r.gene_symbol).toUpperCase();
+        const ev = evByGene[g] || {};
+        const drug = ev.druggability, clin = ev.clinical, lit = ev.literature_epmc;
+        const ann = ev.annotation, tis = ev.tissue, pat = ev.patents, net = ev.network;
+        const mut = ev.mutation, expr = ev.expression_tvn, prot = ev.proteomics, dep = ev.dependency, saf = ev.safety;
+        const drugLegacy = !!drug && drug.proven_modalities === undefined;
+        const clinLegacy = !!clin && clin.n_drugs_in_disease_trials === undefined;
+        const axesPresent = ['mutation', 'expression_tvn', 'dependency', 'safety', 'tissue', 'annotation', 'druggability', 'clinical', 'literature_epmc']
+          .filter(a => ev[a]).length;
+        return {
+          gene_symbol: r.gene_symbol, rank: r.rank, score: r.overall_score ?? r.get_score,
+          n_drugs: drugLegacy ? null : (drug?.total_compounds ?? null),
+          tractable_modalities: drug?.tractable_modalities ?? null,
+          n_disease_trials: clinLegacy ? null : (clin?.n_disease_trials ?? null),
+          trials_by_phase: clinLegacy ? null : (clin?.trials_by_phase ?? null),
+          max_disease_phase: clinLegacy ? null : (clin?.max_disease_trial_phase ?? null),
+          n_publications: lit?.paper_count ?? null,
+          velocity: lit?.velocity ?? null,
+          // ── axes added for the dashboard ──
+          target_class: ann?.target_class ?? null,
+          is_common_essential: ann?.is_common_essential ?? null,
+          surface_or_secreted: ann?.surface_or_secreted ?? null,
+          tissue_tau: tis?.tau ?? null,
+          n_patents: pat?.gene_patents ?? null,
+          n_stopped_trials: clin?.n_stopped_trials ?? null,
+          winner_score: net?.winner_score ?? null,
+          rwr_score: net?.rwr_score ?? null,
+          is_seed: net?.is_seed ?? null,
+          // ── raw per-criterion signals for the Ranking Board (weighted-sum-of-8) ──
+          genetic_score: r.genetic_score ?? null,
+          mutation_freq: mut?.frequency ?? null,
+          expr_log2fc: expr?.log2fc ?? null,
+          expr_low_conf: expr?.low_confidence ?? false,   // normal-floor artifact (inflated |log2FC|)
+          prot_log2fc: prot?.log2fc ?? null,
+          chronos: dep?.mean ?? null,
+          frac_dependent: dep?.frac_dependent ?? null,
+          loeuf: saf?.loeuf ?? null,
+          druggability_score: drug?.score ?? null,
+          proven_modalities: drug?.proven_modalities ?? null,
+          tractability: drug?.tractability ?? null,
+          n_safety_liabilities: ann?.n_safety_liabilities ?? null,
+          completeness: axesPresent / 9,
+          legacy: drugLegacy || clinLegacy,
+        };
+      });
+    dashRowsCache.set(id, { at: entry.at, rows: rowsAll });
+    return rowsAll;
+  };
+
   app.get("/api/dashboard/overview", requireUser, async (req, res) => {
     if (!readStoreEnabled()) return res.status(503).json({ error: "Oracle store disabled" });
     try {
@@ -1025,65 +1101,11 @@ function setupRoutes() {
       const limit = Math.min(20000, Math.max(1, Number(req.query.limit) || 100));
       const offset = Math.max(0, Number(req.query.offset) || 0);
       const q = String(req.query.q || '').toUpperCase().trim();
-      const { meta, scores, evidence } = await loadSnapshotCached(id);
-      if (!meta) return res.status(404).json({ error: `Snapshot #${id} not found` });
+      const snapEntry = await loadSnapshotCached(id);
+      if (!snapEntry.meta) return res.status(404).json({ error: `Snapshot #${id} not found` });
 
-      const evByGene: Record<string, Record<string, any>> = {};
-      for (const e of evidence as any[]) {
-        let j: any = null; try { j = typeof e.value_json === 'string' ? JSON.parse(e.value_json) : e.value_json; } catch { /* ignore */ }
-        (evByGene[String(e.gene_symbol).toUpperCase()] ??= {})[e.evidence_type] = j || {};
-      }
-      // dedupe by symbol (keep best rank) so the grid never shows a gene twice
-      const seen = new Set<string>();
-      const rowsAll = (scores as any[])
-        .filter(r => { const g = String(r.gene_symbol).toUpperCase(); if (seen.has(g)) return false; seen.add(g); return true; })
-        .filter(r => !q || String(r.gene_symbol).toUpperCase().includes(q))
-        .map(r => {
-          const g = String(r.gene_symbol).toUpperCase();
-          const ev = evByGene[g] || {};
-          const drug = ev.druggability, clin = ev.clinical, lit = ev.literature_epmc;
-          const ann = ev.annotation, tis = ev.tissue, pat = ev.patents, net = ev.network;
-          const mut = ev.mutation, expr = ev.expression_tvn, prot = ev.proteomics, dep = ev.dependency, saf = ev.safety;
-          const drugLegacy = !!drug && drug.proven_modalities === undefined;
-          const clinLegacy = !!clin && clin.n_drugs_in_disease_trials === undefined;
-          const axesPresent = ['mutation', 'expression_tvn', 'dependency', 'safety', 'tissue', 'annotation', 'druggability', 'clinical', 'literature_epmc']
-            .filter(a => ev[a]).length;
-          return {
-            gene_symbol: r.gene_symbol, rank: r.rank, score: r.overall_score ?? r.get_score,
-            n_drugs: drugLegacy ? null : (drug?.total_compounds ?? null),
-            tractable_modalities: drug?.tractable_modalities ?? null,
-            n_disease_trials: clinLegacy ? null : (clin?.n_disease_trials ?? null),
-            trials_by_phase: clinLegacy ? null : (clin?.trials_by_phase ?? null),
-            max_disease_phase: clinLegacy ? null : (clin?.max_disease_trial_phase ?? null),
-            n_publications: lit?.paper_count ?? null,
-            velocity: lit?.velocity ?? null,
-            // ── axes added for the dashboard ──
-            target_class: ann?.target_class ?? null,
-            is_common_essential: ann?.is_common_essential ?? null,
-            surface_or_secreted: ann?.surface_or_secreted ?? null,
-            tissue_tau: tis?.tau ?? null,
-            n_patents: pat?.gene_patents ?? null,
-            n_stopped_trials: clin?.n_stopped_trials ?? null,
-            winner_score: net?.winner_score ?? null,
-            rwr_score: net?.rwr_score ?? null,
-            is_seed: net?.is_seed ?? null,
-            // ── raw per-criterion signals for the Ranking Board (weighted-sum-of-8) ──
-            genetic_score: r.genetic_score ?? null,
-            mutation_freq: mut?.frequency ?? null,
-            expr_log2fc: expr?.log2fc ?? null,
-            expr_low_conf: expr?.low_confidence ?? false,   // normal-floor artifact (inflated |log2FC|)
-            prot_log2fc: prot?.log2fc ?? null,
-            chronos: dep?.mean ?? null,
-            frac_dependent: dep?.frac_dependent ?? null,
-            loeuf: saf?.loeuf ?? null,
-            druggability_score: drug?.score ?? null,
-            proven_modalities: drug?.proven_modalities ?? null,
-            tractability: drug?.tractability ?? null,
-            n_safety_liabilities: ann?.n_safety_liabilities ?? null,
-            completeness: axesPresent / 9,
-            legacy: drugLegacy || clinLegacy,
-          };
-        });
+      const all = dashboardRows(id, snapEntry);
+      const rowsAll = q ? all.filter((r: any) => String(r.gene_symbol).toUpperCase().includes(q)) : all;
       res.json({ total: rowsAll.length, rows: rowsAll.slice(offset, offset + limit) });
     } catch (e: any) { res.status(502).json({ error: e.message }); }
   });
