@@ -1011,6 +1011,29 @@ function setupRoutes() {
     return rows;
   };
 
+  // ── NOT DONE: the durable fix lives in ORDS, not here ──────────────────────
+  // Everything below makes the WAIT usable. It does not make the transfer smaller, and
+  // the transfer is the actual cost: ~55k evidence rows at ~2,400 rows/sec ≈ 23s, scaling
+  // linearly with gene count. Two ways to cut it at the source, cheapest first:
+  //
+  //   1. Project the columns. deriveRows() pulls ~25 scalars out of each row's value_json
+  //      CLOB and discards the rest, yet the whole CLOB crosses the wire. An ORDS view
+  //      that extracts those scalars server-side (JSON_VALUE) would cut bytes hard without
+  //      changing row count or any shape this file depends on. Small, low-risk, do first.
+  //
+  //   2. Pivot to one row per gene. Fold a gene's ~9 axis rows into a single row in Oracle:
+  //      55k rows becomes ~6k. Bigger win, bigger job — needs SQL plus an ORDS module
+  //      deploy (precedent: docs/sql/kg_ords_module.sql). Note that measured cost is
+  //      ~700ms fixed + 0.65ms/row, and a narrow score row costs ~0.25ms against an
+  //      evidence row's ~0.65ms, so the gain is partly per-row and partly bytes: expect a
+  //      real improvement, but do NOT assume it divides the time by nine.
+  //
+  // How much this matters depends on where the app runs. On a long-lived internal server
+  // the caches below absorb the cost after the first open, so it is a nice-to-have. On
+  // Vercel or anything serverless it is NOT: process memory does not survive between
+  // invocations, so the caches never warm and EVERY user pays the full pull. If this ever
+  // ships serverless, do (1) and (2) before it does.
+
   // ── Progressive board load ─────────────────────────────────────────────
   // ORDS delivers ~2,400 rows/sec and a snapshot carries ~55k evidence rows, so the
   // whole set cannot arrive quickly — but it arrives grouped BY AXIS, one axis at a
