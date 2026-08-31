@@ -852,15 +852,6 @@ const TabNavigation = ({
 // Cohort Filter Sidebar
 // =============================================================================
 
-const COHORT_FILTER_GROUPS = [
-  { key: 'age',     label: 'Age Group',       options: ['50–60', '60–70', '70–80', '80+']               },
-  { key: 'stage',   label: 'Disease Stage',   options: ['Early Stage', 'MCI', 'Moderate', 'Late Stage'] },
-  { key: 'subtype', label: 'Genetic Subtype', options: ['APOE4+', 'APOE4−', 'TREM2 Variant', 'Sporadic']},
-  { key: 'gender',  label: 'Gender',          options: ['Male', 'Female', 'Other']                       },
-] as const;
-
-type CohortFilterKey = typeof COHORT_FILTER_GROUPS[number]['key'];
-
 const SCORE_SLIDERS = [
   { key: 'geneticScore',    label: 'G Score',      accent: '#3b82f6' },
   { key: 'expressionScore', label: 'E Score',      accent: '#10b981' },
@@ -904,7 +895,6 @@ const bioTissueLabel = (t: string) => t.replace(/_/g, ' ').replace(/\b\w/g, c =>
 const LEFT_NAV_ITEMS = [
   { id: 'workspace', icon: Home,       label: 'Workspace' },
   { id: 'targets',   icon: List,       label: 'Targets'   },
-  { id: 'cohort',    icon: Users,      label: 'Cohort'    },
   { id: 'rankings',  icon: BarChart3,  label: 'Rankings'  },
   { id: 'assess',    icon: Microscope, label: 'Assess'    },
 ] as const;
@@ -2134,15 +2124,11 @@ const CohortFilterSidebar = ({ theme, targets, activeDisease, onScoreRangesChang
 
   // ── nav state ────────────────────────────────────────────────────────────
   const [isExpanded, setIsExpanded] = useState(false);   // collapsed by default so the graph/targets get full width; click a nav icon or the chevron to open
-  const [activeNavLocal, setActiveNavLocal] = useState<string>('cohort');
+  const [activeNavLocal, setActiveNavLocal] = useState<string>('targets');
   const activeNav    = activeNavProp    ?? activeNavLocal;
   const setActiveNav = onActiveNavChange ?? setActiveNavLocal;
 
   // ── filters panel ────────────────────────────────────────────────────────
-  const [openSections, setOpenSections] = useState<string[]>(['age', 'stage', 'subtype', 'gender']);
-  const [selected, setSelected] = useState<Record<CohortFilterKey, string[]>>({
-    age: [], stage: [], subtype: [], gender: [],
-  });
   const [scoreRanges, setScoreRanges] = useState<Record<string, [number, number]>>(
     Object.fromEntries(SCORE_SLIDERS.map(s => [s.key, [0, 1]])) as Record<string, [number, number]>
   );
@@ -2231,26 +2217,15 @@ const CohortFilterSidebar = ({ theme, targets, activeDisease, onScoreRangesChang
   };
 
   // ── helpers ──────────────────────────────────────────────────────────────
-  const toggleCheckbox = (group: CohortFilterKey, value: string) =>
-    setSelected(prev => ({
-      ...prev,
-      [group]: prev[group].includes(value) ? prev[group].filter(v => v !== value) : [...prev[group], value],
-    }));
-
-  const toggleSection = (key: string) =>
-    setOpenSections(prev => prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key]);
-
-  const totalActive = Object.values(selected).flat().length;
 
 
   // ── panel content ────────────────────────────────────────────────────────
   const panelConfig: Record<string, { icon: React.ElementType; title: string; sub: string }> = {
     workspace: { icon: Home,             title: 'Workspace',  sub: 'Overview'       },
     targets:   { icon: List,             title: 'Targets',    sub: 'Gene list'      },
-    cohort:    { icon: Users,            title: 'Cohort',     sub: 'Cohort data'    },
     rankings:  { icon: BarChart3,         title: 'Rankings',   sub: 'Score ranges'   },
   };
-  const pc = panelConfig[activeNav] ?? panelConfig['cohort'];
+  const pc = panelConfig[activeNav] ?? panelConfig['targets'];
   const PanelIcon = pc.icon;
 
   const DOC_SECTIONS = [
@@ -2331,198 +2306,7 @@ const CohortFilterSidebar = ({ theme, targets, activeDisease, onScoreRangesChang
               <div className={`text-[12px] font-bold leading-tight ${isDark ? 'text-slate-100' : 'text-slate-900'}`}>{pc.title}</div>
             </div>
           </div>
-          {activeNav === 'cohort' && totalActive > 0 && (
-            <span className="px-1.5 py-0.5 rounded-full bg-blue-600 text-white text-[9px] font-black">{totalActive}</span>
-          )}
         </div>
-
-        {/* ── FILTERS panel ─────────────────────────────────────────────── */}
-        {activeNav === 'cohort' && (
-          <>
-            <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
-              {/* Cohort checkbox filters */}
-              {COHORT_FILTER_GROUPS.map(group => {
-                const isOpen = openSections.includes(group.key);
-                const count  = selected[group.key].length;
-                return (
-                  <div key={group.key} className={`rounded-lg border overflow-hidden ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
-                    <button
-                      onClick={() => toggleSection(group.key)}
-                      className={`w-full px-3 py-2 flex items-center justify-between text-left transition-colors ${isDark ? 'hover:bg-slate-800/50' : 'hover:bg-slate-50'}`}
-                    >
-                      <div className="flex items-center gap-1.5">
-                        <span className={`text-[11px] font-bold ${isDark ? 'text-slate-200' : 'text-slate-700'}`}>{group.label}</span>
-                        {count > 0 && <span className="w-4 h-4 rounded-full bg-blue-600 text-white text-[8px] font-black flex items-center justify-center">{count}</span>}
-                      </div>
-                      {isOpen ? <ChevronUp className="w-3 h-3 text-slate-400" /> : <ChevronDown className="w-3 h-3 text-slate-400" />}
-                    </button>
-                    {isOpen && (
-                      <div className={`px-3 pb-2 pt-1 space-y-1.5 border-t ${isDark ? 'border-slate-800 bg-slate-900/20' : 'border-slate-100 bg-slate-50/40'}`}>
-                        {group.options.map(opt => {
-                          const checked = selected[group.key].includes(opt);
-                          return (
-                            <label key={opt} onClick={() => toggleCheckbox(group.key as CohortFilterKey, opt)} className="flex items-center gap-2 cursor-pointer group">
-                              <div className={`w-4 h-4 rounded flex items-center justify-center border transition-all flex-shrink-0 ${checked ? 'bg-blue-600 border-blue-600' : isDark ? 'border-slate-600 hover:border-blue-500' : 'border-slate-300 hover:border-blue-400'}`}>
-                                {checked && <svg className="w-2.5 h-2.5 text-white" viewBox="0 0 10 10" fill="none"><path d="M1.5 5L4 7.5L8.5 2.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>}
-                              </div>
-                              <span className={`text-[11px] font-medium select-none transition-colors ${checked ? (isDark ? 'text-blue-400' : 'text-blue-600') : (isDark ? 'text-slate-400 group-hover:text-slate-200' : 'text-slate-600 group-hover:text-slate-800')}`}>{opt}</span>
-                            </label>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-
-              {/* CSV cohort upload */}
-              <div className={`rounded-lg border overflow-hidden ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
-                <div className={`px-3 py-2 flex items-center justify-between ${isDark ? 'bg-slate-900/40' : 'bg-slate-50'}`}>
-                  <span className={`text-[11px] font-bold ${isDark ? 'text-slate-200' : 'text-slate-700'}`}>Cohort CSV</span>
-                  {csvFileName && <span className={`text-[8px] truncate max-w-[80px] ${isDark ? 'text-emerald-400' : 'text-emerald-600'}`}>{csvFileName}</span>}
-                </div>
-                <div className={`px-3 py-2.5 space-y-2 border-t ${isDark ? 'border-slate-800' : 'border-slate-100'}`}>
-                  <input ref={csvInputRef} type="file" accept=".csv" className="hidden" onChange={handleCsvUpload} />
-                  <button
-                    onClick={() => csvInputRef.current?.click()}
-                    className={`w-full py-1.5 rounded-md text-[10px] font-bold flex items-center justify-center gap-1.5 border transition-colors ${isDark ? 'border-slate-700 text-slate-300 hover:bg-slate-800 hover:text-white' : 'border-slate-300 text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}
-                  >
-                    <FileText className="w-3 h-3" /> {csvFileName ? 'Replace CSV' : 'Upload CSV'}
-                  </button>
-                  {csvError && <p className="text-[9px] text-rose-500 font-medium">{csvError}</p>}
-                  {csvColumns.length > 0 && (
-                    <div>
-                      <label className={`text-[9px] font-bold uppercase tracking-wider block mb-1 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Active Cohort</label>
-                      <select
-                        value={selectedCohortCol}
-                        onChange={e => setSelectedCohortCol(e.target.value)}
-                        className={`w-full px-2 py-1.5 rounded-md border text-[10px] font-bold outline-none ${isDark ? 'bg-slate-900 border-slate-700 text-white' : 'bg-white border-slate-300 text-slate-800'}`}
-                      >
-                        {csvColumns.map(col => <option key={col} value={col}>{col}</option>)}
-                      </select>
-                      <p className={`text-[9px] mt-1 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
-                        {Object.keys(csvGeneData).length} genes loaded · {csvColumns.length} cohorts
-                      </p>
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* Score range sliders */}
-              <div className={`rounded-lg border overflow-hidden ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
-                <div className={`px-3 py-2 flex items-center justify-between ${isDark ? 'bg-slate-900/40' : 'bg-slate-50'}`}>
-                  <span className={`text-[11px] font-bold ${isDark ? 'text-slate-200' : 'text-slate-700'}`}>Score Ranges</span>
-                  <span className={`text-[9px] font-bold uppercase tracking-wider ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>0 – 1</span>
-                </div>
-                <div className={`px-3 py-2 space-y-3 border-t ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
-                  {SCORE_SLIDERS.map(s => (
-                    <DualSlider
-                      key={s.key}
-                      label={s.label}
-                      values={scoreRanges[s.key] as [number, number]}
-                      onChange={v => setScoreRanges(prev => ({ ...prev, [s.key]: v }))}
-                      accent={s.accent}
-                      isDark={isDark}
-                    />
-                  ))}
-                </div>
-              </div>
-
-              {/* Table column visibility */}
-              {onVisibleColsChange && (
-                <div className={`rounded-lg border overflow-hidden ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
-                  <div className={`px-3 py-2 flex items-center justify-between ${isDark ? 'bg-slate-900/40' : 'bg-slate-50'}`}>
-                    <span className={`text-[11px] font-bold ${isDark ? 'text-slate-200' : 'text-slate-700'}`}>Table Columns</span>
-                    <button
-                      onClick={() => onVisibleColsChange(TABLE_COLUMNS.filter(c => c.defaultOn).map(c => c.key))}
-                      className={`text-[8px] font-bold uppercase tracking-wider ${isDark ? 'text-slate-500 hover:text-slate-300' : 'text-slate-400 hover:text-slate-600'}`}
-                    >Reset</button>
-                  </div>
-                  <div className={`px-3 py-2 border-t grid grid-cols-2 gap-x-2 gap-y-1.5 ${isDark ? 'border-slate-800' : 'border-slate-100'}`}>
-                    {TABLE_COLUMNS.map(col => {
-                      const checked = visibleCols?.includes(col.key) ?? col.defaultOn;
-                      return (
-                        <label
-                          key={col.key}
-                          className="flex items-center gap-1.5 cursor-pointer group"
-                          onClick={() => {
-                            const current = visibleCols ?? TABLE_COLUMNS.filter(c => c.defaultOn).map(c => c.key);
-                            onVisibleColsChange(
-                              checked ? current.filter(k => k !== col.key) : [...current, col.key]
-                            );
-                          }}
-                        >
-                          <div
-                            className="w-3.5 h-3.5 rounded flex items-center justify-center border flex-shrink-0 transition-all"
-                            style={{ background: checked ? col.accent : 'transparent', borderColor: checked ? col.accent : isDark ? '#475569' : '#cbd5e1' }}
-                          >
-                            {checked && <svg className="w-2 h-2 text-white" viewBox="0 0 10 10" fill="none"><path d="M1.5 5L4 7.5L8.5 2.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
-                          </div>
-                          <span className={`text-[10px] font-medium select-none ${checked ? (isDark ? 'text-white' : 'text-slate-800') : (isDark ? 'text-slate-500' : 'text-slate-400')}`}>{col.label}</span>
-                        </label>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-            </div>
-
-              {/* Bimodality tissue selector */}
-              {onVisibleBioTissuesChange && (
-                <div className={`rounded-lg border overflow-hidden ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
-                  <div className={`px-3 py-2 flex items-center justify-between ${isDark ? 'bg-slate-900/40' : 'bg-slate-50'}`}>
-                    <span className={`text-[11px] font-bold ${isDark ? 'text-slate-200' : 'text-slate-700'}`}>Bimodality Tissues</span>
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => onVisibleBioTissuesChange(BIMODALITY_TISSUES.slice())}
-                        className={`text-[8px] font-bold uppercase tracking-wider ${isDark ? 'text-slate-500 hover:text-slate-300' : 'text-slate-400 hover:text-slate-600'}`}
-                      >All</button>
-                      <button
-                        onClick={() => onVisibleBioTissuesChange([])}
-                        className={`text-[8px] font-bold uppercase tracking-wider ${isDark ? 'text-slate-500 hover:text-slate-300' : 'text-slate-400 hover:text-slate-600'}`}
-                      >None</button>
-                    </div>
-                  </div>
-                  <div className={`px-3 py-2 border-t grid grid-cols-2 gap-x-2 gap-y-1.5 ${isDark ? 'border-slate-800' : 'border-slate-100'}`}>
-                    {BIMODALITY_TISSUES.map(tissue => {
-                      const checked = visibleBioTissues?.includes(tissue) ?? false;
-                      return (
-                        <label
-                          key={tissue}
-                          className="flex items-center gap-1.5 cursor-pointer group"
-                          onClick={() => {
-                            const current = visibleBioTissues ?? [];
-                            onVisibleBioTissuesChange(
-                              checked ? current.filter(t => t !== tissue) : [...current, tissue]
-                            );
-                          }}
-                        >
-                          <div
-                            className="w-3.5 h-3.5 rounded flex items-center justify-center border flex-shrink-0 transition-all"
-                            style={{ background: checked ? '#a855f7' : 'transparent', borderColor: checked ? '#a855f7' : isDark ? '#475569' : '#cbd5e1' }}
-                          >
-                            {checked && <svg className="w-2 h-2 text-white" viewBox="0 0 10 10" fill="none"><path d="M1.5 5L4 7.5L8.5 2.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
-                          </div>
-                          <span className={`text-[9px] font-medium select-none leading-tight ${checked ? (isDark ? 'text-white' : 'text-slate-800') : (isDark ? 'text-slate-500' : 'text-slate-400')}`}>{bioTissueLabel(tissue)}</span>
-                        </label>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-
-            {totalActive > 0 && (
-              <div className={`p-2 border-t flex-shrink-0 ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
-                <button
-                  onClick={() => setSelected({ age: [], stage: [], subtype: [], gender: [] })}
-                  className={`w-full py-1.5 rounded-lg text-[10px] font-bold transition-colors ${isDark ? 'bg-slate-800 text-slate-300 hover:bg-slate-700 hover:text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
-                >
-                  Clear All ({totalActive})
-                </button>
-              </div>
-            )}
-          </>
-        )}
 
         {/* ── RANKINGS panel ────────────────────────────────────────────── */}
         {activeNav === 'rankings' && (
@@ -2705,6 +2489,50 @@ const CohortFilterSidebar = ({ theme, targets, activeDisease, onScoreRangesChang
         {/* ── TARGETS panel ─────────────────────────────────────────────── */}
         {activeNav === 'targets' && (
           <div className="flex-1 overflow-y-auto p-3 space-y-2">
+            {/* Bimodality tissue selector */}
+            {onVisibleBioTissuesChange && (
+              <div className={`rounded-lg border overflow-hidden ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
+                <div className={`px-3 py-2 flex items-center justify-between ${isDark ? 'bg-slate-900/40' : 'bg-slate-50'}`}>
+                  <span className={`text-[11px] font-bold ${isDark ? 'text-slate-200' : 'text-slate-700'}`}>Bimodality Tissues</span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => onVisibleBioTissuesChange(BIMODALITY_TISSUES.slice())}
+                      className={`text-[8px] font-bold uppercase tracking-wider ${isDark ? 'text-slate-500 hover:text-slate-300' : 'text-slate-400 hover:text-slate-600'}`}
+                    >All</button>
+                    <button
+                      onClick={() => onVisibleBioTissuesChange([])}
+                      className={`text-[8px] font-bold uppercase tracking-wider ${isDark ? 'text-slate-500 hover:text-slate-300' : 'text-slate-400 hover:text-slate-600'}`}
+                    >None</button>
+                  </div>
+                </div>
+                <div className={`px-3 py-2 border-t grid grid-cols-2 gap-x-2 gap-y-1.5 ${isDark ? 'border-slate-800' : 'border-slate-100'}`}>
+                  {BIMODALITY_TISSUES.map(tissue => {
+                    const checked = visibleBioTissues?.includes(tissue) ?? false;
+                    return (
+                      <label
+                        key={tissue}
+                        className="flex items-center gap-1.5 cursor-pointer group"
+                        onClick={() => {
+                          const current = visibleBioTissues ?? [];
+                          onVisibleBioTissuesChange(
+                            checked ? current.filter(t => t !== tissue) : [...current, tissue]
+                          );
+                        }}
+                      >
+                        <div
+                          className="w-3.5 h-3.5 rounded flex items-center justify-center border flex-shrink-0 transition-all"
+                          style={{ background: checked ? '#a855f7' : 'transparent', borderColor: checked ? '#a855f7' : isDark ? '#475569' : '#cbd5e1' }}
+                        >
+                          {checked && <svg className="w-2 h-2 text-white" viewBox="0 0 10 10" fill="none"><path d="M1.5 5L4 7.5L8.5 2.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                        </div>
+                        <span className={`text-[9px] font-medium select-none leading-tight ${checked ? (isDark ? 'text-white' : 'text-slate-800') : (isDark ? 'text-slate-500' : 'text-slate-400')}`}>{bioTissueLabel(tissue)}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             <p className={`text-[9px] uppercase tracking-widest font-bold ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
               Top Targets by GET Score
             </p>
@@ -3546,7 +3374,7 @@ const App = () => {
   useEffect(() => {
     if (!effectiveIsAdmin && !RESEARCHER_VIEWS.has(viewMode)) setViewMode('board');
   }, [effectiveIsAdmin, viewMode]);
-  const [sidebarNav, setSidebarNav] = useState<string>('cohort');
+  const [sidebarNav, setSidebarNav] = useState<string>('targets');
   const OT_PAGE_SIZE = 15;
 
   const [loading, setLoading] = useState(false);
@@ -5875,7 +5703,20 @@ ${modalityResultBlock(getLastModalityResult()) || '      (No modality analysis h
                 AI native
               </span>
             </div>
-            <p className="hidden md:block text-[11px] font-medium text-slate-500 dark:text-slate-400">Therapeutic target discovery and evidence ranking</p>
+            {/* Which disease is loaded is the single most important piece of state in the
+                app, and until now it was legible only from the breadcrumb — which is hidden
+                on exactly the full-page views where users spend their time. It takes the
+                tagline's slot: the tagline is decoration, this is context. */}
+            {researchState.activeDisease ? (
+              <div className="flex items-center gap-1.5 min-w-0">
+                <span className="text-[9px] font-black uppercase tracking-widest text-slate-400 dark:text-slate-500 shrink-0">Disease</span>
+                <span className="inline-flex items-center gap-1 rounded-md bg-blue-600/10 dark:bg-blue-400/10 px-1.5 py-0.5 text-[11px] font-black text-blue-700 dark:text-blue-300 truncate" title={researchState.activeDisease.name}>
+                  {researchState.activeDisease.name}
+                </span>
+              </div>
+            ) : (
+              <p className="hidden md:block text-[11px] font-medium text-slate-500 dark:text-slate-400">Therapeutic target discovery and evidence ranking</p>
+            )}
           </div>
         </div>
         <TabNavigation
@@ -6059,8 +5900,11 @@ ${modalityResultBlock(getLastModalityResult()) || '      (No modality analysis h
         <section className="order-1 flex-1 flex flex-col overflow-hidden relative min-w-0">
            {/* Breadcrumbs are only useful for the gene/disease drill-down views; the full-page
                views (Board, Graph, Dashboard, Rankings, Funnel, Jobs) have their own headers,
-               so the bar is hidden there to reclaim the space. */}
-           {!['board', 'graph', 'dashboard', 'rankings', 'funnel', 'jobs'].includes(viewMode) && (
+               so the bar is hidden there to reclaim the space.
+               Also hidden until a disease is loaded: with no trail to show, the bar collapses
+               to a lone "Home" pill that duplicates the Workspace icon already in the left
+               rail, costing a row of vertical space to say nothing. */}
+           {researchState.activeDisease && !['board', 'graph', 'dashboard', 'rankings', 'funnel', 'jobs'].includes(viewMode) && (
            <Breadcrumbs
              activeDisease={researchState.activeDisease}
              focusSymbol={researchState.focusSymbol}
