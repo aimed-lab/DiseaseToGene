@@ -522,22 +522,27 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
           <button onClick={() => setShowWeights(v => !v)} className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border text-[11px] font-semibold ${card} ${isDark ? 'text-slate-200' : 'text-slate-700'}`}><Sliders className="w-3.5 h-3.5" /> Weights</button>
           <button onClick={() => navigate('/Methodologies')} title="How the board scores and ranks targets — opens /Methodologies" className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border text-[11px] font-semibold ${card} ${isDark ? 'text-slate-200' : 'text-slate-700'}`}><BookOpen className="w-3.5 h-3.5" /> Methodology</button>
         </div>
-        {/* modality selector — the lever. Only validated modalities are shown; the rest are
-            deferred until they have modality-specific criteria (professor's guidance). */}
+        {/* Modality conditions the weights, so WHICH one the board is ranking for is context
+            the numbers need — without it the ranking reads as universal when it is not.
+            But it is only a CONTROL when there is something to switch to: with a single
+            validated modality, a highlighted pill implies a choice that does not exist, so
+            it renders as a statement and becomes a selector again when a second ships.
+            The deferred modalities live in Methodology, which gives each one its pending
+            criteria and the reasoning; repeating them here charged every look at the board
+            for a roadmap notice that is only news once. */}
         <div className="flex items-center gap-1.5 flex-wrap">
           <span className={`text-[10px] font-black uppercase tracking-widest ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Modality</span>
-          {MODALITY_ORDER.map(m => (
+          {MODALITY_ORDER.length > 1 ? MODALITY_ORDER.map(m => (
             <button key={m} onClick={() => setModality(m)} title={MODALITY_PROFILES[m].note}
               className={`px-2.5 py-1 rounded-full text-[11px] font-semibold border transition-all ${modality === m ? 'bg-blue-600 border-blue-600 text-white' : (isDark ? 'bg-transparent border-slate-700 text-slate-300 hover:border-blue-500' : 'bg-transparent border-slate-200 text-slate-700 hover:border-blue-500')}`}>
               {MODALITY_PROFILES[m].label}
             </button>
-          ))}
-          <span className="text-[11px] text-slate-500 ml-1 hidden lg:inline">— {MODALITY_PROFILES[modality].note}</span>
-          {MODALITY_ORDER.length < 5 && (
-            <span className="text-[10px] text-slate-400 ml-1 italic" title="Antibody, PROTAC, RNA and gene therapy need their own criteria (immunogenicity, extracellular localization, delivery…) before their rankings are shown. See Methodology.">
-              Antibody · PROTAC · RNA · gene therapy — in development
+          )) : (
+            <span className={`px-2.5 py-1 rounded-full text-[11px] font-semibold border ${isDark ? 'border-slate-700 text-slate-200' : 'border-slate-200 text-slate-800'}`}>
+              {MODALITY_PROFILES[modality].label}
             </span>
           )}
+          <span className="text-[11px] text-slate-500 ml-1 hidden lg:inline">— {MODALITY_PROFILES[modality].note}</span>
         </div>
         {/* weight budget — 100 points allocated across the 8 criteria; must total 100 to apply */}
         {showWeights && (
