@@ -76,3 +76,8 @@ docs/Funnel_Design.md
 docs/Funnel_Design_v2.md
 docs/Funnel_Design_Review_Request.md
 docs/Pocket_Druggability_Feature.md
+
+# STRING flat files for the WINNER reference run — 83 MB, and the two curl
+# lines in WINNER/README.md rebuild them exactly. The computed scores in
+# WINNER/out/ ARE tracked, so the results are usable without this download.
+WINNER/data/
