@@ -5,8 +5,8 @@
 // target for its report card — per-criterion score + definition + the evidence.
 // Reads /api/dashboard/genes (no new endpoint); all scoring is client-side via
 // rankingBoard.ts.
-import React, { useEffect, useMemo, useState } from 'react';
-import { Loader2, Trophy, Search, X, Sliders, RotateCcw, Award, ChevronDown, BookOpen, FileText, Atom, Microscope, Download } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Loader2, Trophy, Search, X, Sliders, RotateCcw, Award, ChevronDown, ChevronUp, ChevronsUpDown, BookOpen, FileText, Atom, Microscope, Download } from 'lucide-react';
 import { fetchSnapshots, authenticatedFetch, type RankingSnapshotMeta } from './supabase';
 import { navigate } from './nav';
 import { CRITERIA, MODALITY_PROFILES, buildBoard, criterionBreakdown, computeVerdict, findBetterAlternatives, type CriterionKey, type ModalityKey, type ScoredGene, type SubMetric, type CriterionBreakdown } from './rankingBoard';
@@ -54,6 +54,37 @@ interface SingleCellProfile {
   source: string;
 }
 
+type ThProps = {
+  col: string; label: string; hint: string; align: 'left' | 'center' | 'right';
+  sort: { key: string; dir: 'asc' | 'desc' } | null;
+  onSort: (key: string) => void;
+  onResize: (e: React.PointerEvent, key: string) => void;
+  isDark: boolean;
+};
+const Th = ({ col, label, hint, align, sort, onSort, onResize, isDark }: ThProps) => {
+  const active = sort?.key === col;
+  const Icon = !active ? ChevronsUpDown : sort!.dir === 'desc' ? ChevronDown : ChevronUp;
+  const justify = align === 'right' ? 'justify-end' : align === 'center' ? 'justify-center' : 'justify-start';
+  // Spelled out, not interpolated: Tailwind only ships classes it can see as literals,
+  // so `text-${align}` would be purged from the build and silently do nothing.
+  const textAlign = align === 'right' ? 'text-right' : align === 'center' ? 'text-center' : 'text-left';
+  return (
+    <th className={`relative font-bold px-2 py-2 select-none ${textAlign}`} title={hint}>
+      <button onClick={() => onSort(col)}
+        className={`w-full flex items-center gap-1 ${justify} group ${active ? (isDark ? 'text-blue-300' : 'text-blue-600') : ''}`}>
+        <span className="truncate">{label}</span>
+        {/* The inactive chevron stays faint until hover so eight of these don't shout. */}
+        <Icon className={`w-3 h-3 shrink-0 ${active ? 'opacity-100' : 'opacity-0 group-hover:opacity-40'}`} />
+      </button>
+      {/* Grab strip on the column's trailing edge. Wider than it looks, so it is catchable. */}
+      <span onPointerDown={e => onResize(e, col)}
+        className="absolute top-0 right-0 h-full w-2 translate-x-1/2 cursor-col-resize z-20 flex justify-center group/rz">
+        <span className={`w-px h-full ${isDark ? 'bg-slate-700 group-hover/rz:bg-blue-400' : 'bg-slate-200 group-hover/rz:bg-blue-500'}`} />
+      </span>
+    </th>
+  );
+};
+
 export default function RankingBoardView({ theme, diseaseName }: { theme: Theme; diseaseName?: string }) {
   const isDark = theme === 'dark';
   // One calm accent for every criterion bar — the shade deepens with the score, so value
@@ -68,6 +99,35 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
   // the criteria and must say so rather than look finished.
   const [progress, setProgress] = useState<{ complete: boolean; axesReady: string[]; evidenceLoaded: number } | null>(null);
   const stillLoading = !!progress && !progress.complete;
+
+  // ── Column sort ─────────────────────────────────────────────────────────
+  // null = the board's own ranking, which is the point of the tool; a sort is a
+  // temporary lens over it. Cycle desc → asc → back to the ranking.
+  const [sort, setSort] = useState<{ key: string; dir: 'asc' | 'desc' } | null>(null);
+  const toggleSort = (key: string) =>
+    setSort(p => (p?.key === key ? (p.dir === 'desc' ? { key, dir: 'asc' } : null) : { key, dir: 'desc' }));
+
+  // ── Column widths ────────────────────────────────────────────────────
+  const DEFAULT_W: Record<string, number> = { rank: 56, target: 130, overall: 96 };
+  const CRITERION_W = 76;
+  const [colW, setColW] = useState<Record<string, number>>({});
+  const widthOf = (k: string) => colW[k] ?? DEFAULT_W[k] ?? CRITERION_W;
+  const drag = useRef<{ key: string; startX: number; startW: number } | null>(null);
+  const startResize = (e: React.PointerEvent, key: string) => {
+    e.preventDefault(); e.stopPropagation();          // never let the handle trigger the header's sort
+    drag.current = { key, startX: e.clientX, startW: widthOf(key) };
+    const move = (ev: PointerEvent) => {
+      const d = drag.current; if (!d) return;
+      setColW(p => ({ ...p, [d.key]: Math.max(44, d.startW + (ev.clientX - d.startX)) }));
+    };
+    const up = () => {
+      drag.current = null;
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  };
   const [error, setError] = useState<string | null>(null);
 
   const [modality, setModality] = useState<ModalityKey>('small_molecule');
@@ -143,6 +203,11 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
   const activeKeys = board.activeCriteria;
   const activeSig = activeKeys.join(',');
   const activeDefs = useMemo(() => CRITERIA.filter(c => activeKeys.includes(c.key)), [activeSig]);
+  const tableWidth = useMemo(
+    () => widthOf('rank') + widthOf('target') + widthOf('overall') + activeKeys.reduce((n, k) => n + widthOf(k), 0),
+    [colW, activeSig],
+  );
+  const thShared = { sort, onSort: toggleSort, onResize: startResize, isDark };
   const effWeights = board.weights;   // active-renormalised (sums to 1 over the criteria with data)
   // Within-category (0–1) standing: an absolute criterion score scaled by the field leader in
   // that column, so the strongest gene fills its bar. DISPLAY only — the overall score is unchanged.
@@ -223,13 +288,30 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
 
   const pinnedGene = useMemo(() => pinned ? board.scored.find(s => s.symbol === pinned) : null, [board, pinned]);
   const shown = useMemo(() => {
-    const top = board.scored.slice(0, 150);
+    let ordered = board.scored;
+    if (sort) {
+      const val = (s: any) => sort.key === 'rank' ? s.boardRank
+        : sort.key === 'target' ? s.symbol
+        : sort.key === 'overall' ? s.display
+        : s.criteria[sort.key as CriterionKey];
+      ordered = [...ordered].sort((a, b) => {
+        const av = val(a), bv = val(b);
+        // No-data always sinks, in BOTH directions — otherwise sorting ascending on a
+        // sparse criterion fills the screen with genes that have nothing to show.
+        if (av == null && bv == null) return 0;
+        if (av == null) return 1;
+        if (bv == null) return -1;
+        const c = typeof av === 'string' ? String(av).localeCompare(String(bv)) : (av as number) - (bv as number);
+        return sort.dir === 'asc' ? c : -c;
+      });
+    }
+    const top = ordered.slice(0, 150);
     // A searched target floats to the TOP (with its true rank shown), so it's never buried at the
     // bottom of the list — whether it ranked inside the top 150 or far below it.
     if (!pinnedGene) return top;
     const rest = top.filter(s => s.symbol !== pinnedGene.symbol);
     return [pinnedGene, ...rest].slice(0, 150);
-  }, [board, pinnedGene]);
+  }, [board, pinnedGene, sort]);
 
   useEffect(() => {
     let alive = true;
@@ -500,13 +582,23 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
       <div className="flex-1 flex min-h-0">
         {/* the board */}
         <div className="flex-1 overflow-auto min-w-0">
-          <table className="w-full text-[12px] border-collapse">
+          {/* table-fixed + colgroup so the drag handles actually govern width; the table is
+              allowed to exceed the pane (min-w-full) and the wrapper scrolls horizontally. */}
+          <table className="text-[12px] border-collapse table-fixed min-w-full" style={{ width: tableWidth }}>
+            <colgroup>
+              <col style={{ width: widthOf('rank') }} />
+              <col style={{ width: widthOf('target') }} />
+              {activeDefs.map(c => <col key={c.key} style={{ width: widthOf(c.key) }} />)}
+              <col style={{ width: widthOf('overall') }} />
+            </colgroup>
             <thead className={`sticky top-0 z-10 ${isDark ? 'bg-slate-900' : 'bg-slate-50'}`}>
               <tr className={`${isDark ? 'text-slate-400 border-slate-800' : 'text-slate-500 border-slate-200'} border-b`}>
-                <th className="text-left font-bold px-3 py-2 w-12">#</th>
-                <th className="text-left font-bold px-2 py-2">Target</th>
-                {activeDefs.map(c => <th key={c.key} title={`${c.label}: ${c.definition}`} className="text-center font-semibold px-1 py-2 w-[68px]">{c.label}</th>)}
-                <th className="text-right font-bold px-3 py-2 w-24">Overall</th>
+                <Th col="rank"    align="left"   label="#"       hint="Rank on the board" {...thShared} />
+                <Th col="target"  align="left"   label="Target"  hint="Gene symbol" {...thShared} />
+                {activeDefs.map(c => (
+                  <Th key={c.key} col={c.key} align="center" label={c.label} hint={`${c.label}: ${c.definition}`} {...thShared} />
+                ))}
+                <Th col="overall" align="right"  label="Overall" hint="Weighted score across the active criteria" {...thShared} />
               </tr>
             </thead>
             <tbody>
