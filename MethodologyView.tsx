@@ -91,11 +91,12 @@ export default function MethodologyView({ isDark, onClose }: { isDark: boolean; 
           {/* ── The approach ── */}
           <section className="space-y-3">
             <p className={`text-[13px] leading-relaxed ${sub}`}>
-              For a chosen disease, every candidate target is scored by a <strong className={heading}>transparent weighted sum</strong> across
-              eight evidence criteria — the same idea behind the U.S. News Best-Colleges ranking (a subject scored on weighted indicators, then
-              placed on a 0–100 scale). Here the <em>subject</em> is the disease, the <em>indicators</em> are the eight evidence criteria, and
-              the field <strong className={heading}>leader is rescaled to 100</strong>. Nothing is a black box: each number traces to a named
-              public source, and the weights are shown below and adjustable in the board.
+              We score every candidate target for a disease with a <strong className={heading}>transparent weighted sum</strong> across eight
+              evidence criteria. We borrowed the shape of it from the U.S. News Best-Colleges ranking — a subject scored on weighted indicators,
+              then placed on a 0–100 scale. Here the <em>subject</em> is the disease, the <em>indicators</em> are our eight criteria, and we
+              rescale so the field’s <strong className={heading}>leader sits at 100</strong>. We deliberately kept it out of black-box territory:
+              every number traces to a named public source with a citation, and we show the weights below rather than burying them — you can
+              change them yourself in the board and watch the ranking move.
             </p>
             <div className="grid sm:grid-cols-3 gap-3">
               {[
@@ -195,6 +196,15 @@ export default function MethodologyView({ isDark, onClose }: { isDark: boolean; 
                     </div>
                     <p className={`text-[12px] leading-snug ${sub}`}>{c.definition}</p>
                     <p className={`text-[10px] mt-1.5 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Source: {c.source}</p>
+                    {/* The reference a reader follows to check the metric means what we say.
+                        Absent on an axis = we have not verified one yet, not that none exists. */}
+                    {c.citations?.length ? (
+                      <ul className={`mt-2 space-y-1 border-l-2 pl-2.5 ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
+                        {c.citations.map((cit, i) => (
+                          <li key={i} className={`text-[10px] leading-snug ${isDark ? 'text-slate-500' : 'text-slate-500'}`}>{cit}</li>
+                        ))}
+                      </ul>
+                    ) : null}
                     <p className={`text-[10px] mt-2 italic ${isDark ? 'text-slate-500' : 'text-slate-500'}`}>{bd.formula}</p>
                     {/* the evidence sub-metrics behind the score */}
                     <div className="mt-2.5 flex flex-wrap gap-1.5">
@@ -235,21 +245,64 @@ export default function MethodologyView({ isDark, onClose }: { isDark: boolean; 
             <h2 className={`text-[13px] font-black uppercase tracking-wider ${heading}`}>Validation</h2>
             <div className={`rounded-xl border p-4 ${card}`}>
               <p className={`text-[12px] leading-relaxed ${sub}`}>
-                The board is <strong className={heading}>benchmarked</strong>, not just asserted. Using known drug targets for the disease as a
-                gold set — with <strong className={heading}>tractability held out</strong> to avoid leakage — the small-molecule ranking reaches
-                <strong className={heading}> ROC-AUC 0.82</strong> (enrichment 7.8× in the top 5%), ahead of the earlier funnel’s 0.74. Weights are
-                first-proposal values calibrated by eye and exposed as sliders — the benchmark is how any change is judged before it ships.
+                We didn’t want to just assert that this ranking works, so we benchmarked it. We took the known drug targets for the disease as a
+                gold set and asked whether the board pushes them toward the top. To keep the test honest we
+                <strong className={heading}> held tractability out</strong> — it is partly derived from the very drugs we were using as the answer key,
+                so leaving it in would have let the ranking mark its own homework. On that basis the small-molecule ranking reaches
+                <strong className={heading}> ROC-AUC 0.82</strong>, with a 7.8× enrichment of known targets in the top 5%. Our earlier funnel scored 0.74
+                on the same test, so the criteria-based board is a real improvement rather than a reshuffle.
+              </p>
+              <p className={`text-[12px] leading-relaxed mt-2 ${sub}`}>
+                We set the starting weights by eye rather than fitting them, and we would rather say so than imply a rigour we did not apply. They are
+                exposed as sliders for exactly that reason. What the benchmark gives us is a way to judge any change to them before it ships — if a
+                reweighting does not move the AUC, we do not keep it.
               </p>
               <p className={`text-[10px] mt-2 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
-                Only small-molecule is validated this way. The gold set (known drug targets) is small-molecule-biased, so grading the other
-                modalities against it would understate them — another reason their rankings are withheld until they have their own criteria and
-                an appropriate gold set.
+                We have only validated small-molecule this way. Our gold set is built from known drug targets, which skews small-molecule, so scoring the
+                other modalities against it would understate them — which is part of why we withhold those rankings until each has its own criteria and
+                a gold set that suits it.
+              </p>
+            </div>
+          </section>
+
+          {/* ── References ── */}
+          <section className="space-y-3">
+            <h2 className={`text-[13px] font-black uppercase tracking-wider ${heading}`}>References</h2>
+            <div className={`rounded-xl border p-4 ${card}`}>
+              <p className={`text-[12px] leading-relaxed ${sub}`}>
+                Every reference below we checked against the publisher record rather than citing from memory. Two axes lean on a method paper that is
+                separate from the database serving it — Chronos is an algorithm, not a portal, and τ is a formula we implement ourselves — so we cite
+                those directly. Where we have not yet verified a reference we have left it out instead of guessing; a wrong volume number in a methods
+                section is worse than an honest gap.
+              </p>
+              <ul className={`mt-3 space-y-1.5 text-[10.5px] leading-snug ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+                {[
+                  ['Open Targets', 'Buniello A, et al. Nucleic Acids Res 2025;53(D1):D1467–D1475. doi:10.1093/nar/gkae1128'],
+                  ['cBioPortal', 'Cerami E, et al. Cancer Discov 2012;2(5):401 · Gao J, et al. Sci Signal 2013;6(269):pl1 · de Bruijn I, et al. Cancer Res 2023'],
+                  ['UCSC Xena', 'Goldman MJ, et al. Nat Biotechnol 2020;38:675–678. doi:10.1038/s41587-020-0546-8'],
+                  ['LinkedOmics / CPTAC', 'Vasaikar SV, et al. Nucleic Acids Res 2018;46(D1):D956–D963. doi:10.1093/nar/gkx1090'],
+                  ['DepMap — Chronos', 'Dempster JM, et al. Genome Biol 2021;22:343. PMID 34930405'],
+                  ['gnomAD v4', 'Chen S, et al. Nature 2024;625:92–100'],
+                  ['STRING', 'Szklarczyk D, et al. Nucleic Acids Res 2023;51(D1):D638–D646. doi:10.1093/nar/gkac1000'],
+                  ['Random walk with restart', 'Köhler S, et al. Am J Hum Genet 2008;82(4):949–958. doi:10.1016/j.ajhg.2008.02.013'],
+                  ['Europe PMC', 'Ferguson C, et al. Nucleic Acids Res 2021;49(D1):D1507–D1514. doi:10.1093/nar/gkaa994'],
+                  ['Tissue index τ', 'Yanai I, et al. Bioinformatics 2005;21(5):650–659. doi:10.1093/bioinformatics/bti042'],
+                  ['Human Protein Atlas', 'Karlsson M, et al. Sci Adv 2021;7(31):eabh2169. doi:10.1126/sciadv.abh2169'],
+                ].map(([name, cite], i) => (
+                  <li key={i}>
+                    <span className={`font-bold ${heading}`}>{name}</span> — {cite}
+                  </li>
+                ))}
+              </ul>
+              <p className={`text-[10px] mt-3 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
+                These resources version their own papers, so when you cite a result from this app, cite the release you actually queried and record the
+                date you pulled it. A snapshot taken today will not match next year’s database paper.
               </p>
             </div>
           </section>
 
           <p className={`text-[10px] text-center ${isDark ? 'text-slate-600' : 'text-slate-400'} pb-4`}>
-            Every figure on this page is computed from a named public source (Open Targets · cBioPortal · UCSC Xena · CPTAC · DepMap · gnomAD · ClinicalTrials.gov · Europe PMC · STRING). Adjust weights in the board’s Weights panel.
+            Every figure on this page comes from a named public source, cited above. Adjust weights in the board’s Weights panel.
           </p>
         </div>
       </div>

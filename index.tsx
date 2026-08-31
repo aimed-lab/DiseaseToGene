@@ -1206,10 +1206,32 @@ const ProfileDropdown = ({
       content: `Optionally replace the generic E score with your own cohort expression.\n\nFormat — column 1 \`gene_symbol\`, then one column per cohort (TPM/FPKM):\n\n\`\`\`\ngene_symbol,early_stage,late_stage\nAPOE,12.4,8.2\nTREM2,3.2,9.8\n\`\`\`\n\nUpload via the terminal chat: type *"upload cohort CSV"*.` },
 
     { key: 'sources', title: 'Data Sources & Links',         icon: '🗄️',
-      content: `| Source | Used for |\n|---|---|\n| [Open Targets](https://platform.opentargets.org) | associations, expression, tractability, pathways |\n| [ChEMBL](https://www.ebi.ac.uk/chembl) | druggability, compounds, IC50, drug phases |\n| [PubMed / E-utilities](https://www.ncbi.nlm.nih.gov/pubmed) | literature counts + top papers |\n| [Europe PMC](https://europepmc.org) | full-text literature counts |\n| [PubTator3](https://www.ncbi.nlm.nih.gov/research/pubtator3/) | gene–disease co-mention velocity |\n| [ClinicalTrials.gov](https://clinicaltrials.gov) | trial phase + activity |\n| [Human Protein Atlas](https://www.proteinatlas.org) | TAU tissue specificity |\n| [Enrichr](https://maayanlab.cloud/Enrichr) | pathway enrichment |` },
+      content: `Every source we pull from, and the paper to cite when you use it. We checked each reference below against the publisher record — where we have not verified one yet, we say so rather than guess.
+
+| Source | Used for | Cite |
+|---|---|---|
+| [Open Targets](https://platform.opentargets.org) | associations, tractability, safety, trials | Buniello A, et al. *Nucleic Acids Res* 2025;53(D1):D1467-D1475 |
+| [cBioPortal](https://www.cbioportal.org) | somatic mutation frequency | Cerami 2012 / Gao 2013 / de Bruijn 2023 (cite all three) |
+| [UCSC Xena](https://xenabrowser.net) | tumour-vs-normal mRNA log2FC | Goldman MJ, et al. *Nat Biotechnol* 2020;38:675-678 |
+| [LinkedOmics / CPTAC](https://www.linkedomics.org) | protein log2FC | Vasaikar SV, et al. *Nucleic Acids Res* 2018;46(D1):D956 |
+| [DepMap](https://depmap.org) | Chronos dependency | Dempster JM, et al. *Genome Biol* 2021;22:343 |
+| [gnomAD](https://gnomad.broadinstitute.org) | LOEUF / pLI constraint | Chen S, et al. *Nature* 2024;625:92-100 (v4) |
+| [Europe PMC](https://europepmc.org) | literature counts, patents | Ferguson C, et al. *Nucleic Acids Res* 2021;49(D1):D1507 |
+| [STRING](https://string-db.org) | protein-protein network | Szklarczyk D, et al. *Nucleic Acids Res* 2023;51(D1):D638 |
+| [Human Protein Atlas](https://www.proteinatlas.org) | single-cell expression | Karlsson M, et al. *Sci Adv* 2021;7(31):eabh2169 |
+| [ChEMBL](https://www.ebi.ac.uk/chembl) | compounds, IC50, drug phases | *not yet verified* |
+| [ClinicalTrials.gov](https://clinicaltrials.gov) | trial phase + activity | cite as a resource, with access date |
+| [PubTator3](https://www.ncbi.nlm.nih.gov/research/pubtator3/) | gene-disease co-mention velocity | *not yet verified* |
+| [Enrichr](https://maayanlab.cloud/Enrichr) | pathway enrichment | *not yet verified* |
+
+**Two of our metrics need a method paper, not just a database.** Chronos is an algorithm rather than a portal, and τ (tissue specificity) is a formula we implement ourselves — Yanai I, et al. *Bioinformatics* 2005;21(5):650-659. Citing only “DepMap” or “GTEx” leaves a reader unable to tell which calculation produced the number.` },
 
     { key: 'provenance', title: 'Traceability & Audit',      icon: '🔎',
-      content: `Every value in the app is computed from one of the named public sources above — none are AI-fabricated. Scores (G/E/T/GET) are deterministic functions of Open Targets data; literature, clinical, and ChEMBL figures are fetched live from their APIs. AI is used **only** for narrative summaries (clearly labelled), never to invent numbers.\n\nWhen citing a value, record the **source, the date retrieved, and the metric definition above** so the result is fully auditable.` },
+      content: `We compute every value in this app from one of the public sources listed above — we do not let a model invent a number. The G/E/T/GET scores are deterministic functions of Open Targets data, and the literature, clinical and ChEMBL figures are fetched live from their APIs. We use AI for narrative summaries only, and we label those clearly wherever they appear.
+
+We drew that line deliberately: a summary you can argue with is useful, a fabricated statistic is not, and a reader cannot always tell them apart once they sit side by side on a page.
+
+When you cite a value from here, record the **source, the date you retrieved it, and the metric definition** — these databases version their own releases, so a figure without a date cannot be reproduced later.` },
   ];
 
   // ── Full-page overlay shared header ──────────────────────────────────────
@@ -2232,7 +2254,7 @@ const CohortFilterSidebar = ({ theme, targets, activeDisease, onScoreRangesChang
     {
       key: 'about',
       title: 'About DiseaseToTarget',
-      content: `DiseaseToTarget (DTT) is an AI-powered therapeutic target discovery platform. It retrieves disease-associated genes from Open Targets, scores them using a multi-factor GET formula, and ranks them by druggability evidence.`,
+      content: `We built DiseaseToTarget (DTT) to answer one question end to end: for a given disease, which targets are worth working on next? We pull disease-associated genes from Open Targets, score them with a multi-factor GET formula, and rank them on druggability evidence — with every number traceable back to the public source it came from.`,
     },
     {
       key: 'get',

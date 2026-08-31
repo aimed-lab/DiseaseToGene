@@ -12,20 +12,61 @@ export type CriterionKey =
   | 'genetics' | 'expression' | 'dependency' | 'tractability'
   | 'safety' | 'clinical' | 'literature' | 'network';
 
-export interface CriterionDef { key: CriterionKey; label: string; definition: string; source: string; }
+// `source` names the resource; `citations` is what a reader follows to check that the
+// metric means what we say it means. Only references CHECKED against the publisher
+// record appear here — a half-remembered volume number in a methods section is worse
+// than an absent one, so unverified ones are left out rather than guessed at. Several
+// axes are therefore still short a reference (GTEx for expression, Karczewski 2020 for
+// the LOEUF definition, and our own WINNER paper).
+export interface CriterionDef { key: CriterionKey; label: string; definition: string; source: string; citations?: string[]; }
 
 // The 8 subcategories — each carries its own definition + data source, surfaced
 // verbatim in the target report-card drill-down (the professor's "criteria + a
 // definition + where each candidate scores + the evidence").
 export const CRITERIA: CriterionDef[] = [
-  { key: 'genetics',     label: 'Genetics',      definition: 'Causal disease association and somatic mutation burden — how strongly genetics implicates this gene in the disease.', source: 'Open Targets genetic association · cBioPortal mutation frequency' },
-  { key: 'expression',   label: 'Expression',    definition: 'Dysregulation in disease vs normal tissue — magnitude of tumour-vs-normal change at the mRNA and protein level.', source: 'UCSC Xena (mRNA log2FC) · CPTAC/LinkedOmics (protein log2FC)' },
-  { key: 'dependency',   label: 'Dependency',    definition: 'How essential the gene is in disease cell lines (CRISPR knockout effect) — a strong dependency means knocking it out hurts the tumour.', source: 'DepMap Chronos' },
-  { key: 'tractability', label: 'Tractability',  definition: 'How druggable the protein is — whether a therapeutic of the chosen modality can engage it.', source: 'Open Targets tractability' },
-  { key: 'safety',       label: 'Safety',        definition: 'Tolerance to perturbation — loss-of-function constraint, curated safety liabilities, and whether the gene is pan-essential (a lower score = more risk).', source: 'gnomAD LOEUF · Open Targets safety · common-essential flag' },
-  { key: 'clinical',     label: 'Clinical',      definition: 'Clinical precedent and momentum in this disease — trial phase reached and how many trials.', source: 'Open Targets trials · ClinicalTrials.gov' },
-  { key: 'literature',   label: 'Literature',    definition: 'Research momentum — recent publication velocity for the gene in this disease.', source: 'Europe PMC' },
-  { key: 'network',      label: 'Network',       definition: 'Network importance and proximity to the disease seed genes over the protein–protein interaction graph.', source: 'WINNER + RWR over STRING' },
+  { key: 'genetics',     label: 'Genetics',      definition: 'Causal disease association and somatic mutation burden — how strongly genetics implicates this gene in the disease.', source: 'Open Targets genetic association · cBioPortal mutation frequency',
+    citations: [
+      "Buniello A, et al. Open Targets Platform: facilitating therapeutic hypotheses building in drug discovery. Nucleic Acids Res 2025;53(D1):D1467-D1475. doi:10.1093/nar/gkae1128",
+      "Cerami E, et al. Cancer Discov 2012;2(5):401 - Gao J, et al. Sci Signal 2013;6(269):pl1 - de Bruijn I, et al. Cancer Res 2023. cBioPortal asks that all three be cited together.",
+    ]
+  },
+  { key: 'expression',   label: 'Expression',    definition: 'Dysregulation in disease vs normal tissue — magnitude of tumour-vs-normal change at the mRNA and protein level.', source: 'UCSC Xena (mRNA log2FC) · CPTAC/LinkedOmics (protein log2FC)',
+    citations: [
+      "Goldman MJ, et al. Visualizing and interpreting cancer genomics data via the Xena platform. Nat Biotechnol 2020;38:675-678. doi:10.1038/s41587-020-0546-8",
+      "Vasaikar SV, et al. LinkedOmics: analyzing multi-omics data within and across 32 cancer types. Nucleic Acids Res 2018;46(D1):D956-D963. doi:10.1093/nar/gkx1090",
+    ]
+  },
+  { key: 'dependency',   label: 'Dependency',    definition: 'How essential the gene is in disease cell lines (CRISPR knockout effect) — a strong dependency means knocking it out hurts the tumour.', source: 'DepMap Chronos',
+    citations: [
+      "Dempster JM, et al. Chronos: a cell population dynamics model of CRISPR experiments that improves inference of gene fitness effects. Genome Biol 2021;22:343. PMID 34930405. The algorithm behind the score, not just the portal that serves it.",
+    ]
+  },
+  { key: 'tractability', label: 'Tractability',  definition: 'How druggable the protein is — whether a therapeutic of the chosen modality can engage it.', source: 'Open Targets tractability',
+    citations: [
+      "Buniello A, et al. Nucleic Acids Res 2025;53(D1):D1467-D1475. doi:10.1093/nar/gkae1128",
+    ]
+  },
+  { key: 'safety',       label: 'Safety',        definition: 'Tolerance to perturbation — loss-of-function constraint, curated safety liabilities, and whether the gene is pan-essential (a lower score = more risk).', source: 'gnomAD LOEUF · Open Targets safety · common-essential flag',
+    citations: [
+      "Chen S, et al. A genomic mutational constraint map using variation in 76,156 human genomes. Nature 2024;625:92-100. gnomAD v4, the release we query.",
+    ]
+  },
+  { key: 'clinical',     label: 'Clinical',      definition: 'Clinical precedent and momentum in this disease — trial phase reached and how many trials.', source: 'Open Targets trials · ClinicalTrials.gov',
+    citations: [
+      "Buniello A, et al. Nucleic Acids Res 2025;53(D1):D1467-D1475. doi:10.1093/nar/gkae1128 - ClinicalTrials.gov (U.S. National Library of Medicine), cited with the access date.",
+    ]
+  },
+  { key: 'literature',   label: 'Literature',    definition: 'Research momentum — recent publication velocity for the gene in this disease.', source: 'Europe PMC',
+    citations: [
+      "Ferguson C, et al. Europe PMC in 2020. Nucleic Acids Res 2021;49(D1):D1507-D1514. doi:10.1093/nar/gkaa994",
+    ]
+  },
+  { key: 'network',      label: 'Network',       definition: 'Network importance and proximity to the disease seed genes over the protein–protein interaction graph.', source: 'WINNER + RWR over STRING',
+    citations: [
+      "Szklarczyk D, et al. The STRING database in 2023. Nucleic Acids Res 2023;51(D1):D638-D646. doi:10.1093/nar/gkac1000",
+      "Kohler S, Bauer S, Horn D, Robinson PN. Walking the interactome for prioritization of candidate disease genes. Am J Hum Genet 2008;82(4):949-958. doi:10.1016/j.ajhg.2008.02.013. The canonical reference for random walk with restart.",
+    ]
+  },
 ];
 
 // CORE biology criteria — missing one of these penalises the score (real evidence gap).
