@@ -5,6 +5,17 @@
 //   npx tsx --env-file=.env scripts/buildModalityGoldset.ts        (once)
 //   npx tsx --env-file=.env scripts/modalityGoldsetBenchmark.ts [--limit N] [--offset K]
 //
+// EVIDENCE PERSISTENCE. A networked run writes every gene's gathered evidence to
+// deliverables/evidence_snapshot.jsonl as it goes, with a manifest beside it. Replay
+// it — instantly, offline, against byte-identical evidence — with:
+//
+//   npx tsx scripts/modalityGoldsetBenchmark.ts --from-snapshot
+//   npx tsx --env-file=.env scripts/modalityGoldsetBenchmark.ts --resume   (continue a killed run)
+//
+// Before this the evidence was gone the moment the process exited: the service cache
+// is in-memory, and this script wrote tiers only. Every re-derivation cost another
+// ~3.5 h against upstream data that had moved in the meantime.
+//
 // SEPARATE from scripts/modalityBenchmark.ts on purpose. That script carries the
 // published figures (gate controls, LR baseline, calibration) over the 20-target
 // curated set and must stay reproducible exactly as it is. This one answers the
@@ -31,8 +42,9 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { gatherModalityEvidence, assessModalities, isGoal, type MechanisticGoal } from '../modalityFitService.js';
-import { TIER_RANK, type Tier } from '../modalityConstants.js';
+import { assessModalities, isGoal, type MechanisticGoal } from '../modalityFitService.js';
+import { TIER_RANK, RULE_VERSION, type Tier } from '../modalityConstants.js';
+import { evidenceSource, provenance, SnapshotWriter, snapshotGenes, loadSnapshot, DEFAULT_SNAPSHOT } from './evidenceSnapshot.js';
 
 // Same substrings the curated benchmark matches on, so the two report like-for-like.
 const MOD_SUB: Record<string, string> = {
@@ -120,18 +132,71 @@ const run = async () => {
   const offset = arg('--offset') ?? 0;
   const genes = allGenes.slice(offset, offset + (arg('--limit') ?? allGenes.length));
 
+  // Networked run → gather and persist. `--from-snapshot` → replay, no network at all.
+  const src = evidenceSource();
+  const prov = provenance();
+
+  // A `--limit`/`--offset` run used to overwrite the citable results with a prefix of
+  // the gold set. The file said so in its own text, but the filename did not, and the
+  // manuscript quotes the filename. Partial runs get their own name; only a full run
+  // may claim modality_goldset_results.
+  const partialRun = genes.length < allGenes.length;
+  const suffix = partialRun ? '_partial' : '';
+  // The snapshot path is explicit rather than suffixed: chunked `--offset` runs are a
+  // legitimate way to BUILD the real snapshot, so they must be able to name it.
+  const snapArg = process.argv.indexOf('--snapshot');
+  const snapFile = snapArg >= 0 && process.argv[snapArg + 1]
+    ? path.resolve(process.argv[snapArg + 1])
+    : (partialRun ? DEFAULT_SNAPSHOT.replace(/\.jsonl$/, '_partial.jsonl') : DEFAULT_SNAPSHOT);
+  const resuming = !src.fromSnapshot && process.argv.includes('--resume');
+  // Resume reuses the evidence a killed run already paid for. It must be READ, not
+  // merely skipped: these genes still have to be assessed, or the aggregates would
+  // be computed over whatever happened to remain after the interruption.
+  const already = resuming ? loadSnapshot(snapFile) : new Map<string, any>();
+  const attempted = resuming ? snapshotGenes(snapFile) : new Set<string>();
+  const writer = src.fromSnapshot ? null : new SnapshotWriter(snapFile, resuming);
+
   console.log(`Derived gold set: ${pairs.length} assignments over ${allGenes.length} genes`);
   console.log(`Source: ${gold.generated_from}`);
+  console.log(`Rules: v${RULE_VERSION} · ${prov.gitSha?.slice(0, 7) ?? 'no-git'}${prov.gitDirty ? ' (DIRTY WORKING TREE)' : ''}`);
+  console.log(src.fromSnapshot
+    ? `Evidence: REPLAY from ${path.basename(src.file)} (${src.genes!.length} genes, no network)`
+    : `Evidence: LIVE gather → ${path.basename(snapFile)}${resuming ? ` (resuming, ${already.size} already on disk)` : ''}`);
   console.log(`Evaluating ${genes.length} genes (offset ${offset})\n`);
+
+  // A replay whose snapshot is missing genes would silently shrink the denominator,
+  // which is the one failure mode a frozen snapshot exists to prevent. Say it loudly.
+  if (src.fromSnapshot) {
+    const missing = genes.filter(g => !src.genes!.includes(g.toUpperCase()));
+    if (missing.length) console.log(`  WARNING: ${missing.length} gold-set genes absent from the snapshot: ${missing.slice(0, 10).join(', ')}${missing.length > 10 ? ' …' : ''}\n`);
+  }
 
   const L: Record<0 | 1 | 2, Level> = { 0: emptyLevel(), 1: emptyLevel(), 2: emptyLevel() };
   let failed = 0;
+  let reused = 0;
 
   for (let i = 0; i < genes.length; i++) {
     const gene = genes[i];
     process.stdout.write(`\r  ${i + 1}/${genes.length}  ${gene.padEnd(12)}`);
+    const cached = already.get(gene.toUpperCase());
     let ev: any;
-    try { ev = await gatherModalityEvidence(gene); } catch { failed++; continue; }
+    if (cached) {
+      // Already on disk from the interrupted run: assess it, do not re-fetch it, and
+      // do not append a second differently-dated row for the same gene.
+      ev = cached; reused++;
+    } else if (resuming && attempted.has(gene.toUpperCase())) {
+      // Attempted before and failed. Counted as a failure again rather than retried,
+      // so a resume against a flaky upstream converges instead of looping on it.
+      failed++; continue;
+    } else {
+      try {
+        ev = await src.get(gene);
+        writer?.write({ gene, gatheredAt: new Date().toISOString(), ok: true, ev });
+      } catch (e: any) {
+        writer?.write({ gene, gatheredAt: new Date().toISOString(), ok: false, error: String(e?.message ?? e), ev: null });
+        failed++; continue;
+      }
+    }
 
     const rowsForGene = byGene.get(gene)!;
     for (const goal of [...new Set(rowsForGene.map((p: any) => p.goal))]) {
@@ -236,6 +301,10 @@ const run = async () => {
   const md = [
     '# Modality benchmark — derived gold set',
     '',
+    `Rule set **v${RULE_VERSION}** · commit \`${prov.gitSha?.slice(0, 7) ?? 'unknown'}\``
+      + `${prov.gitDirty ? ' **(uncommitted changes present)**' : ''} · generated ${prov.generatedAt.slice(0, 10)}`,
+    `Evidence: ${src.fromSnapshot ? `replayed from \`${path.basename(src.file)}\`` : `gathered live and frozen to \`${path.basename(snapFile)}\``}.`,
+    '',
     `Source: **${gold.generated_from}** via \`scripts/buildModalityGoldset.ts\`.`,
     `Scope: **${rn} (gene, modality, goal) assignments over ${genes.length} genes**`
       + (partial ? ` — a deterministic alphabetical prefix of ${allGenes.length}.` : ' — the full derived set.'),
@@ -300,10 +369,11 @@ const run = async () => {
       : ['_None._']),
   ].join('\n');
 
-  const dest = path.join(process.cwd(), 'deliverables', 'modality_goldset_results.md');
+  const dest = path.join(process.cwd(), 'deliverables', `modality_goldset_results${suffix}.md`);
   fs.mkdirSync(path.dirname(dest), { recursive: true });
   fs.writeFileSync(dest, md + '\n');
-  fs.writeFileSync(path.join(process.cwd(), 'deliverables', 'modality_goldset_results.json'), JSON.stringify({
+  fs.writeFileSync(path.join(process.cwd(), 'deliverables', `modality_goldset_results${suffix}.json`), JSON.stringify({
+    provenance: { ...prov, evidence: src.fromSnapshot ? `replay:${path.basename(src.file)}` : `live:${path.basename(snapFile)}` },
     genes: genes.length, assignments: rn,
     recall: { overall: rk / rn, sm: l0.hits.filter(h => h.modality === 'SM' && h.hit).length / l0.hits.filter(h => h.modality === 'SM').length, nonSM: nk / nn },
     baseRate: smShare / rn,
@@ -325,14 +395,26 @@ const run = async () => {
   }, null, 2));
   // Per-assessment dump. Figure 3's histogram and a gene-level bootstrap of the
   // exclusion contrast both need the individual records, not the means above.
-  const dumpDest = path.join(process.cwd(), 'deliverables', 'modality_per_assessment.json');
+  const dumpDest = path.join(process.cwd(), 'deliverables', `modality_per_assessment${suffix}.json`);
   fs.writeFileSync(dumpDest, JSON.stringify({
     note: 'One record per (gene, goal, ablation level). `developed` marks the clinically realised modality.',
+    provenance: prov,
     genes: genes.length,
     records: perAssessment,
   }));
   console.log(`\nWrote ${dest}`);
   console.log(`Wrote ${dumpDest} (${perAssessment.length} records)`);
+
+  if (writer) {
+    const manifest = writer.finalise({
+      goldset: { generated_from: gold.generated_from, assignments: pairs.length, genes: allGenes.length },
+      selection: { offset, limit: arg('--limit'), evaluated: genes.length, reusedFromResume: reused },
+    });
+    console.log(`Wrote ${snapFile}`);
+    console.log(`Wrote ${manifest}`);
+    console.log('\nEvery later analysis can now replay this evidence offline:  --from-snapshot');
+  }
+  if (reused) console.log(`\n  ${reused} genes reused from the interrupted run (not re-fetched).`);
 };
 
 run().catch(e => { console.error('FAILED:', e?.message || e); process.exit(1); });
