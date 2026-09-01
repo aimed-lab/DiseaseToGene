@@ -81,3 +81,7 @@ docs/Pocket_Druggability_Feature.md
 # lines in WINNER/README.md rebuild them exactly. The computed scores in
 # WINNER/out/ ARE tracked, so the results are usable without this download.
 WINNER/data/
+
+# Cached Agora API response — refetched with AGORA_REFRESH=1.
+# The joined table in AGORA/out/ IS tracked.
+AGORA/data/
