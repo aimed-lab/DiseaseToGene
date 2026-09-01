@@ -210,11 +210,18 @@ export function buildGeneDossier(input: DossierInput): GeneDossier {
     ],
   });
 
+  // Wording follows the evidence's own source. For a cancer cohort this is CPTAC tumour vs
+  // normal-adjacent; for Alzheimer's it is the AMP-AD brain proteome, AD vs control — and
+  // calling that a tumour would be wrong on the card a collaborator reads.
+  const protBrain = /AMP-AD|brain proteome/i.test(String(srcOf.proteomics || ''));
   categories.push({
-    key: 'proteomics', label: 'Proteomics', blurb: 'Is the PROTEIN abnormally abundant in the tumour?',
+    key: 'proteomics', label: 'Proteomics',
+    blurb: protBrain ? 'Is the PROTEIN abnormally abundant in Alzheimer brain?' : 'Is the PROTEIN abnormally abundant in the tumour?',
     attrs: [
-      attr('protein_log2fc', 'Protein tumour vs normal', pro?.log2fc != null ? fx(num(pro.log2fc)!, 2) : null, srcOf.proteomics || 'CPTAC', 'fact',
-        { unit: 'log2FC', note: 'Mass-spec protein abundance, tumour median vs matched normal-adjacent. Agreement with the mRNA expression axis strengthens a target; disagreement is itself informative.' }),
+      attr('protein_log2fc', protBrain ? 'Protein AD vs control brain' : 'Protein tumour vs normal', pro?.log2fc != null ? fx(num(pro.log2fc)!, 2) : null, srcOf.proteomics || 'CPTAC', 'fact',
+        { unit: 'log2FC', note: protBrain
+            ? 'Mass-spec protein abundance in post-mortem brain, AD vs control, FDR-corrected. Agreement with the mRNA expression axis strengthens a target; disagreement is itself informative.'
+            : 'Mass-spec protein abundance, tumour median vs matched normal-adjacent. Agreement with the mRNA expression axis strengthens a target; disagreement is itself informative.' }),
       attr('protein_direction', 'Protein direction', pro ? (num(pro.log2fc) != null && num(pro.log2fc)! >= 0 ? 'elevated' : 'reduced') : null, srcOf.proteomics || 'CPTAC', 'fact'),
     ],
   });

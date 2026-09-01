@@ -10,6 +10,7 @@
   "tissue_policy": "DLPFC when measured, otherwise the region with the smallest corrected p; every region kept under tissues{}",
   "isoform_policy": "per gene and region, the UniProt isoform with the smallest corrected p (Agora convention)",
   "scale_note": "AD brain effect sizes are ~20x smaller than tumour-vs-normal. |log2FC| q95 across genes is 0.28, q99 0.51; the axis divisor for this cohort is set in disease_registry.json (log2fc_scale), not the cancer default of 3.",
+  "design": "case_control",
   "built": "2026-09-01",
   "n_genes": 4418,
   "n_rows_in_file": 22704,

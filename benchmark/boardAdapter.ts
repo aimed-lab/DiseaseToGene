@@ -25,6 +25,7 @@ export function buildBoardRows(scores: ScoreRow[], evidence: EvidenceRow[]): any
         expr_log2fc: expr?.log2fc ?? null,
         expr_low_conf: expr?.low_confidence ?? false,
         prot_log2fc: prot?.log2fc ?? null,
+        prot_axis: prot?.axis ?? null,   // same field the board scores on, so the benchmark cannot drift from it
         chronos: dep?.mean ?? null,
         frac_dependent: dep?.frac_dependent ?? null,
         loeuf: saf?.loeuf ?? null,

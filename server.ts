@@ -946,9 +946,11 @@ function setupRoutes() {
   const dashRowsCache = new Map<number, { at: number; rows: any[] }>();
   const deriveRows = (scores: any[], evidence: any[]) => {
     const evByGene: Record<string, Record<string, any>> = {};
+    const srcByGene: Record<string, Record<string, string>> = {};
     for (const e of evidence as any[]) {
       let j: any = null; try { j = typeof e.value_json === 'string' ? JSON.parse(e.value_json) : e.value_json; } catch { /* ignore */ }
       (evByGene[String(e.gene_symbol).toUpperCase()] ??= {})[e.evidence_type] = j || {};
+      if (e.source) (srcByGene[String(e.gene_symbol).toUpperCase()] ??= {})[e.evidence_type] = String(e.source);
     }
     // dedupe by symbol (keep best rank) so the grid never shows a gene twice
     const seen = new Set<string>();
@@ -989,6 +991,11 @@ function setupRoutes() {
           expr_log2fc: expr?.log2fc ?? null,
           expr_low_conf: expr?.low_confidence ?? false,   // normal-floor artifact (inflated |log2FC|)
           prot_log2fc: prot?.log2fc ?? null,
+          // The stored axis already carries the cohort's log2fc_scale (AD brain uses 0.5, the
+          // cancers 3). The board reads THIS rather than re-dividing the raw log2FC, so the
+          // scaling rule lives in one place and the board cannot drift from the evidence.
+          prot_axis: prot?.axis ?? null,
+          prot_source: srcByGene[g]?.proteomics ?? null,
           chronos: dep?.mean ?? null,
           frac_dependent: dep?.frac_dependent ?? null,
           loeuf: saf?.loeuf ?? null,
@@ -1587,7 +1594,7 @@ function setupRoutes() {
     if (!ref) return res.json({ gene, data: null });   // no CPTAC cohort for this disease
     const table = loadRef(ref.ref_file);
     if (!table) return res.status(503).json({ gene, error: 'Proteomics reference not built yet', notLoaded: true });
-    res.json({ gene, meta: table.meta ?? null, data: table.genes?.[gene] ?? null });
+    res.json({ gene, meta: table.meta ?? null, scale: ref.log2fc_scale ?? 3, data: table.genes?.[gene] ?? null });
   });
   // ── Research agent — a multi-step evidence-reasoning loop over the read store ──
   // The co-pilot's single-shot chat can filter the loaded list; this lets the model PLAN and

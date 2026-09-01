@@ -138,10 +138,36 @@ const blend = (pairs: Array<[number | null | undefined, number]>): number | null
 };
 
 // Raw per-gene signals → 8 criterion scores in 0–1 (null = no data for that criterion).
+
+// ── Protein term ──────────────────────────────────────────────────────────────
+// The stored `prot_axis` already carries the cohort's log2fc_scale (AD brain 0.5, cancers
+// 3), so the board scores on it directly. Re-dividing the raw log2FC by a hardcoded 3 put
+// AD protein near 0.02 for every gene and pulled Expression DOWN for exactly the genes that
+// had protein data — an axis that looks populated and quietly penalises. The /3 path
+// survives only for evidence rows written before the axis field existed.
+export function protMagOf(g: any): number | null {
+  if (g?.prot_axis != null && isFinite(g.prot_axis)) return clamp01(g.prot_axis);
+  return g?.prot_log2fc != null ? clamp01(Math.abs(g.prot_log2fc) / 3) : null;
+}
+// Wording follows the evidence's own source, not an assumption that it is a tumour.
+export function proteinFrame(g: any): { label: string; note: string; scaleNote: string } {
+  const src = String(g?.prot_source || '');
+  if (/AMP-AD|brain proteome/i.test(src)) return {
+    label: 'Protein log2FC (AD vs control brain)',
+    note: 'AMP-AD brain proteome (LFQ) — change in protein abundance in Alzheimer brain vs control.',
+    scaleNote: '÷0.5 for AD brain, where effects are ~20× smaller than tumour-vs-normal',
+  };
+  return {
+    label: 'Protein log2FC (tumour vs normal)',
+    note: 'CPTAC / LinkedOmics — magnitude of tumour-vs-normal protein change.',
+    scaleNote: '÷3 for tumour-vs-normal',
+  };
+}
+
 export function criterionScores(g: any): Record<CriterionKey, number | null> {
   // Discount low-confidence expression (near-zero normal tissue → inflated |log2FC|, e.g. lncRNAs).
   const exprMag = g.expr_log2fc != null ? clamp01(Math.abs(g.expr_log2fc) / 4) * (g.expr_low_conf ? 0.25 : 1) : null;
-  const protMag = g.prot_log2fc != null ? clamp01(Math.abs(g.prot_log2fc) / 3) : null;
+  const protMag = protMagOf(g);
   const loeufTol = g.loeuf != null ? clamp01(g.loeuf / 1.5) : null;           // high LOEUF = tolerates LoF = safer
   const liabPenalty = g.n_safety_liabilities != null ? clamp01(1 - Math.min(g.n_safety_liabilities, 5) / 10) : 1;
   const essPenalty = g.is_common_essential ? 0.5 : 1;                          // pan-essential = riskier
@@ -191,12 +217,13 @@ export function criterionBreakdown(key: CriterionKey, g: any): CriterionBreakdow
     };
     case 'expression': {
       const exprMag = g.expr_log2fc != null ? clamp01(Math.abs(g.expr_log2fc) / 4) * (g.expr_low_conf ? 0.25 : 1) : null;
-      const protMag = g.prot_log2fc != null ? clamp01(Math.abs(g.prot_log2fc) / 3) : null;
+      const protMag = protMagOf(g);
+      const pf = proteinFrame(g);
       return {
-        formula: 'Weighted mean of mRNA and protein dysregulation (50/50). |log2FC| scaled (mRNA ÷4, protein ÷3).',
+        formula: `Weighted mean of mRNA and protein dysregulation (50/50). mRNA |log2FC| ÷4; protein uses the stored axis (${pf.scaleNote}).`,
         metrics: [
           { label: 'mRNA log2FC (tumour vs normal)', value: num(g.expr_log2fc), sub: exprMag, role: 'term', weightPct: 50, kind: 'fact', note: g.expr_low_conf ? 'UCSC Xena — LOW-CONFIDENCE (near-zero normal floor inflates the ratio): discounted ×0.25.' : 'UCSC Xena — magnitude of tumour-vs-normal mRNA change.' },
-          { label: 'Protein log2FC (tumour vs normal)', value: num(g.prot_log2fc), sub: protMag, role: 'term', weightPct: 50, kind: 'fact', note: 'CPTAC / LinkedOmics — magnitude of tumour-vs-normal protein change.' },
+          { label: pf.label, value: num(g.prot_log2fc), sub: protMag, role: 'term', weightPct: 50, kind: 'fact', note: pf.note },
         ],
       };
     }

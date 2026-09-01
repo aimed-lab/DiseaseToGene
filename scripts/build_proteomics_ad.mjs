@@ -97,6 +97,9 @@ const meta = {
   scale_note: 'AD brain effect sizes are ~20x smaller than tumour-vs-normal. |log2FC| q95 across genes is ' +
               `${q(0.95).toFixed(2)}, q99 ${q(0.99).toFixed(2)}; the axis divisor for this cohort is set in ` +
               'disease_registry.json (log2fc_scale), not the cancer default of 3.',
+  // Tells the UI this is case-vs-control, not tumour-vs-normal. CPTAC files carry no design
+  // field, so their absence keeps the tumour wording; only an explicit marker changes it.
+  design: 'case_control',
   built: new Date().toISOString().slice(0, 10),
   n_genes: Object.keys(genes).length,
   n_rows_in_file: rows,
