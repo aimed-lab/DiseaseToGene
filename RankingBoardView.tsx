@@ -13,6 +13,7 @@ import { CRITERIA, MODALITY_PROFILES, buildBoard, criterionBreakdown, computeVer
 import { buildTargetReportHTML, type ReportCriterion } from './targetReport';
 import type { Theme } from './types';
 import { setActiveBoardSnapshot } from './boardStore';
+import { isAgora, AGORA_COUNT } from './agoraNominated';
 
 // Only READY modalities are offered. The others (antibody/PROTAC/RNA/gene therapy) are
 // deferred until they have modality-specific criteria — see rankingBoard.ts `ready`.
@@ -104,6 +105,16 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
   // null = the board's own ranking, which is the point of the tool; a sort is a
   // temporary lens over it. Cycle desc → asc → back to the ranking.
   const [sort, setSort] = useState<{ key: string; dir: 'asc' | 'desc' } | null>(null);
+
+  // ── Dataset ─────────────────────────────────────────────────────────────
+  // Which curation a gene came from. A VIEW over the same board — scores, ranks and
+  // weights are untouched, so a gene sits at the same rank whichever dataset is
+  // selected. Agora is Alzheimer's-only, so the control hides itself entirely when no
+  // gene in the snapshot is nominated rather than offering an empty filter.
+  type DatasetKey = 'all' | 'agora' | 'ot';
+  const [dataset, setDataset] = useState<DatasetKey>('all');
+  const inDataset = (symbol: string, d: DatasetKey) =>
+    d === 'all' ? true : d === 'agora' ? isAgora(symbol) : !isAgora(symbol);
   const toggleSort = (key: string) =>
     setSort(p => (p?.key === key ? (p.dir === 'desc' ? { key, dir: 'asc' } : null) : { key, dir: 'desc' }));
 
@@ -200,6 +211,11 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
   const board = useMemo(() => buildBoard(genes, modality, weightOverride || undefined), [genes, modality, weightOverride]);
   // Criteria that actually have data in this snapshot (dependency drops out for a non-cancer disease
   // like Alzheimer's) — drives every criterion loop below, so absent axes never show.
+  const datasetCounts = useMemo(() => {
+    let agora = 0;
+    for (const g of board.scored) if (isAgora(g.symbol)) agora++;
+    return { all: board.scored.length, agora, ot: board.scored.length - agora };
+  }, [board]);
   const activeKeys = board.activeCriteria;
   const activeSig = activeKeys.join(',');
   const activeDefs = useMemo(() => CRITERIA.filter(c => activeKeys.includes(c.key)), [activeSig]);
@@ -288,7 +304,7 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
 
   const pinnedGene = useMemo(() => pinned ? board.scored.find(s => s.symbol === pinned) : null, [board, pinned]);
   const shown = useMemo(() => {
-    let ordered = board.scored;
+    let ordered = dataset === 'all' ? board.scored : board.scored.filter(g => inDataset(g.symbol, dataset));
     if (sort) {
       const val = (s: any) => sort.key === 'rank' ? s.boardRank
         : sort.key === 'target' ? s.symbol
@@ -311,7 +327,7 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
     if (!pinnedGene) return top;
     const rest = top.filter(s => s.symbol !== pinnedGene.symbol);
     return [pinnedGene, ...rest].slice(0, 150);
-  }, [board, pinnedGene, sort]);
+  }, [board, pinnedGene, sort, dataset]);
 
   useEffect(() => {
     let alive = true;
@@ -496,7 +512,36 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
           <select value={snapId} onChange={e => setSnapId(e.target.value)} className={`text-xs rounded-md border px-2 py-1 outline-none ${card} ${isDark ? 'text-white' : 'text-slate-900'}`}>
             {snapshots.map(s => <option key={s.id} value={String(s.id)}>{s.disease_name} · #{s.id}</option>)}
           </select>
-          <span className="text-[11px] text-slate-500">{board.scored.length.toLocaleString()} targets · leader = 100</span>
+          <span className="text-[11px] text-slate-500">
+            {dataset === 'all'
+              ? `${board.scored.length.toLocaleString()} targets`
+              : `${shown.length.toLocaleString()} shown of ${datasetCounts[dataset].toLocaleString()}`} · leader = 100
+          </span>
+          {/* Dataset — which curation the gene came from. Hidden entirely when this
+              snapshot has no Agora genes, because Agora only covers Alzheimer's and an
+              always-visible control that does nothing on other diseases is worse than
+              no control. Filtering does NOT rescale: a gene keeps its rank and score,
+              so the numbers mean the same thing in every dataset. */}
+          {datasetCounts.agora > 0 && (
+            <div className="flex items-center gap-1">
+              <span className={`text-[10px] font-black uppercase tracking-widest ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Dataset</span>
+              {([
+                ['all',   'All',           datasetCounts.all],
+                ['agora', 'Agora',         datasetCounts.agora],
+                ['ot',    'Open Targets',  datasetCounts.ot],
+              ] as const).map(([key, label, n]) => (
+                <button key={key} onClick={() => setDataset(key)}
+                  title={key === 'agora'
+                    ? `${AGORA_COUNT} targets nominated by AMP-AD teams for Alzheimer's disease — ${n} of them are in this snapshot`
+                    : key === 'ot' ? 'Genes from the Open Targets association harvest' : 'Every gene in this snapshot'}
+                  className={`px-2 py-1 rounded-md text-[11px] font-semibold border transition-all ${dataset === key
+                    ? 'bg-blue-600 border-blue-600 text-white'
+                    : (isDark ? 'bg-transparent border-slate-700 text-slate-300 hover:border-blue-500' : 'bg-transparent border-slate-200 text-slate-700 hover:border-blue-500')}`}>
+                  {label} <span className={dataset === key ? 'text-blue-100' : 'text-slate-400'}>{n.toLocaleString()}</span>
+                </button>
+              ))}
+            </div>
+          )}
           <div className="flex-1" />
           <div className={`flex items-center gap-1 rounded-md border px-2 ${card}`}>
             <Search className="w-3.5 h-3.5 text-slate-400" />
