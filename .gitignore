@@ -92,3 +92,6 @@ AGORA/data/
 data/Final_Agora_DE.csv
 data/Final_Agora_DE_TMT.csv
 data/SRMdata.csv
+# AMP-AD RNA differential expression (Synapse syn27211942) — 175 MB, downloaded by hand.
+# Not yet wired into any axis; ignored so a `git add -A` cannot push a file GitHub rejects.
+data/differentialExpressionSummary.tsv
