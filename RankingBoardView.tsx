@@ -111,10 +111,8 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
   // weights are untouched, so a gene sits at the same rank whichever dataset is
   // selected. Agora is Alzheimer's-only, so the control hides itself entirely when no
   // gene in the snapshot is nominated rather than offering an empty filter.
-  type DatasetKey = 'all' | 'agora' | 'ot';
+  type DatasetKey = 'all' | 'agora';
   const [dataset, setDataset] = useState<DatasetKey>('all');
-  const inDataset = (symbol: string, d: DatasetKey) =>
-    d === 'all' ? true : d === 'agora' ? isAgora(symbol) : !isAgora(symbol);
   const toggleSort = (key: string) =>
     setSort(p => (p?.key === key ? (p.dir === 'desc' ? { key, dir: 'asc' } : null) : { key, dir: 'desc' }));
 
@@ -214,7 +212,7 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
   const datasetCounts = useMemo(() => {
     let agora = 0;
     for (const g of board.scored) if (isAgora(g.symbol)) agora++;
-    return { all: board.scored.length, agora, ot: board.scored.length - agora };
+    return { all: board.scored.length, agora };
   }, [board]);
   const activeKeys = board.activeCriteria;
   const activeSig = activeKeys.join(',');
@@ -304,7 +302,7 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
 
   const pinnedGene = useMemo(() => pinned ? board.scored.find(s => s.symbol === pinned) : null, [board, pinned]);
   const shown = useMemo(() => {
-    let ordered = dataset === 'all' ? board.scored : board.scored.filter(g => inDataset(g.symbol, dataset));
+    let ordered = dataset === 'agora' ? board.scored.filter(g => isAgora(g.symbol)) : board.scored;
     if (sort) {
       const val = (s: any) => sort.key === 'rank' ? s.boardRank
         : sort.key === 'target' ? s.symbol
@@ -521,26 +519,16 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
               snapshot has no Agora genes, because Agora only covers Alzheimer's and an
               always-visible control that does nothing on other diseases is worse than
               no control. Filtering does NOT rescale: a gene keeps its rank and score,
-              so the numbers mean the same thing in every dataset. */}
+              so the numbers mean the same thing in either dataset. */}
           {datasetCounts.agora > 0 && (
-            <div className="flex items-center gap-1">
-              <span className={`text-[10px] font-black uppercase tracking-widest ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Dataset</span>
-              {([
-                ['all',   'All',           datasetCounts.all],
-                ['agora', 'Agora',         datasetCounts.agora],
-                ['ot',    'Open Targets',  datasetCounts.ot],
-              ] as const).map(([key, label, n]) => (
-                <button key={key} onClick={() => setDataset(key)}
-                  title={key === 'agora'
-                    ? `${AGORA_COUNT} targets nominated by AMP-AD teams for Alzheimer's disease — ${n} of them are in this snapshot`
-                    : key === 'ot' ? 'Genes from the Open Targets association harvest' : 'Every gene in this snapshot'}
-                  className={`px-2 py-1 rounded-md text-[11px] font-semibold border transition-all ${dataset === key
-                    ? 'bg-blue-600 border-blue-600 text-white'
-                    : (isDark ? 'bg-transparent border-slate-700 text-slate-300 hover:border-blue-500' : 'bg-transparent border-slate-200 text-slate-700 hover:border-blue-500')}`}>
-                  {label} <span className={dataset === key ? 'text-blue-100' : 'text-slate-400'}>{n.toLocaleString()}</span>
-                </button>
-              ))}
-            </div>
+            <select
+              value={dataset}
+              onChange={e => setDataset(e.target.value as DatasetKey)}
+              title="Scope the board to a gene set. Ranks and scores are unchanged."
+              className={`text-xs rounded-md border px-2 py-1 outline-none ${card} ${isDark ? 'text-white' : 'text-slate-900'}`}>
+              <option value="all">All targets · {datasetCounts.all.toLocaleString()}</option>
+              <option value="agora">Agora nominated · {datasetCounts.agora.toLocaleString()}</option>
+            </select>
           )}
           <div className="flex-1" />
           <div className={`flex items-center gap-1 rounded-md border px-2 ${card}`}>
