@@ -42,13 +42,50 @@ One row per nominated gene, 33 columns:
 | | |
 |---|---|
 | Nominated genes | 967 |
-| In snapshot #103 | 627 (65%) |
+| In snapshot #103 | **967 (100%)** |
 | With a global WINNER score | 958 (99%) |
 | Mean evidence axes present | 6.0 of 9 |
 
-The 99% is only possible because WINNER now runs over the whole interactome rather than
-the top-N of a snapshot — 331 nominated genes get a network score despite being absent
-from the AD harvest entirely.
+It started at 627 (65%). The other 340 were nominated by AMP-AD teams but sat outside
+the harvest's top-6,000 by Open Targets association — 263 ranked deeper than the cut,
+and 77 have no Open Targets AD association at all, so no harvest depth would ever have
+reached them.
+
+Rather than re-harvest 13,000 genes to catch them, they were appended to snapshot #103
+directly and enriched on their own:
+
+```bash
+npx tsx --env-file=.env scripts/d2t.ts addgenes 103 AGORA/data/agora_missing_genes.txt
+npx tsx --env-file=.env scripts/d2t.ts enrich 103 all --genes AGORA/data/agora_missing_genes.txt
+```
+
+`--genes` was added for this: it restricts an axis to those symbols and uses
+`saveAxisEvidence`'s `genesOnly` mode, so only their rows are replaced and the existing
+6,000 genes are never re-fetched. 340 genes took **9 minutes**; re-running the whole
+snapshot would have taken hours. Snapshot #103 now holds **6,340 genes** — the original
+6,000 untouched at their ranks, the new ones appended at 6001+.
+
+**The network axis is deliberately not rebuilt for them.** WINNER scores a gene against
+the others in the node set, so `--genes` refuses to run it over a subset rather than
+silently rebuilding the whole axis from 340 genes. And rebuilding it properly would not
+help: the node set is the top 2,000 by rank, and the new genes sit at 6001+. Their
+network score comes from `winner_global` instead — the full-interactome run, which is
+exactly the case it was built for.
+
+### Coverage across the 967, after enrichment
+
+| axis | genes with data |
+|---|---|
+| annotation | 967 (100%) |
+| druggability | 967 (100%) |
+| literature_epmc | 966 (100%) |
+| tissue | 950 (98%) |
+| safety | 947 (98%) |
+| expression_tvn | 931 (96%) |
+| clinical | 49 (5%) |
+| **mutation** | **0** |
+| **dependency** | **0** |
+| **proteomics** | **0** |
 
 ### Three axes are missing for Alzheimer's, snapshot-wide
 

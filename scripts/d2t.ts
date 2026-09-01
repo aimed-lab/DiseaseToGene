@@ -44,6 +44,14 @@ import { runRWR } from '../rwr.ts';
 
 const OT = 'https://api.platform.opentargets.org/api/v4/graphql';
 const DRY = process.argv.includes('--dry');
+// --genes <file>: restrict enrichment to the symbols in that file (one per line).
+// Without it an axis is rebuilt for EVERY gene in the snapshot and replaces the whole
+// type; with it only these genes are fetched and only their rows are replaced — so
+// adding a few genes to an enriched snapshot costs a few fetches, not a whole re-run.
+const GENES_ARG = (() => {
+  const i = process.argv.indexOf('--genes');
+  return i >= 0 ? process.argv[i + 1] : null;
+})();
 // Order matters for `enrich <id> all`: cheap/local axes first so a failure late in the run
 // costs the least. `annotation` and `patents` are the axes added for the dashboard.
 const AXES = ['expression', 'proteomics', 'dependency', 'safety', 'tissue', 'mutation', 'annotation', 'druggability', 'clinical', 'patents', 'literature', 'network'] as const;
@@ -395,10 +403,70 @@ async function buildAxis(axis: string, genes: string[], diseaseName: string, dis
   return rows;
 }
 
+// Append named genes to an existing snapshot so they join the same universe and can be
+// enriched alongside it. Open Targets scores are carried where the gene HAS an
+// association with the disease; one with none still gets a row (null scores) so its
+// evidence has somewhere to attach.
+async function addGenes(snapshotId: number, file: string) {
+  const svc = await oracle();
+  const snap = await svc.getSnapshot(snapshotId);
+  if (!snap) throw new Error(`Snapshot #${snapshotId} not found`);
+  const want = [...new Set(fs.readFileSync(file, 'utf8').split(/[\r\n]+/).map(x => x.trim().toUpperCase()).filter(Boolean))];
+  const existing = new Set((await svc.listRankingScores(snapshotId) as any[]).map(r => String(r.gene_symbol).toUpperCase()));
+  const todo = want.filter(g => !existing.has(g));
+  log(`Snapshot #${snapshotId} · ${snap.disease_name} · ${want.length} requested, ${todo.length} not yet present`);
+  if (!todo.length) { log('nothing to add'); return; }
+
+  // Whatever association scores Open Targets has, so these are not blank where real
+  // values exist. Paged over the disease's association list once.
+  const scoreOf = new Map<string, any>();
+  for (let page = 0; page < 40; page++) {
+    const d = await otFetch(
+      `query($id:String!,$size:Int!,$page:Int!){ disease(efoId:$id){ associatedTargets(page:{index:$page,size:$size}){ count rows{ score target{ approvedSymbol approvedName } datatypeScores{ id score } } } } }`,
+      { id: snap.disease_id, size: 500, page });
+    const at = d?.disease?.associatedTargets; const rows = at?.rows || [];
+    if (!rows.length) break;
+    for (const r of rows) {
+      const sym = String(r.target?.approvedSymbol || '').toUpperCase();
+      if (!sym || scoreOf.has(sym)) continue;
+      const t: any = { symbol: r.target?.approvedSymbol, name: r.target?.approvedName, overallScore: r.score, getScore: r.score };
+      for (const ds of (r.datatypeScores || [])) { const k = DT_MAP[ds.id]; if (k) t[k] = ds.score; }
+      scoreOf.set(sym, t);
+    }
+    process.stdout.write(`\r  open targets: ${scoreOf.size}/${at.count}`);
+    if (scoreOf.size >= (at.count || 0)) break;
+  }
+  console.log('');
+
+  const targets = todo.map(g => scoreOf.get(g) ?? { symbol: g, name: null, overallScore: null, getScore: null });
+  const withScore = targets.filter(t => t.overallScore != null).length;
+  log(`adding ${targets.length} genes (${withScore} carry an Open Targets association, ${targets.length - withScore} have none)`);
+  if (DRY) { log(`--dry: would add ${targets.length} genes`); return; }
+  const res = await svc.addGenesToSnapshot(snapshotId, snap.disease_id, snap.disease_name, targets);
+  log(`added ${res.count} genes — now run: enrich ${snapshotId} all --genes ${path.basename(file)}`);
+}
+
 async function enrich(snapshotId: number, axisArg: string) {
-  const { genes, diseaseId, diseaseName } = await loadGenes(snapshotId);
+  const loaded = await loadGenes(snapshotId);
+  const { diseaseId, diseaseName } = loaded;
+  let genes = loaded.genes;
+  const subset = !!GENES_ARG;
+  if (subset) {
+    const want = new Set(fs.readFileSync(GENES_ARG!, 'utf8').split(/[\r\n]+/).map(x => x.trim().toUpperCase()).filter(Boolean));
+    const have = new Set(genes.map(g => g.toUpperCase()));
+    const absent = [...want].filter(g => !have.has(g));
+    genes = genes.filter(g => want.has(g.toUpperCase()));
+    log(`--genes: ${genes.length} of ${want.size} requested are in the snapshot` + (absent.length ? ` · ${absent.length} absent (run addgenes first)` : ''));
+    if (!genes.length) throw new Error('none of the requested genes are in this snapshot — run `addgenes` first');
+  }
   log(`Snapshot #${snapshotId} · ${diseaseName} · ${genes.length} genes`);
-  const list = axisArg === 'all' ? [...AXES] : [axisArg];
+  let list = axisArg === 'all' ? [...AXES] : [axisArg];
+  // `network` scores each gene against the OTHERS in the node set, so running it over a
+  // subset would rebuild the whole axis from a handful of genes. Skip rather than corrupt.
+  if (subset && list.includes('network')) {
+    log('network: skipped — it is computed over the whole ranked node set, not a subset.');
+    list = list.filter(a => a !== 'network');
+  }
   const done: string[] = [], failed: string[] = [];
   for (const axis of list) {
     log(`── axis: ${axis} ──`);
@@ -421,7 +489,7 @@ async function enrich(snapshotId: number, axisArg: string) {
     const svc = await oracle();
     let saved = false;
     for (let attempt = 1; attempt <= 3; attempt++) {
-      try { const res = await svc.saveAxisEvidence(snapshotId, diseaseId, rows, 'cli', false); log(`✔ ${axis}: saved ${res.count} rows to Oracle`); saved = true; break; }
+      try { const res = await svc.saveAxisEvidence(snapshotId, diseaseId, rows, 'cli', subset); log(`✔ ${axis}: saved ${res.count} rows to Oracle`); saved = true; break; }
       catch (e: any) { const msg = String(e?.message || e).slice(0, 140); if (attempt < 3) { log(`save ${axis} failed (${attempt}/3): ${msg} — retrying in ${8 * attempt}s`); await sleep(8000 * attempt); } else { log(`✖ ${axis}: NOT saved after 3 tries: ${msg} — re-run this axis`); } }
     }
     (saved ? done : failed).push(axis);
@@ -667,11 +735,12 @@ async function buildGraph(snapshotId: number) {
     };
     if (cmd === 'harvest') { if (!a) throw new Error('usage: harvest "<disease>" [geneCount]'); await harvest(a, Number(b) || 7500); }
     else if (cmd === 'enrich') { if (!a || !b) throw new Error('usage: enrich <snapshotId> <axis|all>'); await enrich(snapId(a), b); }
+    else if (cmd === 'addgenes') { if (!a || !b) throw new Error('usage: addgenes <snapshotId> <geneListFile>'); await addGenes(snapId(a), b); }
     else if (cmd === 'status') { if (!a) throw new Error('usage: status <snapshotId>'); await status(snapId(a)); }
     else if (cmd === 'dossier') { if (!a) throw new Error('usage: dossier <snapshotId>  (run after enrich; needs GENE_DOSSIER table)'); await dossier(snapId(a)); }
     else if (cmd === 'kg') { if (!a) throw new Error('usage: kg <snapshotId>  (projects EVIDENCE→KG_NODES/KG_EDGES; needs the kg_tables.sql tables)'); await buildGraph(snapId(a)); }
     else if (cmd === 'list') { await list(); }
-    else { console.log('Commands:\n  list                             show all snapshots + their ids\n  harvest "<disease>" [geneCount]  create a snapshot\n  enrich <snapshotId> <axis|all>   (axes: ' + AXES.join(', ') + ')\n  dossier <snapshotId>             build the dashboard cards\n  kg <snapshotId>                  project the snapshot into a knowledge graph (KG_NODES/KG_EDGES)\n  status <snapshotId>              per-axis coverage\n  add --dry to any command to skip the Oracle write'); }
+    else { console.log('Commands:\n  list                             show all snapshots + their ids\n  harvest "<disease>" [geneCount]  create a snapshot\n  enrich <snapshotId> <axis|all>   (axes: ' + AXES.join(', ') + ')\n  dossier <snapshotId>             build the dashboard cards\n  kg <snapshotId>                  project the snapshot into a knowledge graph (KG_NODES/KG_EDGES)\n  addgenes <snapshotId> <file>     append symbols to a snapshot, then enrich them\n  status <snapshotId>              per-axis coverage\n  add --dry to any command to skip the Oracle write'); }
   } catch (e: any) { console.error('ERROR:', e?.message || e); process.exit(1); }
   process.exit(0);
 })();
