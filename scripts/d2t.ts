@@ -224,17 +224,21 @@ async function buildAxis(axis: string, genes: string[], diseaseName: string, dis
     const ref = cohort?.proteomics;
     if (!ref) { log(`proteomics: no CPTAC cohort for "${diseaseName}" — skipping (add it to data/disease_registry.json)`); return rows; }
     const px = loadRef(ref.ref_file);
-    if (!px?.genes) { log(`proteomics: ${ref.ref_file} not built yet — run \`node scripts/build_proteomics.mjs ${cohort!.key}\`; skipping`); return rows; }
+    if (!px?.genes) { log(`proteomics: ${ref.ref_file} not built yet — run \`node ${ref.build_script || 'scripts/build_proteomics.mjs'} ${cohort!.key}\`; skipping`); return rows; }
+    // Divisor comes from the cohort. Tumour-vs-normal protein changes run to several
+    // log2 units; AD brain changes are ~20x smaller, and dividing those by 3 would put
+    // every gene near 0.04 — an axis that looks populated and contributes nothing.
+    const scale = toNum(ref.log2fc_scale) ?? 3;
     for (const g of genes) {
       const d = px.genes[g]; if (!d) continue;
       const log2fc = toNum(d.log2fc);
-      const a = log2fc != null ? clamp01(Math.abs(log2fc) / 3) : null;
+      const a = log2fc != null ? clamp01(Math.abs(log2fc) / scale) : null;
       const up = (log2fc ?? 0) >= 0;
       rows.push({ gene_symbol: g, evidence_type: 'proteomics', source: px.meta?.source || ref.source_label,
         value_text: `${up ? 'up' : 'down'} protein log2FC ${log2fc}`,
         value_json: { axis: a, direction: up ? 'pro' : 'con', display: `${up ? 'up' : 'down'} protein log2FC ${log2fc}${d.p != null ? ` (p ${d.p})` : ''}`, log2fc, p: d.p ?? null, tumor_median: toNum(d.tumor_median), normal_median: toNum(d.normal_median), n_tumor: toNum(d.n_tumor), n_normal: toNum(d.n_normal) } });
     }
-    log(`  proteomics: ${rows.length} genes from the CPTAC table`);
+    log(`  proteomics: ${rows.length} genes from ${px.meta?.source || ref.source_label} (axis = |log2FC| / ${scale})`);
   } else if (axis === 'dependency') {
     const ref = cohort?.dependency;
     if (!ref) { log(`dependency: no reference cohort for "${diseaseName}" — skipping (add it to data/disease_registry.json)`); return rows; }

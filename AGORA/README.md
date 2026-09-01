@@ -44,7 +44,7 @@ One row per nominated gene, 33 columns:
 | Nominated genes | 967 |
 | In snapshot #103 | **967 (100%)** |
 | With a global WINNER score | 958 (99%) |
-| Mean evidence axes present | 6.0 of 9 |
+| Mean evidence axes present | 6.4 of 10 |
 
 It started at 627 (65%). The other 340 were nominated by AMP-AD teams but sat outside
 the harvest's top-6,000 by Open Targets association — 263 ranked deeper than the cut,
@@ -82,12 +82,51 @@ exactly the case it was built for.
 | tissue | 950 (98%) |
 | safety | 947 (98%) |
 | expression_tvn | 931 (96%) |
+| proteomics | 453 (47%) |
 | clinical | 49 (5%) |
 | **mutation** | **0** |
 | **dependency** | **0** |
-| **proteomics** | **0** |
 
-### Three axes are missing for Alzheimer's, snapshot-wide
+### Proteomics: filled from AMP-AD brain LFQ
+
+It was at zero. The `proteomics` axis reads a CPTAC tumour-vs-normal table that cannot
+exist for a non-cancer disease, so it sat empty for every AD gene. It is now built from
+the AMP-AD brain proteome instead — `Final_Agora_DE.csv`, Synapse `syn18689335`, the
+exact file Agora serves as `proteomics_LFQ` (APOE DLPFC log2FC +0.181 matches the Agora
+API to the last digit). AD vs control, 4,418 proteins across DLPFC, MFG, TCX and AntPFC,
+with 95% CIs and FDR-corrected p. 2,114 of the snapshot's 6,340 genes get a value
+(33%); 453 of the 967 nominated genes do (47%).
+
+```bash
+node scripts/build_proteomics_ad.mjs                       # data/proteomics_ad.json
+npx tsx --env-file=.env scripts/d2t.ts enrich 103 proteomics
+```
+
+Two things about it are deliberate and worth knowing:
+
+**It has its own scale.** AD brain protein changes are roughly 20× smaller than
+tumour-vs-normal — |log2FC| q99 is 0.51 here against values of 2+ in the PDAC table.
+The axis divides by a per-cohort `log2fc_scale` from `disease_registry.json`: the
+cancers keep the old default of 3, AD uses 0.5. Under 3 the AD axis would have a median
+of 0.022 and a 99th percentile of 0.17 — populated, and contributing nothing. Under 0.5
+the median is 0.13, q99 saturates at 1.0, 1.1% of genes hit the cap, and 23% are
+significant at corrected p < 0.05.
+
+**It is LFQ, not TMT — on purpose.** Agora also lists a TMT file (`syn32188234`), and
+TMT is the deeper study. But that file's `Coefficient` column is log-odds from a
+logistic model (range −20 to +24; APOE = −2.28 where Agora shows +0.107), and Agora's
+own ETL merely renames the column to `log2_fc`. Nothing in its public transform code
+produces the per-gene TMT values the API returns. It cannot be read as fold change, so
+it is not used. If TMT is wanted, the file to get is Agora's processed output
+`syn33344657` (`proteomics_tmt.json`), not the CSV.
+
+Per gene the builder picks one value and records how: the UniProt isoform with the
+smallest corrected p (Agora's convention — isoforms disagree, CLTB DLPFC is P09497-2 at
+p=0.014 vs P09497 at p≈1), and DLPFC as the region when measured (3,589 genes), else
+the region with the smallest corrected p (829). All four regions are kept under
+`tissues{}` so the choice is inspectable.
+
+### Two axes remain missing for Alzheimer's, snapshot-wide
 
 Not a gap in the Agora subset — a gap in the snapshot:
 
@@ -102,9 +141,9 @@ Not a gap in the Agora subset — a gap in the snapshot:
 | patents | 3,561 |
 | network | 1,914 |
 | clinical | 294 |
+| proteomics | 2,114 |
 | **mutation** | **0** |
 | **dependency** | **0** |
-| **proteomics** | **0** |
 
 Mutation comes from cBioPortal cancer cohorts and dependency from DepMap cancer cell
 lines, so neither has anything to say about Alzheimer's. `buildBoard` already handles
@@ -114,7 +153,8 @@ the consequence is worth stating plainly:
 - **Dependency is dropped entirely.** The AD board scores on seven criteria, not eight.
 - **Genetics runs at half strength** — it blends genetic association (0.6) with mutation
   frequency (0.4), and the mutation half is absent.
-- **Expression runs at half strength** — mRNA only, no protein.
+- **Expression now has its protein half** — it blends mRNA and protein log2FC, and the
+  protein term was empty until the AMP-AD LFQ axis above. It covers a third of genes.
 - **Clinical covers 5% of genes**, so it is near-empty rather than informative.
 
 The AD ranking rests on less evidence than the eight-criteria framing suggests. That is

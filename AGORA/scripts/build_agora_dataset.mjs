@@ -108,7 +108,7 @@ const COLS = [
   'axes_with_data',
 ];
 
-const AXES = ['mutation', 'expression_tvn', 'dependency', 'safety', 'tissue', 'annotation', 'druggability', 'clinical', 'literature_epmc'];
+const AXES = ['mutation', 'expression_tvn', 'proteomics', 'dependency', 'safety', 'tissue', 'annotation', 'druggability', 'clinical', 'literature_epmc'];
 const rows = [];
 for (const g of agora) {
   const sym = String(g.hgnc_symbol || '').toUpperCase();

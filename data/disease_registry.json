@@ -7,114 +7,270 @@
       "key": "pdac",
       "disease_name": "pancreatic adenocarcinoma",
       "mondo": "MONDO_0006047",
-      "aliases": ["pancrea", "pdac", "paad", "ductal adenocarcinoma"],
-      "expression": { "ref_file": "expression_paad.json", "xena_primary_site": "Pancreas", "source_label": "UCSC Xena Toil (TCGA-PAAD vs GTEx pancreas)" },
-      "dependency": { "ref_file": "depmap_pancreatic.json", "depmap_lineage": "Pancreas", "source_label": "DepMap CRISPR (Chronos, Pancreas)" },
+      "aliases": [
+        "pancrea",
+        "pdac",
+        "paad",
+        "ductal adenocarcinoma"
+      ],
+      "expression": {
+        "ref_file": "expression_paad.json",
+        "xena_primary_site": "Pancreas",
+        "source_label": "UCSC Xena Toil (TCGA-PAAD vs GTEx pancreas)"
+      },
+      "dependency": {
+        "ref_file": "depmap_pancreatic.json",
+        "depmap_lineage": "Pancreas",
+        "source_label": "DepMap CRISPR (Chronos, Pancreas)"
+      },
       "cbioportal_study": "paad_tcga_pan_can_atlas_2018",
-      "proteomics": { "ref_file": "proteomics_pdac.json", "linkedomics_cohort": "CPTAC-PDAC", "source_label": "CPTAC PDAC proteome (tumor vs normal-adjacent, mass-spec)" }
+      "proteomics": {
+        "ref_file": "proteomics_pdac.json",
+        "linkedomics_cohort": "CPTAC-PDAC",
+        "source_label": "CPTAC PDAC proteome (tumor vs normal-adjacent, mass-spec)"
+      }
     },
     {
       "key": "gbm",
       "disease_name": "glioblastoma",
       "mondo": "MONDO_0018177",
-      "aliases": ["glioblastoma", "gbm", "glioblastoma multiforme"],
-      "expression": { "ref_file": "expression_gbm.json", "xena_primary_site": "Brain", "xena_tcga_disease": "glioblastoma", "source_label": "UCSC Xena Toil (TCGA-GBM vs GTEx brain)" },
-      "dependency": { "ref_file": "depmap_gbm.json", "depmap_lineage": "CNS/Brain", "source_label": "DepMap CRISPR (Chronos, CNS/Brain)" },
+      "aliases": [
+        "glioblastoma",
+        "gbm",
+        "glioblastoma multiforme"
+      ],
+      "expression": {
+        "ref_file": "expression_gbm.json",
+        "xena_primary_site": "Brain",
+        "xena_tcga_disease": "glioblastoma",
+        "source_label": "UCSC Xena Toil (TCGA-GBM vs GTEx brain)"
+      },
+      "dependency": {
+        "ref_file": "depmap_gbm.json",
+        "depmap_lineage": "CNS/Brain",
+        "source_label": "DepMap CRISPR (Chronos, CNS/Brain)"
+      },
       "cbioportal_study": "gbm_tcga_pan_can_atlas_2018",
-      "proteomics": { "ref_file": "proteomics_gbm.json", "linkedomics_cohort": "CPTAC-GBM", "source_label": "CPTAC GBM proteome (tumor vs normal-adjacent, mass-spec)" }
+      "proteomics": {
+        "ref_file": "proteomics_gbm.json",
+        "linkedomics_cohort": "CPTAC-GBM",
+        "source_label": "CPTAC GBM proteome (tumor vs normal-adjacent, mass-spec)"
+      }
     },
     {
       "key": "brca",
       "disease_name": "breast carcinoma",
       "mondo": "MONDO_0004993",
-      "aliases": ["breast"],
-      "expression": { "ref_file": "expression_brca.json", "xena_primary_site": "Breast", "source_label": "UCSC Xena Toil (TCGA-BRCA vs GTEx breast)" },
-      "dependency": { "ref_file": "depmap_brca.json", "depmap_lineage": "Breast", "source_label": "DepMap CRISPR (Chronos, Breast)" },
+      "aliases": [
+        "breast"
+      ],
+      "expression": {
+        "ref_file": "expression_brca.json",
+        "xena_primary_site": "Breast",
+        "source_label": "UCSC Xena Toil (TCGA-BRCA vs GTEx breast)"
+      },
+      "dependency": {
+        "ref_file": "depmap_brca.json",
+        "depmap_lineage": "Breast",
+        "source_label": "DepMap CRISPR (Chronos, Breast)"
+      },
       "cbioportal_study": "brca_tcga_pan_can_atlas_2018"
     },
     {
       "key": "luad",
       "disease_name": "lung adenocarcinoma",
       "mondo": "MONDO_0005061",
-      "aliases": ["lung adenocarcinoma", "luad"],
-      "expression": { "ref_file": "expression_luad.json", "xena_primary_site": "Lung", "xena_tcga_disease": "adenocarcinoma", "source_label": "UCSC Xena Toil (TCGA-LUAD vs GTEx lung)" },
-      "dependency": { "ref_file": "depmap_luad.json", "depmap_lineage": "Lung", "source_label": "DepMap CRISPR (Chronos, Lung)" },
+      "aliases": [
+        "lung adenocarcinoma",
+        "luad"
+      ],
+      "expression": {
+        "ref_file": "expression_luad.json",
+        "xena_primary_site": "Lung",
+        "xena_tcga_disease": "adenocarcinoma",
+        "source_label": "UCSC Xena Toil (TCGA-LUAD vs GTEx lung)"
+      },
+      "dependency": {
+        "ref_file": "depmap_luad.json",
+        "depmap_lineage": "Lung",
+        "source_label": "DepMap CRISPR (Chronos, Lung)"
+      },
       "cbioportal_study": "luad_tcga_pan_can_atlas_2018",
-      "proteomics": { "ref_file": "proteomics_luad.json", "linkedomics_cohort": "CPTAC-LUAD", "source_label": "CPTAC LUAD proteome (tumor vs normal-adjacent, mass-spec)" }
+      "proteomics": {
+        "ref_file": "proteomics_luad.json",
+        "linkedomics_cohort": "CPTAC-LUAD",
+        "source_label": "CPTAC LUAD proteome (tumor vs normal-adjacent, mass-spec)"
+      }
     },
     {
       "key": "coad",
       "disease_name": "colorectal adenocarcinoma",
       "mondo": "MONDO_0005008",
-      "aliases": ["colorectal", "colon adenocarcinoma", "coad"],
+      "aliases": [
+        "colorectal",
+        "colon adenocarcinoma",
+        "coad"
+      ],
       "_note": "Expression uses the TCGA-COAD 'Colon' site (rectum/READ tumors are a separate site and are not included). DepMap lineage 'Bowel' covers colorectal lines — verify the OncotreeLineage string in your Model.csv (older releases used 'Colorectal').",
-      "expression": { "ref_file": "expression_coad.json", "xena_primary_site": "Colon", "source_label": "UCSC Xena Toil (TCGA-COAD vs GTEx colon)" },
-      "dependency": { "ref_file": "depmap_coad.json", "depmap_lineage": "Bowel", "source_label": "DepMap CRISPR (Chronos, Bowel)" },
+      "expression": {
+        "ref_file": "expression_coad.json",
+        "xena_primary_site": "Colon",
+        "source_label": "UCSC Xena Toil (TCGA-COAD vs GTEx colon)"
+      },
+      "dependency": {
+        "ref_file": "depmap_coad.json",
+        "depmap_lineage": "Bowel",
+        "source_label": "DepMap CRISPR (Chronos, Bowel)"
+      },
       "cbioportal_study": "coadread_tcga_pan_can_atlas_2018",
-      "proteomics": { "ref_file": "proteomics_coad.json", "linkedomics_cohort": "CPTAC-COAD", "source_label": "CPTAC COAD proteome (tumor vs normal-adjacent, mass-spec)" }
+      "proteomics": {
+        "ref_file": "proteomics_coad.json",
+        "linkedomics_cohort": "CPTAC-COAD",
+        "source_label": "CPTAC COAD proteome (tumor vs normal-adjacent, mass-spec)"
+      }
     },
     {
       "key": "prad",
       "disease_name": "prostate adenocarcinoma",
       "mondo": "MONDO_0005082",
-      "aliases": ["prostate"],
-      "expression": { "ref_file": "expression_prad.json", "xena_primary_site": "Prostate", "source_label": "UCSC Xena Toil (TCGA-PRAD vs GTEx prostate)" },
-      "dependency": { "ref_file": "depmap_prad.json", "depmap_lineage": "Prostate", "source_label": "DepMap CRISPR (Chronos, Prostate)" },
+      "aliases": [
+        "prostate"
+      ],
+      "expression": {
+        "ref_file": "expression_prad.json",
+        "xena_primary_site": "Prostate",
+        "source_label": "UCSC Xena Toil (TCGA-PRAD vs GTEx prostate)"
+      },
+      "dependency": {
+        "ref_file": "depmap_prad.json",
+        "depmap_lineage": "Prostate",
+        "source_label": "DepMap CRISPR (Chronos, Prostate)"
+      },
       "cbioportal_study": "prad_tcga_pan_can_atlas_2018"
     },
     {
       "key": "ov",
       "disease_name": "ovarian serous adenocarcinoma",
       "mondo": "MONDO_0008170",
-      "aliases": ["ovarian", "ovary"],
-      "expression": { "ref_file": "expression_ov.json", "xena_primary_site": "Ovary", "source_label": "UCSC Xena Toil (TCGA-OV vs GTEx ovary)" },
-      "dependency": { "ref_file": "depmap_ov.json", "depmap_lineage": "Ovary", "source_label": "DepMap CRISPR (Chronos, Ovary/Fallopian Tube)" },
+      "aliases": [
+        "ovarian",
+        "ovary"
+      ],
+      "expression": {
+        "ref_file": "expression_ov.json",
+        "xena_primary_site": "Ovary",
+        "source_label": "UCSC Xena Toil (TCGA-OV vs GTEx ovary)"
+      },
+      "dependency": {
+        "ref_file": "depmap_ov.json",
+        "depmap_lineage": "Ovary",
+        "source_label": "DepMap CRISPR (Chronos, Ovary/Fallopian Tube)"
+      },
       "cbioportal_study": "ov_tcga_pan_can_atlas_2018"
     },
     {
       "key": "lihc",
       "disease_name": "hepatocellular carcinoma",
       "mondo": "MONDO_0007256",
-      "aliases": ["hepatocellular", "liver"],
-      "expression": { "ref_file": "expression_lihc.json", "xena_primary_site": "Liver", "source_label": "UCSC Xena Toil (TCGA-LIHC vs GTEx liver)" },
-      "dependency": { "ref_file": "depmap_lihc.json", "depmap_lineage": "Liver", "source_label": "DepMap CRISPR (Chronos, Liver)" },
+      "aliases": [
+        "hepatocellular",
+        "liver"
+      ],
+      "expression": {
+        "ref_file": "expression_lihc.json",
+        "xena_primary_site": "Liver",
+        "source_label": "UCSC Xena Toil (TCGA-LIHC vs GTEx liver)"
+      },
+      "dependency": {
+        "ref_file": "depmap_lihc.json",
+        "depmap_lineage": "Liver",
+        "source_label": "DepMap CRISPR (Chronos, Liver)"
+      },
       "cbioportal_study": "lihc_tcga_pan_can_atlas_2018"
     },
     {
       "key": "skcm",
       "disease_name": "cutaneous melanoma",
       "mondo": "MONDO_0005105",
-      "aliases": ["melanoma"],
-      "expression": { "ref_file": "expression_skcm.json", "xena_primary_site": "Skin", "xena_tcga_disease": "melanoma", "source_label": "UCSC Xena Toil (TCGA-SKCM vs GTEx skin)" },
-      "dependency": { "ref_file": "depmap_skcm.json", "depmap_lineage": "Skin", "source_label": "DepMap CRISPR (Chronos, Skin)" },
+      "aliases": [
+        "melanoma"
+      ],
+      "expression": {
+        "ref_file": "expression_skcm.json",
+        "xena_primary_site": "Skin",
+        "xena_tcga_disease": "melanoma",
+        "source_label": "UCSC Xena Toil (TCGA-SKCM vs GTEx skin)"
+      },
+      "dependency": {
+        "ref_file": "depmap_skcm.json",
+        "depmap_lineage": "Skin",
+        "source_label": "DepMap CRISPR (Chronos, Skin)"
+      },
       "cbioportal_study": "skcm_tcga_pan_can_atlas_2018"
     },
     {
       "key": "stad",
       "disease_name": "stomach adenocarcinoma",
       "mondo": "MONDO_0005036",
-      "aliases": ["stomach", "gastric"],
-      "expression": { "ref_file": "expression_stad.json", "xena_primary_site": "Stomach", "source_label": "UCSC Xena Toil (TCGA-STAD vs GTEx stomach)" },
-      "dependency": { "ref_file": "depmap_stad.json", "depmap_lineage": "Stomach", "source_label": "DepMap CRISPR (Chronos, Esophagus/Stomach)" },
+      "aliases": [
+        "stomach",
+        "gastric"
+      ],
+      "expression": {
+        "ref_file": "expression_stad.json",
+        "xena_primary_site": "Stomach",
+        "source_label": "UCSC Xena Toil (TCGA-STAD vs GTEx stomach)"
+      },
+      "dependency": {
+        "ref_file": "depmap_stad.json",
+        "depmap_lineage": "Stomach",
+        "source_label": "DepMap CRISPR (Chronos, Esophagus/Stomach)"
+      },
       "cbioportal_study": "stad_tcga_pan_can_atlas_2018"
     },
     {
       "key": "kirc",
       "disease_name": "clear cell renal cell carcinoma",
       "mondo": "MONDO_0005005",
-      "aliases": ["clear cell renal", "renal cell carcinoma", "clear cell kidney", "kirc"],
+      "aliases": [
+        "clear cell renal",
+        "renal cell carcinoma",
+        "clear cell kidney",
+        "kirc"
+      ],
       "_note": "Kidney site hosts KIRC/KIRP/KICH — xena_tcga_disease 'clear cell' isolates KIRC. Verify against the detailed_category values in your Xena phenotype file.",
-      "expression": { "ref_file": "expression_kirc.json", "xena_primary_site": "Kidney", "xena_tcga_disease": "clear cell", "source_label": "UCSC Xena Toil (TCGA-KIRC vs GTEx kidney)" },
-      "dependency": { "ref_file": "depmap_kirc.json", "depmap_lineage": "Kidney", "source_label": "DepMap CRISPR (Chronos, Kidney)" },
+      "expression": {
+        "ref_file": "expression_kirc.json",
+        "xena_primary_site": "Kidney",
+        "xena_tcga_disease": "clear cell",
+        "source_label": "UCSC Xena Toil (TCGA-KIRC vs GTEx kidney)"
+      },
+      "dependency": {
+        "ref_file": "depmap_kirc.json",
+        "depmap_lineage": "Kidney",
+        "source_label": "DepMap CRISPR (Chronos, Kidney)"
+      },
       "cbioportal_study": "kirc_tcga_pan_can_atlas_2018"
     },
     {
       "key": "ad",
       "disease_name": "Alzheimer disease",
       "mondo": "MONDO_0004975",
-      "aliases": ["alzheimer"],
-      "_note": "Non-cancer disease. Expression is from GSE5281 (bulk-brain microarray, AD-vulnerable regions EC+HIP+MTG, AD vs control) built directly into expression_ad.json — NOT the TCGA/GTEx (build_expression.mjs) pipeline. Dependency (DepMap = cancer cell lines) and CPTAC proteomics do NOT apply to AD, so they are intentionally omitted.",
-      "expression": { "ref_file": "expression_ad.json", "source_label": "GSE5281 — Alzheimer vs control brain (EC+HIP+MTG, GPL570 microarray)" }
+      "aliases": [
+        "alzheimer"
+      ],
+      "_note": "Non-cancer disease. Expression is from GSE5281 (bulk-brain microarray, AD-vulnerable regions EC+HIP+MTG, AD vs control) built directly into expression_ad.json - NOT the TCGA/GTEx (build_expression.mjs) pipeline. Proteomics is from AMP-AD brain LFQ (Agora / Synapse syn18689335), built by build_proteomics_ad.mjs - NOT CPTAC. Dependency (DepMap = cancer cell lines) and mutation (cBioPortal cancer cohorts) do NOT apply to AD and are intentionally omitted. log2fc_scale is set per cohort because AD brain effect sizes are ~20x smaller than tumour-vs-normal; the cancer default of 3 would flatten the axis to ~0.04 for every gene.",
+      "expression": {
+        "ref_file": "expression_ad.json",
+        "source_label": "GSE5281 — Alzheimer vs control brain (EC+HIP+MTG, GPL570 microarray)"
+      },
+      "proteomics": {
+        "ref_file": "proteomics_ad.json",
+        "build_script": "scripts/build_proteomics_ad.mjs",
+        "source_label": "AMP-AD brain proteome, LFQ (AD vs control, 4 regions) - Agora / Synapse syn18689335",
+        "log2fc_scale": 0.5,
+        "_scale_note": "|log2FC| 0.5 (~41% change) saturates the axis. q99 of |log2FC| across the file is 0.33-0.61 by region."
+      }
     }
   ]
 }

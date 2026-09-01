@@ -85,3 +85,10 @@ WINNER/data/
 # Cached Agora API response — refetched with AGORA_REFRESH=1.
 # The joined table in AGORA/out/ IS tracked.
 AGORA/data/
+
+# AMP-AD brain proteomics, downloaded from Synapse by hand (free account required, and
+# a data-use agreement). The built data/proteomics_ad.json IS tracked, same as the CPTAC
+# proteomics_*.json files; these raw inputs are not.
+data/Final_Agora_DE.csv
+data/Final_Agora_DE_TMT.csv
+data/SRMdata.csv

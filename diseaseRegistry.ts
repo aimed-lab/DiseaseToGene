@@ -16,6 +16,8 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 export interface AxisRef {
+  build_script?: string;      // script that (re)builds ref_file; defaults to the cancer builder for that axis
+  log2fc_scale?: number;      // |log2FC| that saturates the axis. Cancer default 3; AD brain proteomics uses 0.5 (effects ~20x smaller)
   ref_file: string;          // file under data/, e.g. "expression_paad.json"
   source_label: string;      // provenance string stored on the evidence row
   xena_primary_site?: string;   // expression: Xena Toil _primary_site filter (e.g. "Pancreas")
