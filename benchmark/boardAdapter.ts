@@ -35,6 +35,8 @@ export function buildBoardRows(scores: ScoreRow[], evidence: EvidenceRow[]): any
         n_disease_trials: clin?.n_disease_trials ?? null,
         velocity: lit?.velocity ?? null,
         winner_score: net?.winner_score ?? null,
+        winner_pct: net?.winner_pct ?? null,   // the board scores on the percentile — carry it so the benchmark cannot drift
+        winner_context: net?.context ?? null,
         tissue_tau: tis?.tau ?? null,
         surface_or_secreted: ann?.surface_or_secreted ?? null,
         is_common_essential: ann?.is_common_essential ?? null,

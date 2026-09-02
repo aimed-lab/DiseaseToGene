@@ -53,6 +53,7 @@ including the significance testing.
 # once — 83 MB, ~20s
 curl -o data/9606.protein.info.v12.0.txt.gz  https://stringdb-downloads.org/download/protein.info.v12.0/9606.protein.info.v12.0.txt.gz
 curl -o data/9606.protein.links.v12.0.txt.gz https://stringdb-downloads.org/download/protein.links.v12.0/9606.protein.links.v12.0.txt.gz
+curl -o data/9606.protein.aliases.v12.0.txt.gz https://stringdb-downloads.org/download/protein.aliases.v12.0/9606.protein.aliases.v12.0.txt.gz
 
 node --max-old-space-size=6144 scripts/winner_full.mjs        # ~26s → out/winner_full_scores.tsv
 node --env-file=../.env scripts/winner_validate.mjs           # the equivalence gate
@@ -64,6 +65,57 @@ lines above rebuild it exactly. `out/winner_full_scores.tsv` **is** committed (6
 so the scores are usable without re-downloading anything.
 
 `STRING_MIN_SCORE` defaults to 400, matching the app.
+
+## The disease run (current path)
+
+`scripts/run_disease.mjs` is the whole network axis for a snapshot, following
+`Disease2Target_WINNER_Decisions.md` §1–3, §10, §12–13:
+
+```bash
+node --env-file=../.env scripts/run_disease.mjs --snapshot 103 --top 6000          # compute, gate, write runs/s103_top6000/
+node --env-file=../.env scripts/run_disease.mjs --snapshot 103 --top 6000 --load   # + write to Oracle (VPN)
+npx tsx --env-file=.env scripts/d2t.ts enrich 103 network                          # same thing, from the app CLI
+```
+
+1. Candidate set = snapshot genes with stored `rank_position <= --top` (default: the
+   snapshot's `provenance.candidate_cutoff`). Rows past the cutoff (the Agora additions)
+   are NOT in the graph.
+2. Symbols resolved to STRING v12.0 (`lib/stringGraph.mjs`), induced subgraph written as
+   the two upstream input files.
+3. **Scored by the lab's package** `winner-net 0.1.1` (`aimed-lab/WINNER`, python) via its
+   `winner` CLI. Install: `pip install "git+https://github.com/aimed-lab/WINNER.git@v0.1.1-py#subdirectory=python"`.
+4. Gate: the in-process sparse port re-scores the same graph; the load refuses if the two
+   differ by more than 1e-6 (observed 5.7e-13).
+5. raw/max, **midrank percentile within the run** (the board's feature), rank, degree; RWR
+   on the same graph seeded with the top-12 candidates (exploratory, not in the criterion).
+6. `--load` writes, in one transaction: `NETWORK_GRAPH` (keyed on
+   `S103_TOP6000_STRING12.0_400`, re-runs replace), `NETWORK_RUN` (WINNER, flagged primary,
+   + RWR), `NETWORK_SCORE` (one row per snapshot gene per run with a STATUS: PRESENT /
+   ABSENT_FROM_GRAPH / NOT_IN_CANDIDATE_SET), `GENE_IDENTIFIER_MAPPING`, and the snapshot's
+   `EVIDENCE` `network` rows (what the board reads: `winner_pct`, `context`, `run_id`).
+   DDL: `docs/sql/network_tables.sql`; ORDS handlers: `docs/sql/network_ords_module.sql`.
+
+Symbol resolution uses only HGNC- and UniProt-curated alias sources (`ALIAS_TIERS`). KEGG
+synonyms are excluded on purpose: "VDR" resolves to CYP27B1 through them. Renames the alias
+file cannot carry go in `WINNER/symbol_overrides.tsv` with a reason (RIGI -> DDX58 is the first).
+`runs/` is gitignored; every run folder carries `graph.json` (STRING version, threshold,
+counts, source-file SHA-256s, candidate rule, package version, cross-check result).
+
+Snapshot 103, 2 Sep 2026: 6,000 candidates → 5,861 exact + 19 alias + 1 override + 119 absent
+→ 5,881 nodes, 243,791 edges, 38 isolated; 340 Agora-only rows NOT_IN_CANDIDATE_SET.
+
+Gates run on 2 Sep 2026:
+
+| check | result |
+|---|---|
+| upstream package vs MATLAB `winnerResult.txt` (283 genes) | max diff 5e-15 |
+| our JS port vs MATLAB reference | max diff 5e-15 at 99 updates; 5e-9 at the old port's 100 |
+| upstream package on snapshot 103's 2,000-gene set vs previously stored `winner_score` | Spearman 1.0000, max diff 0.005 (file vs live-API edges) |
+| upstream package vs sparse port on the 5,881-node disease graph | max diff 5.7e-13 |
+| snapshot 103 mapping (6,340 symbols) | 6,194 exact, 19 alias, 1 override, 126 absent (ncRNA, IG, OR, and proteins STRING v12.0 dropped: VEGFA, GPX1, VDR, AQP4, MAPK10, MPZ, LDHB, MDH1) |
+
+`scripts/build_graph.mjs` is the graph builder on its own (`--all`, `--snapshot`, `--symbols`),
+used for the global graph and ad-hoc node sets.
 
 ## Scores are relative to their pool
 

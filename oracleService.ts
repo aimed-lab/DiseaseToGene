@@ -400,11 +400,15 @@ export async function listDossiers(snapshotId: number): Promise<any[]> {
 // gene — re-adding replaces the gene's row). Used by the "add genes" job so a
 // manually-supplied gene (e.g. SRC) joins the same universe as the Open Targets
 // genes and competes in the same funnel.
+// `source` is the CANDIDATE_SOURCE label the rows carry (AGORA, MANUAL, …) — appended genes
+// keep their provenance and are never relabelled as Open Targets candidates. The snapshot's
+// gene_count is refreshed from the table and the addition is recorded in provenance.additions.
 export async function addGenesToSnapshot(
   snapshotId: number,
   disease_id: string,
   disease_name: string,
   targets: any[],
+  source: string = 'MANUAL',
 ): Promise<{ count: number }> {
   if (!targets.length) return { count: 0 };
   const conn = await (await getPool()).getConnection();
@@ -420,21 +424,69 @@ export async function addGenesToSnapshot(
         `INSERT INTO ${T('ranking_scores')}
            (snapshot_id, disease_id, disease_name, gene_symbol, gene_name, rank_position,
             overall_score, get_score, genetic_score, expression_score, target_score, literature_score,
-            tau_tissue, tau_single_cell, bimodality_max, bimodality_tissue, pubtator_score, created_at)
+            tau_tissue, tau_single_cell, bimodality_max, bimodality_tissue, pubtator_score, created_at, candidate_source)
          VALUES (:snapshot_id,:disease_id,:disease_name,:gene_symbol,:gene_name,:rank_position,
             :overall_score,:get_score,:genetic_score,:expression_score,:target_score,:literature_score,
-            NULL,NULL,NULL,NULL,NULL, SYSTIMESTAMP)`,
+            NULL,NULL,NULL,NULL,NULL, SYSTIMESTAMP, :candidate_source)`,
         {
           snapshot_id: snapshotId, disease_id, disease_name, gene_symbol: g,
           gene_name: t.name ? String(t.name).slice(0, 400) : null, rank_position: rank,
           overall_score: num(t.overallScore), get_score: num(t.getScore ?? t.overallScore), genetic_score: num(t.geneticScore),
           expression_score: num(t.expressionScore), target_score: num(t.targetScore), literature_score: num(t.literatureScore),
+          candidate_source: String(source).toUpperCase().slice(0, 40),
         }
       );
     }
-    await logAudit(conn, { actor: 'job', action: 'genes_added', entity: 'ranking_scores', entity_id: String(snapshotId), disease_id, details: { count: targets.length } });
+    await refreshSnapshotMeta(conn, snapshotId, { additions: [{ source: String(source).toUpperCase(), count: targets.length, at: new Date().toISOString() }] });
+    await logAudit(conn, { actor: 'job', action: 'genes_added', entity: 'ranking_scores', entity_id: String(snapshotId), disease_id, details: { count: targets.length, source } });
     await conn.commit();
     return { count: targets.length };
+  } catch (e) {
+    try { await conn.rollback(); } catch { /* ignore */ }
+    throw e;
+  } finally {
+    await conn.close();
+  }
+}
+
+// ── Snapshot metadata upkeep ─────────────────────────────────────────────────
+// gene_count is re-derived from RANKING_SCORES (it went stale when genes were appended),
+// and `patch` is shallow-merged into the provenance JSON. Array-valued keys in the patch
+// are APPENDED to the existing array (used for provenance.additions).
+async function refreshSnapshotMeta(conn: oracledb.Connection, snapshotId: number, patch: Record<string, unknown>): Promise<{ gene_count: number; provenance: any }> {
+  const cur = await conn.execute<any[]>(`SELECT provenance FROM ${T('target_ranking_snapshots')} WHERE id = :s`, { s: snapshotId });
+  const prov: any = safeParse(cur.rows?.[0]?.[0]) || {};
+  for (const [k, v] of Object.entries(patch)) {
+    if (Array.isArray(v)) prov[k] = [...(Array.isArray(prov[k]) ? prov[k] : []), ...v];
+    else if (v !== undefined) prov[k] = v;
+  }
+  const cnt = await conn.execute<any[]>(`SELECT COUNT(*) FROM ${T('ranking_scores')} WHERE snapshot_id = :s`, { s: snapshotId });
+  const gene_count = Number(cnt.rows![0][0]) || 0;
+  await conn.execute(`UPDATE ${T('target_ranking_snapshots')} SET gene_count = :n, provenance = :p WHERE id = :s`, { n: gene_count, p: clob(prov), s: snapshotId });
+  return { gene_count, provenance: prov };
+}
+
+// Backfill / correct a snapshot's candidate metadata (Decisions doc §2):
+//   candidateCutoff  rows with rank_position <= cutoff are OPEN_TARGETS candidates; rows past
+//                    it get `addedSource` (e.g. AGORA) so appended genes keep their provenance
+//   provenancePatch  merged into provenance JSON (ot_release, query, score definition, counts…)
+export async function updateSnapshotMeta(
+  snapshotId: number,
+  opts: { candidateCutoff?: number; addedSource?: string; provenancePatch?: Record<string, unknown>; actor?: string },
+): Promise<{ gene_count: number; provenance: any; relabelled: number }> {
+  const conn = await (await getPool()).getConnection();
+  try {
+    let relabelled = 0;
+    if (opts.candidateCutoff) {
+      await conn.execute(`UPDATE ${T('ranking_scores')} SET candidate_source = 'OPEN_TARGETS' WHERE snapshot_id = :s AND rank_position <= :c`, { s: snapshotId, c: opts.candidateCutoff });
+      const r = await conn.execute(`UPDATE ${T('ranking_scores')} SET candidate_source = :src WHERE snapshot_id = :s AND rank_position > :c`,
+        { src: String(opts.addedSource || 'MANUAL').toUpperCase().slice(0, 40), s: snapshotId, c: opts.candidateCutoff });
+      relabelled = Number(r.rowsAffected) || 0;
+    }
+    const meta = await refreshSnapshotMeta(conn, snapshotId, { ...(opts.provenancePatch || {}), ...(opts.candidateCutoff ? { candidate_cutoff: opts.candidateCutoff } : {}) });
+    await logAudit(conn, { actor: opts.actor || 'cli', action: 'snapshot_meta_updated', entity: 'target_ranking_snapshots', entity_id: String(snapshotId), disease_id: null, details: { cutoff: opts.candidateCutoff ?? null, added_source: opts.addedSource ?? null, relabelled, patch_keys: Object.keys(opts.provenancePatch || {}) } });
+    await conn.commit();
+    return { ...meta, relabelled };
   } catch (e) {
     try { await conn.rollback(); } catch { /* ignore */ }
     throw e;

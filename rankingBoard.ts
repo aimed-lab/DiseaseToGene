@@ -61,7 +61,7 @@ export const CRITERIA: CriterionDef[] = [
       "Ferguson C, et al. Europe PMC in 2020. Nucleic Acids Res 2021;49(D1):D1507-D1514. doi:10.1093/nar/gkaa994",
     ]
   },
-  { key: 'network',      label: 'Network',       definition: 'Network importance and proximity to the disease seed genes over the protein–protein interaction graph.', source: 'WINNER + RWR over STRING',
+  { key: 'network',      label: 'Network',       definition: 'Centrality within the disease candidate network: WINNER run on the STRING interactions among the Open Targets candidate genes, expressed as a percentile within that run. Disease-specific by construction; never compared across graphs.', source: 'WINNER (aimed-lab package) over STRING v12.0, induced on the snapshot’s candidate set',
     citations: [
       "Szklarczyk D, et al. The STRING database in 2023. Nucleic Acids Res 2023;51(D1):D638-D646. doi:10.1093/nar/gkac1000",
       "Kohler S, Bauer S, Horn D, Robinson PN. Walking the interactome for prioritization of candidate disease genes. Am J Hum Genet 2008;82(4):949-958. doi:10.1016/j.ajhg.2008.02.013. The canonical reference for random walk with restart.",
@@ -182,7 +182,11 @@ export function criterionScores(g: any): Record<CriterionKey, number | null> {
     safety:       loeufTol != null ? clamp01(loeufTol * essPenalty * liabPenalty) : (g.is_common_essential != null ? clamp01(0.5 * essPenalty * liabPenalty) : null),
     clinical:     blend([[phase, 0.6], [trials, 0.4]]),
     literature:   g.velocity != null ? clamp01(g.velocity) : null,
-    network:      g.winner_score != null ? clamp01(g.winner_score) : null,
+    // Disease-specific WINNER, scored as its within-run PERCENTILE (0–100 → 0–1). The raw
+    // max-normalised value is compressed (median ≈ 0.03 because TP53 sets the max), which
+    // left the criterion near zero for almost every gene. Snapshots written before the
+    // percentile existed fall back to the old normalised score.
+    network:      g.winner_pct != null ? clamp01(g.winner_pct / 100) : (g.winner_score != null ? clamp01(g.winner_score) : null),
   };
 }
 
@@ -286,11 +290,17 @@ export function criterionBreakdown(key: CriterionKey, g: any): CriterionBreakdow
       ],
     };
     case 'network': return {
-      formula: 'WINNER network centrality mapped to 0–1 — proximity/importance over the STRING PPI graph.',
+      formula: g.winner_pct != null
+        ? `WINNER percentile within the disease run ÷ 100 — centrality among ${g.winner_context || 'the disease candidate genes'} over STRING.`
+        : 'WINNER network centrality mapped to 0–1 (legacy max-normalised score; this snapshot predates the percentile).',
       metrics: [
-        { label: 'WINNER score', value: num(g.winner_score), sub: g.winner_score != null ? clamp01(g.winner_score) : null, role: 'term', weightPct: 100, kind: 'prediction', note: 'RWR-based centrality/proximity to the disease seed genes over STRING (top-2000 only).' },
-        { label: 'RWR score', value: num(g.rwr_score, 4), role: 'context', kind: 'prediction', note: 'Random-walk-with-restart proximity to the seed set.' },
-        { label: 'Seed gene', value: g.is_seed == null ? null : (g.is_seed ? 'yes' : 'no'), role: 'context', kind: 'fact', note: 'Whether the gene is itself one of the disease seed genes.' },
+        ...(g.winner_pct != null
+          ? [{ label: 'WINNER percentile', value: `${Number(g.winner_pct).toFixed(1)}th`, sub: clamp01(g.winner_pct / 100), role: 'term' as const, weightPct: 100, kind: 'prediction' as const, note: `Standing of this gene’s WINNER score among every gene in the same run (${g.winner_context || 'disease candidate graph'}). Scores are only comparable within one run.` },
+             { label: 'WINNER score (raw/max)', value: num(g.winner_score), role: 'context' as const, kind: 'prediction' as const, note: 'Max-normalised value from the same run — compressed (TP53 = 1), kept for audit.' },
+             { label: 'Degree in disease graph', value: g.network_degree != null ? String(g.network_degree) : null, role: 'context' as const, kind: 'fact' as const, note: 'STRING partners (score ≥ 400) among the candidate genes. WINNER tracks degree closely; read them together.' }]
+          : [{ label: 'WINNER score', value: num(g.winner_score), sub: g.winner_score != null ? clamp01(g.winner_score) : null, role: 'term' as const, weightPct: 100, kind: 'prediction' as const, note: 'Legacy max-normalised WINNER over the top-ranked node set.' }]),
+        { label: 'RWR score', value: num(g.rwr_score, 4), role: 'context', kind: 'prediction', note: 'Random-walk-with-restart proximity to the top-ranked seed genes on the same graph. A separate exploratory measure, not part of the criterion.' },
+        { label: 'Seed gene', value: g.is_seed == null ? null : (g.is_seed ? 'yes' : 'no'), role: 'context', kind: 'fact', note: 'Whether the gene is one of the RWR seed genes (top-ranked candidates).' },
       ],
     };
   }

@@ -1,0 +1,4 @@
+# Manual Open Targets symbol -> STRING v12.0 preferred name. Only for renames the
+# STRING alias file does not carry in an HGNC-curated source. Cite the reason.
+# input_symbol	string_name	reason
+RIGI	DDX58	HGNC renamed DDX58 to RIGI (2023); STRING v12.0 lists it only as a KEGG synonym

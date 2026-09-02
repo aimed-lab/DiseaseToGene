@@ -39,8 +39,7 @@ import {
 } from '../evidenceProviders.ts';
 import { fetchTargetProfile, isSurfaceOrSecreted } from '../targetProfileService.ts';
 import { resolveCohort } from '../diseaseRegistry.ts';
-import { runWINNER } from '../winner.ts';
-import { runRWR } from '../rwr.ts';
+import { spawnSync } from 'node:child_process';
 
 const OT = 'https://api.platform.opentargets.org/api/v4/graphql';
 const DRY = process.argv.includes('--dry');
@@ -52,14 +51,15 @@ const GENES_ARG = (() => {
   const i = process.argv.indexOf('--genes');
   return i >= 0 ? process.argv[i + 1] : null;
 })();
+// Generic `--name value` flag reader; FLAGS_WITH_VALUE are stripped from the positionals in main().
+const flag = (name: string): string | null => { const i = process.argv.indexOf(name); return i >= 0 ? (process.argv[i + 1] ?? null) : null; };
+const FLAGS_WITH_VALUE = ['--genes', '--source', '--cutoff', '--added-source', '--ot-release'];
 // Order matters for `enrich <id> all`: cheap/local axes first so a failure late in the run
 // costs the least. `annotation` and `patents` are the axes added for the dashboard.
 const AXES = ['expression', 'proteomics', 'dependency', 'safety', 'tissue', 'mutation', 'annotation', 'druggability', 'clinical', 'patents', 'literature', 'network'] as const;
 
-// Network axis config (WINNER + RWR over the STRING PPI graph). Bounded to the top-N genes
-// by rank so the (dense) WINNER matrix stays tractable in a batch run. Override via env.
-const NETWORK_N = Number(process.env.WINNER_NETWORK_N) || 800;   // node set = top-N ranked genes
-const NETWORK_SEEDS = Number(process.env.WINNER_SEEDS) || 12;    // RWR seeds = top-K ranked genes
+// Network axis: no longer computed here. `enrich <id> network` delegates to
+// WINNER/scripts/run_disease.mjs (see runNetworkAxis below).
 const STRING_MIN_SCORE = Number(process.env.STRING_MIN_SCORE) || 400; // STRING confidence (0–1000)
 
 const log = (m: string) => console.log(`[${new Date().toISOString().slice(11, 19)}] ${m}`);
@@ -91,6 +91,31 @@ const loadRef = (file: string) => {
   let p: any = null; try { p = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'data', file), 'utf-8')); } catch { p = null; }
   refCache.set(file, p); return p;
 };
+
+// ── Candidate-universe provenance (Decisions doc §2) ─────────────────────────
+// Everything needed to reproduce WHICH genes went into a snapshot: release, query, score
+// definition, cutoff, counts, timestamp. Stored in target_ranking_snapshots.provenance.
+const OT_ASSOC_QUERY = 'disease(efoId:<id>){ associatedTargets(page:{index:<page>,size:50}){ count rows{ score target{ approvedSymbol approvedName } datatypeScores{ id score } } } } — pages walked in score-descending order; first row per approvedSymbol kept';
+const OT_SCORE_DEFINITION = 'Open Targets overall association score (associatedTargets.rows.score, 0–1); datatype scores kept as geneticScore / expressionScore / literatureScore / targetScore';
+async function otRelease(): Promise<{ ot_release: string | null; ot_api_version: string | null }> {
+  try {
+    const m = await otFetch(`{ meta { apiVersion { x y z } dataVersion { year month iteration } } }`, {});
+    const dv = m?.meta?.dataVersion, av = m?.meta?.apiVersion;
+    return {
+      ot_release: dv ? `${dv.year}.${dv.month}${dv.iteration ? '.' + dv.iteration : ''}` : null,
+      ot_api_version: av ? `${av.x}.${av.y}.${av.z}` : null,
+    };
+  } catch { return { ot_release: null, ot_api_version: null }; }
+}
+function candidateProvenance(diseaseId: string, cutoff: number, total: number | null, selected: number, rel: { ot_release: string | null; ot_api_version: string | null }) {
+  return {
+    source: 'Open Targets associatedTargets', via: 'scripts/d2t.ts harvest',
+    ot_release: rel.ot_release, ot_api_version: rel.ot_api_version, disease_id: diseaseId,
+    query: OT_ASSOC_QUERY, score_definition: OT_SCORE_DEFINITION,
+    candidate_rule: `top ${cutoff} by overall association score`, candidate_cutoff: cutoff,
+    n_associations_total: total, n_selected: selected, retrieved_at: new Date().toISOString(),
+  };
+}
 
 async function otFetch(query: string, variables: any): Promise<any> {
   // OT 403s requests with no User-Agent (Node's fetch sends none) — see modalityService.ts.
@@ -184,8 +209,11 @@ async function harvest(query: string, geneCount: number) {
   log(`Fetched ${targets.length} genes from Open Targets.`);
   if (DRY) { log(`--dry: would save snapshot for ${dis.name} with ${targets.length} genes (top: ${targets.slice(0, 8).map(t => t.symbol).join(', ')})`); return; }
   const svc = await oracle();
+  const rel = await otRelease();
+  const provenance = candidateProvenance(dis.id, geneCount, count || null, targets.length, rel);
+  log(`Provenance: Open Targets ${rel.ot_release ?? '?'} · ${count} associations · top ${geneCount} selected (${targets.length} distinct symbols)`);
   log(`Saving ${targets.length} genes to Oracle (row-by-row — this takes ~1–3 min, please wait, do NOT run the next command yet)…`);
-  const res = await svc.saveSnapshot({ disease_id: dis.id, disease_name: dis.name, label: 'CLI harvest', gene_count: targets.length, targets, provenance: { source: 'Open Targets associatedTargets', via: 'scripts/d2t.ts' }, created_by: 'cli' });
+  const res = await svc.saveSnapshot({ disease_id: dis.id, disease_name: dis.name, label: 'CLI harvest', gene_count: targets.length, targets, provenance, created_by: 'cli' });
   log(`✔✔✔ SAVED snapshot #${res.id} (v${res.version}) — ${targets.length} genes.`);
   log(`     Next: npx tsx --env-file=.env scripts/d2t.ts enrich ${res.id} mutation   (use the number ${res.id})`);
 }
@@ -366,43 +394,7 @@ async function buildAxis(axis: string, genes: string[], diseaseName: string, dis
       if (++n % 500 === 0) log(`  patents ${n}/${genes.length}…`);
     });
   } else if (axis === 'network') {
-    // WINNER (network importance) + RWR (proximity to the top-ranked seeds) over the STRING
-    // PPI graph, stored as an axis. `genes` arrives rank-ordered (from listRankingScores), so
-    // the top-N are the network node set and the top-K are the RWR seeds. Bounded by NETWORK_N
-    // so the dense WINNER matrix is tractable; genes below the cut get no network row (like any
-    // partial-coverage axis). The heavy p-value/expansion pass is a later Python-WINNER upgrade
-    // (the ranking_pval / expansion_pval fields below are reserved for it).
-    const nodeSet = genes.slice(0, NETWORK_N);
-    const seeds = genes.slice(0, NETWORK_SEEDS);
-    if (nodeSet.length < 3) { log('network: too few genes for a network; skipping'); return rows; }
-    log(`  network: fetching STRING edges for top ${nodeSet.length} genes (seeds: ${seeds.slice(0, 5).join(', ')}…)`);
-    const edges = await fetchStringEdges(nodeSet);
-    if (!edges.length) { log('network: no STRING interactions returned; skipping'); return rows; }
-    log(`  network: ${edges.length} STRING edges — running WINNER + RWR`);
-    const winnerRaw = runWINNER(nodeSet, edges);
-    const rwrRaw = runRWR(nodeSet, edges, seeds);
-    const maxW = Math.max(...Object.values(winnerRaw), 1e-10);
-    const maxR = Math.max(...Object.values(rwrRaw), 1e-10);
-    const seedSet = new Set(seeds);
-    for (const g of nodeSet) {
-      const wr = winnerRaw[g] ?? 0, rr = rwrRaw[g] ?? 0;
-      if (wr === 0 && rr === 0) continue;   // isolated node — no network signal, don't store
-      const wNorm = clamp01(wr / maxW), rNorm = clamp01(rr / maxR);
-      rows.push({
-        gene_symbol: g, evidence_type: 'network',
-        source: `STRING v12 PPI (score≥${STRING_MIN_SCORE}) · WINNER + RWR personalised PageRank`,
-        value_text: `WINNER ${wNorm.toFixed(3)} · RWR ${rNorm.toFixed(3)}${seedSet.has(g) ? ' · seed' : ''}`,
-        value_json: {
-          axis: wNorm, direction: 'pro',
-          display: `network importance ${wNorm.toFixed(3)} (WINNER) · seed proximity ${rNorm.toFixed(3)} (RWR)${seedSet.has(g) ? ' · seed gene' : ''}`,
-          winner_score: +wNorm.toFixed(4), winner_raw: +wr.toFixed(6),
-          rwr_score: +rNorm.toFixed(4), is_seed: seedSet.has(g),
-          ranking_pval: null, expansion_pval: null,   // reserved for the Python winner-pvalue upgrade
-          n_network_genes: nodeSet.length, n_edges: edges.length,
-        },
-      });
-    }
-    log(`  network: ${rows.length} genes scored (of ${nodeSet.length} in the network)`);
+    throw new Error('network is not built in-process — enrich() routes it to runNetworkAxis()');
   } else throw new Error(`Unknown axis "${axis}" (valid: ${AXES.join(', ')}, all)`);
   return rows;
 }
@@ -411,7 +403,7 @@ async function buildAxis(axis: string, genes: string[], diseaseName: string, dis
 // enriched alongside it. Open Targets scores are carried where the gene HAS an
 // association with the disease; one with none still gets a row (null scores) so its
 // evidence has somewhere to attach.
-async function addGenes(snapshotId: number, file: string) {
+async function addGenes(snapshotId: number, file: string, source: string) {
   const svc = await oracle();
   const snap = await svc.getSnapshot(snapshotId);
   if (!snap) throw new Error(`Snapshot #${snapshotId} not found`);
@@ -445,9 +437,62 @@ async function addGenes(snapshotId: number, file: string) {
   const targets = todo.map(g => scoreOf.get(g) ?? { symbol: g, name: null, overallScore: null, getScore: null });
   const withScore = targets.filter(t => t.overallScore != null).length;
   log(`adding ${targets.length} genes (${withScore} carry an Open Targets association, ${targets.length - withScore} have none)`);
-  if (DRY) { log(`--dry: would add ${targets.length} genes`); return; }
-  const res = await svc.addGenesToSnapshot(snapshotId, snap.disease_id, snap.disease_name, targets);
-  log(`added ${res.count} genes — now run: enrich ${snapshotId} all --genes ${path.basename(file)}`);
+  if (DRY) { log(`--dry: would add ${targets.length} genes labelled candidate_source=${source}`); return; }
+  const res = await svc.addGenesToSnapshot(snapshotId, snap.disease_id, snap.disease_name, targets, source);
+  log(`added ${res.count} genes (candidate_source=${source}; gene_count refreshed) — now run: enrich ${snapshotId} all --genes ${path.basename(file)}`);
+}
+
+// ════════════════════════════ PROVENANCE ════════════════════════════
+// Backfill a snapshot harvested before provenance was recorded (Decisions doc §2):
+//   provenance <id> --cutoff 6000 [--added-source AGORA] [--ot-release 26.06]
+// Rows past the cutoff are labelled --added-source; gene_count is re-derived; the query,
+// score definition, cutoff and counts are written. What could not be observed at harvest
+// time (release, total association count) is stored marked as inferred / queried-now.
+async function fixProvenance(snapshotId: number) {
+  const cutoff = Number(flag('--cutoff')) || 0;
+  const added = (flag('--added-source') || 'MANUAL').toUpperCase();
+  const otRel = flag('--ot-release');
+  if (!cutoff) throw new Error('usage: provenance <snapshotId> --cutoff <N> [--added-source AGORA] [--ot-release 26.06]');
+  const svc = await oracle();
+  const snap = await svc.getSnapshot(snapshotId);
+  if (!snap) throw new Error(`Snapshot #${snapshotId} not found`);
+  const now = await otRelease();
+  let total: number | null = null;
+  try { const d = await otFetch(`query($id:String!){ disease(efoId:$id){ associatedTargets(page:{index:0,size:1}){ count } } }`, { id: snap.disease_id }); total = d?.disease?.associatedTargets?.count ?? null; } catch { /* leave null */ }
+  const patch = {
+    ...candidateProvenance(snap.disease_id, cutoff, total, cutoff, { ot_release: otRel, ot_api_version: null }),
+    retrieved_at: snap.created_at,
+    ot_release_inferred: !!otRel,
+    ot_release_note: otRel ? `not recorded at harvest; inferred from the harvest date (${snap.created_at})` : 'not recorded at harvest and not inferred',
+    n_associations_total_note: `queried ${new Date().toISOString().slice(0, 10)} against Open Targets ${now.ot_release ?? '?'}; the count at harvest time was not stored`,
+    added_source: added, backfilled_at: new Date().toISOString(), backfilled_by: 'scripts/d2t.ts provenance',
+  };
+  log(`Snapshot #${snapshotId} · ${snap.disease_name} · cutoff ${cutoff} · rows past cutoff → ${added}`);
+  if (DRY) { log(`--dry: would write provenance ${JSON.stringify(patch).slice(0, 300)}…`); return; }
+  const res = await svc.updateSnapshotMeta(snapshotId, { candidateCutoff: cutoff, addedSource: added, provenancePatch: patch, actor: 'cli' });
+  log(`✔ gene_count ${res.gene_count} · ${res.relabelled} rows labelled ${added} · provenance keys: ${Object.keys(res.provenance).join(', ')}`);
+}
+
+// ════════════════════════════ NETWORK AXIS ════════════════════════════
+// Decisions doc §1–3: the network criterion is disease-specific WINNER over the STRING
+// subnetwork induced by the snapshot's Open Targets candidate set. Delegated to
+// WINNER/scripts/run_disease.mjs, which pins STRING v12.0 by checksum, scores with the
+// lab's winner-net package, converts to a within-run percentile, records the run in
+// NETWORK_GRAPH / NETWORK_RUN / NETWORK_SCORE with a STATUS per snapshot gene, and writes
+// the EVIDENCE 'network' rows the board reads. The candidate cutoff is read from the
+// snapshot's provenance (harvest writes it; `provenance <id> --cutoff N` backfills it).
+async function runNetworkAxis(snapshotId: number) {
+  const svc = await oracle();
+  const snap = await svc.getSnapshot(snapshotId);
+  if (!snap) throw new Error(`Snapshot #${snapshotId} not found`);
+  let prov: any = null; try { prov = typeof snap.provenance === 'string' ? JSON.parse(snap.provenance) : snap.provenance; } catch { /* ignore */ }
+  const cutoff = Number(prov?.candidate_cutoff) || 0;
+  if (!cutoff) log('network: no candidate_cutoff in provenance — every snapshot gene becomes a candidate (set one with `provenance <id> --cutoff N`)');
+  const script = path.join(process.cwd(), 'WINNER', 'scripts', 'run_disease.mjs');
+  const argv = ['--env-file=.env', script, '--snapshot', String(snapshotId), ...(cutoff ? ['--top', String(cutoff)] : []), ...(DRY ? [] : ['--load'])];
+  log(`network: node ${argv.slice(1).join(' ')}`);
+  const r = spawnSync(process.execPath, argv, { stdio: 'inherit' });
+  if (r.status !== 0) throw new Error('network run failed (see output above)');
 }
 
 async function enrich(snapshotId: number, axisArg: string) {
@@ -465,13 +510,16 @@ async function enrich(snapshotId: number, axisArg: string) {
   }
   log(`Snapshot #${snapshotId} · ${diseaseName} · ${genes.length} genes`);
   let list = axisArg === 'all' ? [...AXES] : [axisArg];
-  // `network` scores each gene against the OTHERS in the node set, so running it over a
-  // subset would rebuild the whole axis from a handful of genes. Skip rather than corrupt.
-  if (subset && list.includes('network')) {
-    log('network: skipped — it is computed over the whole ranked node set, not a subset.');
-    list = list.filter(a => a !== 'network');
-  }
   const done: string[] = [], failed: string[] = [];
+  // `network` is a whole-graph run (every gene is scored against the others), never a
+  // subset, and it is not built in-process — see runNetworkAxis().
+  if (list.includes('network')) {
+    list = list.filter(a => a !== 'network');
+    if (subset) log('network: --genes does not apply — the whole candidate graph is re-run.');
+    log(`── axis: network ──`);
+    try { await runNetworkAxis(snapshotId); done.push('network'); }
+    catch (e: any) { log(`✖ network: ${String(e?.message || e).slice(0, 200)}`); failed.push('network'); }
+  }
   for (const axis of list) {
     log(`── axis: ${axis} ──`);
     // BUILD is wrapped: an upstream outage (cBioPortal returned a 502 mid-run once) must cost
@@ -730,7 +778,15 @@ async function buildGraph(snapshotId: number) {
 
 // ════════════════════════════ main ════════════════════════════
 (async () => {
-  const [cmd, a, b] = process.argv.slice(2).filter(x => x !== '--dry');
+  // positionals = argv minus --dry and minus every `--flag value` pair
+  const positional: string[] = [];
+  const raw = process.argv.slice(2);
+  for (let i = 0; i < raw.length; i++) {
+    if (raw[i] === '--dry') continue;
+    if (FLAGS_WITH_VALUE.includes(raw[i])) { i++; continue; }
+    positional.push(raw[i]);
+  }
+  const [cmd, a, b] = positional;
   try {
     const snapId = (v: string | undefined): number => {
       const n = Number(v);
@@ -739,12 +795,13 @@ async function buildGraph(snapshotId: number) {
     };
     if (cmd === 'harvest') { if (!a) throw new Error('usage: harvest "<disease>" [geneCount]'); await harvest(a, Number(b) || 7500); }
     else if (cmd === 'enrich') { if (!a || !b) throw new Error('usage: enrich <snapshotId> <axis|all>'); await enrich(snapId(a), b); }
-    else if (cmd === 'addgenes') { if (!a || !b) throw new Error('usage: addgenes <snapshotId> <geneListFile>'); await addGenes(snapId(a), b); }
+    else if (cmd === 'addgenes') { if (!a || !b) throw new Error('usage: addgenes <snapshotId> <geneListFile> --source <AGORA|MANUAL|…>'); await addGenes(snapId(a), b, (flag('--source') || 'MANUAL').toUpperCase()); }
+    else if (cmd === 'provenance') { if (!a) throw new Error('usage: provenance <snapshotId> --cutoff <N> [--added-source AGORA] [--ot-release 26.06]'); await fixProvenance(snapId(a)); }
     else if (cmd === 'status') { if (!a) throw new Error('usage: status <snapshotId>'); await status(snapId(a)); }
     else if (cmd === 'dossier') { if (!a) throw new Error('usage: dossier <snapshotId>  (run after enrich; needs GENE_DOSSIER table)'); await dossier(snapId(a)); }
     else if (cmd === 'kg') { if (!a) throw new Error('usage: kg <snapshotId>  (projects EVIDENCE→KG_NODES/KG_EDGES; needs the kg_tables.sql tables)'); await buildGraph(snapId(a)); }
     else if (cmd === 'list') { await list(); }
-    else { console.log('Commands:\n  list                             show all snapshots + their ids\n  harvest "<disease>" [geneCount]  create a snapshot\n  enrich <snapshotId> <axis|all>   (axes: ' + AXES.join(', ') + ')\n  dossier <snapshotId>             build the dashboard cards\n  kg <snapshotId>                  project the snapshot into a knowledge graph (KG_NODES/KG_EDGES)\n  addgenes <snapshotId> <file>     append symbols to a snapshot, then enrich them\n  status <snapshotId>              per-axis coverage\n  add --dry to any command to skip the Oracle write'); }
+    else { console.log('Commands:\n  list                             show all snapshots + their ids\n  harvest "<disease>" [geneCount]  create a snapshot\n  enrich <snapshotId> <axis|all>   (axes: ' + AXES.join(', ') + ')\n  dossier <snapshotId>             build the dashboard cards\n  kg <snapshotId>                  project the snapshot into a knowledge graph (KG_NODES/KG_EDGES)\n  addgenes <snapshotId> <file> --source AGORA   append symbols (labelled), then enrich them\n  provenance <snapshotId> --cutoff N [--added-source AGORA] [--ot-release 26.06]   backfill candidate metadata\n  status <snapshotId>              per-axis coverage\n  add --dry to any command to skip the Oracle write'); }
   } catch (e: any) { console.error('ERROR:', e?.message || e); process.exit(1); }
   process.exit(0);
 })();

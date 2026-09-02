@@ -983,6 +983,13 @@ function setupRoutes() {
           n_patents: pat?.gene_patents ?? null,
           n_stopped_trials: clin?.n_stopped_trials ?? null,
           winner_score: net?.winner_score ?? null,
+          // Disease-specific WINNER as a within-run percentile — the Network criterion's feature
+          // (Decisions doc §10). Context/status/run id let the UI say WHICH graph it came from.
+          winner_pct: net?.winner_pct ?? null,
+          winner_context: net?.context ?? null,
+          winner_run_id: net?.run_id ?? null,
+          network_status: net?.status ?? null,
+          network_degree: net?.degree ?? null,
           rwr_score: net?.rwr_score ?? null,
           is_seed: net?.is_seed ?? null,
           // ── raw per-criterion signals for the Ranking Board (weighted-sum-of-8) ──

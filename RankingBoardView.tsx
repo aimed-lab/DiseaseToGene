@@ -242,7 +242,8 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
         const nbs = j.neighbors || [];
         setNeighborSet(new Set(nbs.map((n: any) => String(n.symbol).toUpperCase())));
         // fallback network signal: connectivity from the SAME call (no extra request) — a rough
-        // proxy for centrality for genes outside the top-2000 WINNER set. Not fed into the overall.
+        // proxy for genes with no stored WINNER row (outside the candidate graph, or absent from
+        // STRING at this version). Not fed into the overall.
         setLiveConnectivity(nbs.length ? Math.max(0, Math.min(1, nbs.length / 50)) : 0);
         setNeighborsLoading(false);
       })
@@ -764,8 +765,9 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
               </div>
               {activeDefs.map(c => {
                 const v = selected.criteria[c.key]; const w = effWeights[c.key];
-                // Network fallback: no stored WINNER (gene outside the top-2000 set) → show live
-                // connectivity from the neighbours we already fetched. Labeled, and NOT in the overall.
+                // Network fallback: no stored WINNER (gene outside the candidate graph, or not in
+                // STRING) → show live connectivity from the neighbours we already fetched. Labeled,
+                // and NOT in the overall.
                 const isLiveNet = c.key === 'network' && v == null && liveConnectivity != null;
                 // Within-category standing (leader = 100) drives the bar + headline; the drill-down
                 // keeps the absolute values. Live-net keeps its own proxy (no field basis).
@@ -794,7 +796,7 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
                       <p className="text-[10px] text-slate-500 leading-snug mt-2">{c.definition}</p>
                       <p className="text-[9px] text-slate-400 mt-1">Source: {c.source}</p>
                       {isLiveNet ? (
-                        <p className="text-[9px] text-slate-400 mt-2 italic">Live connectivity ({neighborSet.size} STRING partners) — this gene is outside the top-2000 WINNER set, so the stored network score is unavailable. Shown for context, not counted in the overall.</p>
+                        <p className="text-[9px] text-slate-400 mt-2 italic">Live connectivity ({neighborSet.size} STRING partners) — no stored disease-network score for this gene: it is outside the snapshot’s Open Targets candidate graph, or STRING v12.0 has no protein for it. Shown for context, not counted in the overall.</p>
                       ) : (
                         <DeepDive breakdown={criterionBreakdown(c.key, selected.raw)} isDark={isDark} barBg={barBg} />
                       )}

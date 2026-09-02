@@ -321,8 +321,10 @@ export function buildGeneDossier(input: DossierInput): GeneDossier {
   categories.push({
     key: 'network', label: 'Network biology', blurb: 'How central is it among the disease genes?',
     attrs: [
-      attr('winner', 'Network importance (WINNER)', net?.winner_score != null ? fx(num(net.winner_score)!, 3) : null, srcOf.network || 'STRING PPI', 'prediction',
-        { note: 'Personalised-PageRank importance in the STRING interaction network of the top-ranked genes. Higher = a more central hub among disease-associated proteins.' }),
+      attr('winner_pct', 'Disease-network centrality (WINNER percentile)', net?.winner_pct != null ? `${fx(num(net.winner_pct)!, 1)}th` : null, srcOf.network || 'STRING PPI', 'prediction',
+        { note: `Percentile of the WINNER score within its run${net?.context ? ` (${net.context})` : ''}. Comparable only within that run.` }),
+      attr('winner', 'Network importance (WINNER, raw/max)', net?.winner_score != null ? fx(num(net.winner_score)!, 3) : null, srcOf.network || 'STRING PPI', 'prediction',
+        { note: 'Max-normalised WINNER score from the same run (TP53-scale; compressed). Kept for audit.' }),
       attr('rwr', 'Seed proximity (RWR)', net?.rwr_score != null ? fx(num(net.rwr_score)!, 3) : null, srcOf.network || 'STRING PPI', 'prediction',
         { note: 'Random-walk-with-restart proximity to the top-ranked seed genes. Higher = more tightly wired to the known drivers.' }),
       attr('is_seed', 'Seed gene', net ? (net.is_seed ? 'yes — a top-ranked seed' : 'no') : null, 'Disease2Target', 'annotation'),
