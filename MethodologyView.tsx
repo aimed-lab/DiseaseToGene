@@ -231,6 +231,7 @@ export default function MethodologyView({ isDark, onClose }: { isDark: boolean; 
                 { t: 'Bars are normalised within each category', d: 'Because criteria live on different absolute scales (genetics tops out low; dependency near 1), each column’s bar is scaled so the field leader fills it — the number you read is standing vs. the field. The overall still uses the absolute weighted values.' },
                 { t: 'Gates must gate', d: 'A modality gate (e.g. antibody → surface/secreted) sinks ineligible targets (×0.05) and sorts them strictly below every eligible one, so the leader is always eligible.' },
                 { t: 'Novelty is protected', d: 'Context criteria (clinical, literature, network) are neutral when absent, so a genuinely novel target with no trials or papers isn’t penalised for lack of attention.' },
+                { t: 'Network is a percentile within one graph', d: 'The Network criterion is WINNER (the lab’s own algorithm, run with its published package) on the STRING v12.0 interactions among the snapshot’s Open Targets candidate genes — the top 6,000 by association score for Alzheimer’s. Each gene is scored as its percentile within that run. A percentile from another graph — another disease, a wider candidate cut, or the whole 19k-protein interactome — measures something different and is never mixed in. Genes outside the candidate set, or without a STRING protein at this version, get no network score rather than a zero; WINNER tracks connectivity closely, so a high value can mean “well connected” rather than “disease-specific”.' },
               ].map((r, i) => (
                 <div key={i} className="px-4 py-3">
                   <p className={`text-[12px] font-bold mb-0.5 ${heading}`}>{r.t}</p>
@@ -283,6 +284,7 @@ export default function MethodologyView({ isDark, onClose }: { isDark: boolean; 
                   ['LinkedOmics / CPTAC', 'Vasaikar SV, et al. Nucleic Acids Res 2018;46(D1):D956–D963. doi:10.1093/nar/gkx1090'],
                   ['DepMap — Chronos', 'Dempster JM, et al. Genome Biol 2021;22:343. PMID 34930405'],
                   ['gnomAD v4', 'Chen S, et al. Nature 2024;625:92–100'],
+                  ['WINNER', 'Nguyen T, Yue Z, Slominski R, Welner R, Zhang J, Chen JY. Front Big Data 2022;5:1016606. doi:10.3389/fdata.2022.1016606. PMID 36407327'],
                   ['STRING', 'Szklarczyk D, et al. Nucleic Acids Res 2023;51(D1):D638–D646. doi:10.1093/nar/gkac1000'],
                   ['Random walk with restart', 'Köhler S, et al. Am J Hum Genet 2008;82(4):949–958. doi:10.1016/j.ajhg.2008.02.013'],
                   ['Europe PMC', 'Ferguson C, et al. Nucleic Acids Res 2021;49(D1):D1507–D1514. doi:10.1093/nar/gkaa994'],

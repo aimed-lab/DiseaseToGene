@@ -15,9 +15,9 @@ export type CriterionKey =
 // `source` names the resource; `citations` is what a reader follows to check that the
 // metric means what we say it means. Only references CHECKED against the publisher
 // record appear here — a half-remembered volume number in a methods section is worse
-// than an absent one, so unverified ones are left out rather than guessed at. Several
+// than an absent one, so unverified ones are left out rather than guessed at. Two
 // axes are therefore still short a reference (GTEx for expression, Karczewski 2020 for
-// the LOEUF definition, and our own WINNER paper).
+// the LOEUF definition). The WINNER paper was checked against Crossref + PubMed on 2 Sep 2026.
 export interface CriterionDef { key: CriterionKey; label: string; definition: string; source: string; citations?: string[]; }
 
 // The 8 subcategories — each carries its own definition + data source, surfaced
@@ -63,6 +63,7 @@ export const CRITERIA: CriterionDef[] = [
   },
   { key: 'network',      label: 'Network',       definition: 'Centrality within the disease candidate network: WINNER run on the STRING interactions among the Open Targets candidate genes, expressed as a percentile within that run. Disease-specific by construction; never compared across graphs.', source: 'WINNER (aimed-lab package) over STRING v12.0, induced on the snapshot’s candidate set',
     citations: [
+      "Nguyen T, Yue Z, Slominski R, Welner R, Zhang J, Chen JY. WINNER: A network biology tool for biomolecular characterization and prioritization. Front Big Data 2022;5:1016606. doi:10.3389/fdata.2022.1016606. PMID 36407327. The algorithm; scored here with the authors' own package (github.com/aimed-lab/WINNER, winner-net 0.1.1).",
       "Szklarczyk D, et al. The STRING database in 2023. Nucleic Acids Res 2023;51(D1):D638-D646. doi:10.1093/nar/gkac1000",
       "Kohler S, Bauer S, Horn D, Robinson PN. Walking the interactome for prioritization of candidate disease genes. Am J Hum Genet 2008;82(4):949-958. doi:10.1016/j.ajhg.2008.02.013. The canonical reference for random walk with restart.",
     ]
@@ -289,12 +290,16 @@ export function criterionBreakdown(key: CriterionKey, g: any): CriterionBreakdow
         { label: 'Patents', value: g.n_patents != null ? String(g.n_patents) : null, role: 'context', kind: 'fact', note: 'Patent count mentioning the gene (context only).' },
       ],
     };
-    case 'network': return {
-      formula: g.winner_pct != null
-        ? `WINNER percentile within the disease run ÷ 100 — centrality among ${g.winner_context || 'the disease candidate genes'} over STRING.`
+    case 'network': {
+      // "legacy" only when a gene HAS the old score and no percentile (a snapshot written before
+      // the disease run existed). An empty gene — the Methodology page — describes the current method.
+      const legacy = g.winner_pct == null && g.winner_score != null;
+      return {
+      formula: !legacy
+        ? `WINNER percentile within the disease run ÷ 100 — centrality among ${g.winner_context || 'the snapshot’s Open Targets candidate genes'} over STRING v12.0. Percentiles are never compared across graphs.`
         : 'WINNER network centrality mapped to 0–1 (legacy max-normalised score; this snapshot predates the percentile).',
       metrics: [
-        ...(g.winner_pct != null
+        ...(!legacy
           ? [{ label: 'WINNER percentile', value: `${Number(g.winner_pct).toFixed(1)}th`, sub: clamp01(g.winner_pct / 100), role: 'term' as const, weightPct: 100, kind: 'prediction' as const, note: `Standing of this gene’s WINNER score among every gene in the same run (${g.winner_context || 'disease candidate graph'}). Scores are only comparable within one run.` },
              { label: 'WINNER score (raw/max)', value: num(g.winner_score), role: 'context' as const, kind: 'prediction' as const, note: 'Max-normalised value from the same run — compressed (TP53 = 1), kept for audit.' },
              { label: 'Degree in disease graph', value: g.network_degree != null ? String(g.network_degree) : null, role: 'context' as const, kind: 'fact' as const, note: 'STRING partners (score ≥ 400) among the candidate genes. WINNER tracks degree closely; read them together.' }]
@@ -302,7 +307,7 @@ export function criterionBreakdown(key: CriterionKey, g: any): CriterionBreakdow
         { label: 'RWR score', value: num(g.rwr_score, 4), role: 'context', kind: 'prediction', note: 'Random-walk-with-restart proximity to the top-ranked seed genes on the same graph. A separate exploratory measure, not part of the criterion.' },
         { label: 'Seed gene', value: g.is_seed == null ? null : (g.is_seed ? 'yes' : 'no'), role: 'context', kind: 'fact', note: 'Whether the gene is one of the RWR seed genes (top-ranked candidates).' },
       ],
-    };
+    }; }
   }
 }
 
