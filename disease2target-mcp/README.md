@@ -1,17 +1,23 @@
 # Disease2Target MCP server
 
 An [MCP](https://modelcontextprotocol.io) server that exposes the Disease2Target
-platform's cancer target-discovery data as tools any AI client can call —
-**Claude Desktop, Cursor, Codex, or your own MCP-capable app.**
+target-discovery platform as tools any AI client can call — **Claude Desktop, Cursor,
+Codex, PLEASER's agents, or your own MCP-capable app.**
 
 It reads **live** from the public Disease2Target ORDS bridge, so:
 
 - **No VPN, no database credentials, no API keys.**
-- **Nothing to host** — it runs locally on the machine of whoever uses it.
-- Data is always current with the platform's latest nightly snapshots.
+- **Nothing to host** — it runs wherever the client runs (stdio transport).
+- Data is always current with the platform's latest snapshots.
 
-This folder is **self-contained**: it has its own copy of the read layer and does
-not depend on the rest of the Disease2Target repo. You can zip it and hand it over.
+This folder is **self-contained**: its own read layer (`ords.js`) and a bundled copy of
+the app's scoring engine (`board.bundle.js`). It does not import from the rest of the
+Disease2Target repo at runtime. Zip it and hand it over.
+
+**v1.1.0 (2 Sep 2026).** Adds the Ranking Board composite (`rank_board`), disease-network
+centrality with context and status, proteomics by source, Agora nomination, candidate
+source, snapshot provenance, network context and neighbour tools. Wording no longer
+assumes cancer: Alzheimer disease is loaded alongside the cancers.
 
 ---
 
@@ -19,142 +25,133 @@ not depend on the rest of the Disease2Target repo. You can zip it and hand it ov
 
 - **Node.js 18 or newer** (uses the built-in `fetch`). Check with `node --version`.
 
-## Install & verify (30 seconds)
+## Install & verify
 
 ```bash
 cd disease2target-mcp
 npm install
-npm test          # confirms the ORDS bridge is reachable and returns data
+npm run test:quick   # bridge reachable? (2 s)
+npm test             # every tool once against live data (~1 min; first board build pulls ~55k rows)
 ```
 
-`npm test` should print the latest snapshot, a top-5 ranked list, and an evidence
-count. If that works, the MCP server has live data to serve.
+## Register with a client
+
+Claude Desktop (`claude_desktop_config.json`), Cursor, and most MCP hosts take the same shape:
+
+```json
+{
+  "mcpServers": {
+    "disease2target": {
+      "command": "node",
+      "args": ["/absolute/path/to/disease2target-mcp/server.js"]
+    }
+  }
+}
+```
+
+The server speaks **stdio**. A host that needs to reach it over the network (a server-side
+agent platform) wraps it in an HTTP/SSE transport on its side; nothing here needs to change
+for that, and the folder has no secrets to protect.
 
 ---
 
-## Tools exposed
+## Tools
 
 | Tool | What it does |
 |------|--------------|
-| `list_diseases` | List loaded cancers + their snapshot ids, versions, gene counts. **Call first.** |
-| `rank_targets` | Ranked target portfolio for a disease (GET score + component scores). |
-| `get_target_dossier` | Full per-gene dossier: identity, fact axes, druggability, trials — facts vs predictions labelled. |
-| `get_evidence` | Raw evidence rows for a gene, optionally filtered to one axis. |
-| `get_clinical_trials` | Per-trial records (NCT, phase, status, drug, reason-for-termination). |
-| `find_novel_tractable` | The discovery query: druggable targets with no drug and no disease trial yet. |
+| `list_diseases` | Loaded diseases with snapshot id, gene count, candidate rule, Open Targets release. **Call first.** |
+| `rank_board` | **The composite ranking** — the Ranking Board's eight-criterion weighted sum, leader = 100, using the app's own engine. `modality` (default small_molecule), `top_n`, `dataset="agora"` for the AMP-AD view of Alzheimer's. |
+| `rank_targets` | The Open Targets association order the snapshot was built from (candidate selection), with the sparse OT components and each gene's candidate source. Not the composite. |
+| `get_target_dossier` | One gene: board standing with per-criterion scores, OT association, identity, fact axes (mutation, RNA and protein change by source, dependency, safety, tissue, literature), disease-network centrality with context, druggability, trials, Agora nomination, candidate source. |
+| `get_evidence` | Raw evidence rows for a gene, optionally one axis. |
+| `get_clinical_trials` | Per-trial records: NCT, phase, status, drug, sponsor, reason stopped. |
+| `find_novel_tractable` | Druggable targets with no drug anywhere and no trial in this disease, ordered by board rank. |
+| `get_network_context` | Every network run's view of a gene with STATUS and context, plus how the symbol mapped to STRING. Explains *why* a gene has or lacks a network score. |
+| `get_network_neighbors` | Live STRING partners annotated with board rank, score, candidate source, Agora status. |
+| `get_snapshot_provenance` | Open Targets release, query, score definition, cutoff, counts, genes by candidate source, additions, network runs. **Read before citing a number.** |
 
-Every tool takes an optional `disease` (name or MONDO id) or `snapshot_id`; if
-omitted, the most recently loaded snapshot is used.
+Every tool takes an optional `disease` (name or MONDO id) or `snapshot_id`; if omitted, the
+most recently loaded snapshot is used.
+
+### Two rankings, on purpose
+
+`rank_targets` is the order Open Targets put the candidates in. `rank_board` is what the
+platform ranks them by: eight criteria (genetics, expression, dependency, tractability, safety,
+clinical, literature, network), each 0–1, weighted per modality, core criteria penalised when
+missing, context criteria neutral when missing, leader rescaled to 100. An agent that reports
+"the top targets" should use `rank_board`; `rank_targets` is the provenance of the candidate set.
+
+### Network scores are context-bound
+
+The Network criterion is WINNER (Nguyen et al., *Front Big Data* 2022; scored with the authors'
+package `winner-net`) run on the STRING v12.0 interactions among the snapshot's Open Targets
+candidate genes, reported as a **percentile within that run**. A percentile from another graph —
+another disease, a wider candidate cut, the whole interactome — measures something different and
+is never mixed in. `get_network_context` shows every run a gene appears in, with a STATUS:
+
+- `PRESENT` — scored on that graph
+- `NOT_IN_CANDIDATE_SET` — in the snapshot but outside the graph's candidate rule (e.g. Agora-added genes past the Open Targets cutoff)
+- `ABSENT_FROM_GRAPH` — a candidate with no STRING v12.0 protein (non-coding genes, and a known set of proteins missing from that release such as VEGFA, GPX1, VDR)
+
+WINNER tracks connectivity closely; read a high value as "well connected within the disease
+network", not as independent disease evidence.
 
 ---
 
 ## What it can and cannot answer
 
-Tested against a real PDAC case-study brief. Read this before planning an analysis around it —
-the gaps are gaps in the underlying data, not in the tools, so no amount of prompting closes them.
+Tested against real Alzheimer's and PDAC briefs. The gaps are gaps in the underlying data, not
+in the tools, so no amount of prompting closes them.
 
 ### Answers well
 
-| Question | Tool | What you get |
-|---|---|---|
-| Which genes are most important in this cancer? | `rank_targets` | 6,189 genes ranked for PDAC — KRAS, TP53, SMAD4, CDKN2A at the top |
-| Which genes are linked to specific drugs? | `get_target_dossier` | e.g. KRAS → ADAGRASIB, SOTORASIB, SALIRASIB |
-| Which targets are being pursued clinically? | `get_clinical_trials` | NCT id, phase, status, and the stated reason a trial stopped |
-| Which druggable targets has nobody pursued? | `find_novel_tractable` | 1,653 for PDAC — no drug anywhere, no trial here, ≥1 tractable modality |
-| What is known about one target? | `get_target_dossier` | mutation % + hotspot, tumour-vs-normal RNA and protein, DepMap dependency, gnomAD constraint, GTEx tissue specificity, STRING centrality, patents, literature |
+| Question | Tool |
+|---|---|
+| Which targets does the platform rank highest, and why? | `rank_board`, then `get_target_dossier` |
+| Which Agora-nominated targets rank highest on our evidence? | `rank_board` with `dataset="agora"` |
+| Which genes are linked to specific drugs / trials? | `get_target_dossier`, `get_clinical_trials` |
+| Which druggable targets has nobody pursued? | `find_novel_tractable` |
+| Is this gene central in the disease network, and is that just degree? | `get_network_context`, `get_network_neighbors` |
+| Where did this snapshot's genes come from, which release, which cutoff? | `get_snapshot_provenance` |
 
 ### Answers partially
 
-- **Drug *resistance*** — you get which drugs exist and which trials stopped, but the stated
-  reasons are commercial ("Funder Decision", "Business objectives have changed"), not
-  biological. There are no resistance mutations or resistance signatures in the store.
-- **Groups of genes sharing a mechanism** — there is no cross-gene aggregation tool, so
-  grouping means pulling dossiers one at a time. The STRING network axis (WINNER / RWR) is
-  the only mechanistic handle.
+- **Drug resistance** — which drugs exist and which trials stopped, with the stated (usually
+  commercial) reason. No resistance mutations or signatures.
+- **Mechanistic grouping** — no cross-gene aggregation beyond STRING neighbours.
 
 ### Cannot answer
 
-- **Aggressive disease / poor survival.** There is no survival, stage or grade data anywhere
-  in the platform. Dependency and expression magnitude are sometimes offered as proxies —
-  they are not prognosis. A model asked this question will produce a confident answer built
-  on the wrong variable.
-- **Subtypes.** No Moffitt basal/classical, no Bailey subtypes, no molecular subtype labels.
-- **Pathway ↔ phenotype associations.** No pathway axis is stored (the annotation axis
-  returns the protein class, not pathways), and there is no phenotype data to associate
-  anything with.
-- **Therapeutic modality.** The platform's Modality Fit engine (12 modalities, 5 mechanistic
-  goals) is computed live from public APIs and is **not** part of the ORDS bridge, so it is
-  not exposed here. Use the web app for "how would you drug this?".
-
-### One data caveat worth knowing
-
-`surface_or_secreted` is frozen into each snapshot at harvest time, so older snapshots carry
-whatever the classifier said that day — #102 (2026-07-24) stores `true` for KRAS, a
-lipid-anchored cytoplasmic-side protein. This server therefore **re-derives** antibody
-accessibility from the stored `subcellular_locations` on every read, so the answer is correct
-regardless of snapshot age. If you query the raw ORDS rows yourself, do the same.
+- **Prognosis / survival / stage.** Nothing in the platform carries survival, stage or grade.
+  Dependency and expression magnitude are not proxies for it.
+- **Cancer-only axes for non-cancer diseases.** Somatic mutation (cBioPortal) and DepMap
+  dependency are structurally empty for Alzheimer's; the board drops them from the weight budget
+  rather than scoring them zero.
 
 ---
 
-## Connect it to a client
+## Keeping the bundle current
 
-The server speaks MCP over **stdio** — a client launches it with `node server.js`.
-Use the **absolute path** to `server.js` in the config.
+`board.bundle.js` is generated from the main app (`rankingBoard.ts`, `boardRows.ts`,
+`agoraNominated.ts`) so the MCP ranks with the same code users see. When any of those change,
+rebuild at the repo root and commit the new bundle with the change:
 
-### Claude Desktop
-
-Edit `claude_desktop_config.json`
-(macOS: `~/Library/Application Support/Claude/`,
-Windows: `%APPDATA%\Claude\`):
-
-```json
-{
-  "mcpServers": {
-    "disease2target": {
-      "command": "node",
-      "args": ["/ABSOLUTE/PATH/TO/disease2target-mcp/server.js"]
-    }
-  }
-}
+```bash
+npm run build:mcp
 ```
 
-Restart Claude Desktop. You should see the Disease2Target tools available, then ask:
+`board.entry.ts` is the only file that references the main repo, and only at build time.
 
-> *List the diseases in Disease2Target, then show me the top 10 pancreatic cancer targets.*
-> *Give me the dossier for KRAS.*
-> *Which pancreatic targets are druggable but nobody has pursued?*
+## ORDS endpoints used
 
-### Cursor
+`snapshots`, `snapshots/:id`, `snapshots/:id/scores`, `snapshots/:id/evidence`,
+`evidence/gene/:gene`, `network/runs`, `network/gene/:gene`, `network/mapping/:gene`, plus one
+live call to the public STRING API for `get_network_neighbors`. The `candidate_source` column on
+the scores endpoint needs `docs/sql/ords_scores_candidate_source.sql` applied on the platform
+side; until then the source is derived from the snapshot's candidate cutoff.
 
-Add to `.cursor/mcp.json` (project) or the global Cursor MCP settings:
+## Citation
 
-```json
-{
-  "mcpServers": {
-    "disease2target": {
-      "command": "node",
-      "args": ["/ABSOLUTE/PATH/TO/disease2target-mcp/server.js"]
-    }
-  }
-}
-```
-
-### Codex / other MCP clients
-
-Any client that supports stdio MCP servers uses the same shape: command `node`,
-argument = absolute path to `server.js`. Point it there and the six tools appear.
-
----
-
-## Notes
-
-- **Read-only.** There are no write/delete tools — this cannot modify platform data.
-- **Coverage** = whatever cancers are loaded into the platform (see `list_diseases`).
-  As more diseases are added upstream, they appear here automatically.
-- **Facts vs predictions** are labelled in every response: measured/curated values
-  (trials, expression, mutations, literature) vs model-derived ones (GET score,
-  rank, tractability).
-- `find_novel_tractable` is the heaviest tool (it scans a snapshot's full evidence
-  set); results are cached for 10 minutes per snapshot.
-- Configuration is optional — see `.env.example`. The default points at the public
-  bridge and needs nothing.
+Disease2Target (AIMed Lab, UAB). Network criterion: Nguyen T, Yue Z, Slominski R, Welner R,
+Zhang J, Chen JY. WINNER: A network biology tool for biomolecular characterization and
+prioritization. *Front Big Data* 2022;5:1016606. doi:10.3389/fdata.2022.1016606.

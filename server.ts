@@ -12,6 +12,7 @@ import { gatherModalityEvidence, assessModalities, buildRationalePrompt, attachR
 import { enrichGene, enrichGenes } from "./enrichService.js";
 import * as ordsSvc from "./ordsService.js"; // pure fetch client → safe to bundle for Vercel
 import * as hermes from "./hermesService.js"; // PLEASER chat upstream — pure fetch client
+import { deriveBoardRows } from "./boardRows.js"; // the Ranking Board's row shape (shared with benchmark + MCP)
 import { GLOSSARY } from "./dashboardGlossary.js";        // pure data — safe on the server
 import { MODALITY_GLOSSARY } from "./modalityGlossary.js"; // pure data — safe on the server
 // NOTE: relative imports carry an explicit .js extension (Node-ESM requirement). On Vercel
@@ -944,78 +945,9 @@ function setupRoutes() {
   // raw Oracle read was cached, so each board load paid the whole derivation again.
   // Keyed on the raw entry's timestamp: when that refreshes, this derives afresh.
   const dashRowsCache = new Map<number, { at: number; rows: any[] }>();
-  const deriveRows = (scores: any[], evidence: any[]) => {
-    const evByGene: Record<string, Record<string, any>> = {};
-    const srcByGene: Record<string, Record<string, string>> = {};
-    for (const e of evidence as any[]) {
-      let j: any = null; try { j = typeof e.value_json === 'string' ? JSON.parse(e.value_json) : e.value_json; } catch { /* ignore */ }
-      (evByGene[String(e.gene_symbol).toUpperCase()] ??= {})[e.evidence_type] = j || {};
-      if (e.source) (srcByGene[String(e.gene_symbol).toUpperCase()] ??= {})[e.evidence_type] = String(e.source);
-    }
-    // dedupe by symbol (keep best rank) so the grid never shows a gene twice
-    const seen = new Set<string>();
-    const rowsAll = (scores as any[])
-      .filter(r => { const g = String(r.gene_symbol).toUpperCase(); if (seen.has(g)) return false; seen.add(g); return true; })
-      .map(r => {
-        const g = String(r.gene_symbol).toUpperCase();
-        const ev = evByGene[g] || {};
-        const drug = ev.druggability, clin = ev.clinical, lit = ev.literature_epmc;
-        const ann = ev.annotation, tis = ev.tissue, pat = ev.patents, net = ev.network;
-        const mut = ev.mutation, expr = ev.expression_tvn, prot = ev.proteomics, dep = ev.dependency, saf = ev.safety;
-        const drugLegacy = !!drug && drug.proven_modalities === undefined;
-        const clinLegacy = !!clin && clin.n_drugs_in_disease_trials === undefined;
-        const axesPresent = ['mutation', 'expression_tvn', 'dependency', 'safety', 'tissue', 'annotation', 'druggability', 'clinical', 'literature_epmc']
-          .filter(a => ev[a]).length;
-        return {
-          gene_symbol: r.gene_symbol, rank: r.rank, score: r.overall_score ?? r.get_score,
-          n_drugs: drugLegacy ? null : (drug?.total_compounds ?? null),
-          tractable_modalities: drug?.tractable_modalities ?? null,
-          n_disease_trials: clinLegacy ? null : (clin?.n_disease_trials ?? null),
-          trials_by_phase: clinLegacy ? null : (clin?.trials_by_phase ?? null),
-          max_disease_phase: clinLegacy ? null : (clin?.max_disease_trial_phase ?? null),
-          n_publications: lit?.paper_count ?? null,
-          velocity: lit?.velocity ?? null,
-          // ── axes added for the dashboard ──
-          target_class: ann?.target_class ?? null,
-          is_common_essential: ann?.is_common_essential ?? null,
-          surface_or_secreted: ann?.surface_or_secreted ?? null,
-          tissue_tau: tis?.tau ?? null,
-          n_patents: pat?.gene_patents ?? null,
-          n_stopped_trials: clin?.n_stopped_trials ?? null,
-          winner_score: net?.winner_score ?? null,
-          // Disease-specific WINNER as a within-run percentile — the Network criterion's feature
-          // (Decisions doc §10). Context/status/run id let the UI say WHICH graph it came from.
-          winner_pct: net?.winner_pct ?? null,
-          winner_context: net?.context ?? null,
-          winner_run_id: net?.run_id ?? null,
-          network_status: net?.status ?? null,
-          network_degree: net?.degree ?? null,
-          rwr_score: net?.rwr_score ?? null,
-          is_seed: net?.is_seed ?? null,
-          // ── raw per-criterion signals for the Ranking Board (weighted-sum-of-8) ──
-          genetic_score: r.genetic_score ?? null,
-          mutation_freq: mut?.frequency ?? null,
-          expr_log2fc: expr?.log2fc ?? null,
-          expr_low_conf: expr?.low_confidence ?? false,   // normal-floor artifact (inflated |log2FC|)
-          prot_log2fc: prot?.log2fc ?? null,
-          // The stored axis already carries the cohort's log2fc_scale (AD brain uses 0.5, the
-          // cancers 3). The board reads THIS rather than re-dividing the raw log2FC, so the
-          // scaling rule lives in one place and the board cannot drift from the evidence.
-          prot_axis: prot?.axis ?? null,
-          prot_source: srcByGene[g]?.proteomics ?? null,
-          chronos: dep?.mean ?? null,
-          frac_dependent: dep?.frac_dependent ?? null,
-          loeuf: saf?.loeuf ?? null,
-          druggability_score: drug?.score ?? null,
-          proven_modalities: drug?.proven_modalities ?? null,
-          tractability: drug?.tractability ?? null,
-          n_safety_liabilities: ann?.n_safety_liabilities ?? null,
-          completeness: axesPresent / 9,
-          legacy: drugLegacy || clinLegacy,
-        };
-      });
-    return rowsAll;
-  };
+  // The row shape lives in boardRows.ts — shared with the benchmark and the MCP server, so
+  // the three cannot drift apart.
+  const deriveRows = (scores: any[], evidence: any[]) => deriveBoardRows(scores, evidence);
 
   const dashboardRows = (id: number, entry: { at: number; scores: any[]; evidence: any[] }) => {
     const hit = dashRowsCache.get(id);

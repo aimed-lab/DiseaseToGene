@@ -12,7 +12,9 @@
 
 const DEFAULT_BASE = 'https://aimed.uab.edu/apex/d2towner';
 const MODULE = 'd2t';
-const PAGE = 500;
+// ORDS serves up to 10k rows per page; big pages + parallel waves make a full-snapshot
+// evidence pull (~55k rows) take seconds rather than minutes.
+const PAGE = 5000;
 const PAGE_CONCURRENCY = 6;   // parallel page requests per wave
 
 export const baseUrl = () => (process.env.ORDS_BASE_URL || DEFAULT_BASE).replace(/\/+$/, '');
@@ -38,8 +40,6 @@ async function ordsPage(path, params, offset) {
 
 // Collect every row of a paginated ORDS query. Fetch page 0 to learn whether there is more,
 // then fan the remaining pages out in parallel waves rather than walking them one at a time.
-// The sequential walk was the dominant cost of the heaviest tool (find_novel_tractable scans
-// a snapshot's whole evidence set): measured ~39s -> ~8s on #102's 53k evidence rows.
 async function ordsGetAll(path, params = {}) {
   const first = await ordsGet(path, { ...params, limit: PAGE, offset: 0 });
   const firstItems = Array.isArray(first.items) ? first.items : [];
@@ -90,4 +90,37 @@ export async function evidenceForGene(gene) {
   if (!gene) return [];
   const rows = await ordsGetAll(`evidence/gene/${encodeURIComponent(gene)}`);
   return rows.map((r) => ({ ...r, value_json: safeParse(r.value_json) ?? r.value_json }));
+}
+
+// ── network tables (NETWORK_RUN / NETWORK_SCORE / GENE_IDENTIFIER_MAPPING, Sep 2026) ──
+// Every WINNER run with its graph context. A run is a property of gene + graph + parameters;
+// scores from different runs are never comparable (is_primary marks the one the board uses).
+export async function networkRuns(snapshotId) {
+  return ordsGetAll('network/runs', { snapshot_id: snapshotId });
+}
+
+// One gene across ALL runs (disease candidate graphs, expanded graphs, the global interactome
+// when loaded), each row labelled with its context and a STATUS that says why a score is or
+// is not there (PRESENT / ABSENT_FROM_GRAPH / NOT_IN_CANDIDATE_SET).
+export async function networkForGene(gene) {
+  if (!gene) return [];
+  return ordsGetAll(`network/gene/${encodeURIComponent(gene)}`);
+}
+
+// How the Open Targets symbol resolved to a STRING protein (EXACT / ALIAS / OVERRIDE /
+// AMBIGUOUS / COLLISION / ABSENT_FROM_STRING). Tells "renamed" apart from "missing".
+export async function mappingForGene(gene) {
+  if (!gene) return [];
+  return ordsGetAll(`network/mapping/${encodeURIComponent(gene)}`);
+}
+
+// ── live STRING partners (public STRING API; the only non-ORDS call in this folder) ──
+export async function stringNeighbors(gene, { minScore = 400, limit = 60 } = {}) {
+  const url = `https://string-db.org/api/json/interaction_partners?identifiers=${encodeURIComponent(gene)}&species=9606&required_score=${minScore}&limit=${limit}&caller_identity=disease2target_mcp`;
+  const r = await fetch(url);
+  if (!r.ok) return [];
+  const rows = await r.json().catch(() => []);
+  return (Array.isArray(rows) ? rows : [])
+    .map(x => ({ symbol: String(x.preferredName_B || '').toUpperCase(), score: Number(x.score) || 0 }))
+    .filter(n => n.symbol && n.symbol !== String(gene).toUpperCase());
 }
