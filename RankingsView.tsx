@@ -16,7 +16,7 @@ const isMeaningful = (type: string, text?: string): boolean => {
   if (!text) return false;
   const t = text.toLowerCase();
   if (type === 'clinical') return !/^0 trials/.test(t);
-  if (type === 'literature') return !/^0 papers/.test(t);
+  if (type === 'literature' || type === 'literature_epmc') return !/^0 papers/.test(t);
   if (type === 'druggability') return !t.includes('no drug data found');
   if (type === 'mutation') return !/^0\//.test(t);
   return true;
@@ -25,7 +25,10 @@ const isMeaningful = (type: string, text?: string): boolean => {
 const COLS = [
   { key: 'open_targets', label: 'Open Targets', kind: 'ot' as const },
   { key: 'clinical', label: 'Clinical', kind: 'ev' as const },
-  { key: 'literature', label: 'Literature', kind: 'ev' as const },
+  // Europe PMC is the axis the board SCORES on; PubMed is a sparser annotation kept as a
+  // fallback. Keying this column on 'literature' ticked the annotation instead, so genes
+  // with real Europe PMC literature but no PubMed row showed a dash.
+  { key: 'literature_epmc', alt: 'literature', label: 'Literature', kind: 'ev' as const },
   { key: 'druggability', label: 'ChEMBL', kind: 'ev' as const },
   { key: 'mutation', label: 'Mutation', kind: 'ev' as const },
 ];
@@ -94,7 +97,8 @@ export const RankingsView: React.FC<Props> = ({ theme = 'light', activeDiseaseNa
     const ev = byGene[g] || {};
     const items: { label: string; text: string }[] = [];
     if (ev.clinical) items.push({ label: 'Clinical (ClinicalTrials.gov)', text: ev.clinical });
-    if (ev.literature) items.push({ label: 'Literature (PubMed/EuropePMC/PubTator)', text: ev.literature });
+    if (ev.literature_epmc) items.push({ label: 'Literature (Europe PMC — the scored axis)', text: ev.literature_epmc });
+    if (ev.literature) items.push({ label: 'Literature (PubMed — annotation)', text: ev.literature });
     if (ev.druggability) items.push({ label: 'Druggability (ChEMBL)', text: ev.druggability });
     if (ev.mutation) items.push({ label: 'Mutation (cBioPortal)', text: ev.mutation });
     return (
@@ -185,8 +189,9 @@ export const RankingsView: React.FC<Props> = ({ theme = 'light', activeDiseaseNa
                     <td style={{ ...td, textAlign: 'right', color: muted }}>{r.rank ?? ''}</td>
                     <td onClick={(e) => { e.stopPropagation(); setDrawerGene(g); }} title="Open full drill-down" style={{ ...td, fontWeight: 800, color: accent, textDecoration: 'underline', textUnderlineOffset: 2, cursor: 'pointer' }}>{g}</td>
                     {COLS.map((c) => {
-                      const present = c.kind === 'ot' ? (r.genetic_score != null || r.get_score != null) : !!byGene[g]?.[c.key];
-                      const text = c.kind === 'ot' ? 'G / E / T' : byGene[g]?.[c.key];
+                      const cell = byGene[g]?.[c.key] ?? ((c as any).alt ? byGene[g]?.[(c as any).alt] : undefined);
+                      const present = c.kind === 'ot' ? (r.genetic_score != null || r.get_score != null) : !!cell;
+                      const text = c.kind === 'ot' ? 'G / E / T' : cell;
                       return (
                         <td key={c.key} style={{ ...td, textAlign: 'center' }}>
                           {present
