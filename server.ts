@@ -790,7 +790,9 @@ function setupRoutes() {
       const screen: ScreenContext | undefined = req.body?.screen;
       const sysText = [systemInstruction || '', renderScreenBlock(screen), EVIDENCE_RULES].filter(Boolean).join('\n\n');
       const clientNames = new Set<string>((tools || []).map((t: any) => t?.name).filter(Boolean));
-      const dataTools = AGENT_TOOLS.filter(t => !clientNames.has(t.name));
+      // REFERENCE_TOOL rides along because the client no longer inlines the glossaries for
+      // this upstream — the model looks a definition up instead of carrying all of them.
+      const dataTools = [...AGENT_TOOLS.filter(t => !clientNames.has(t.name)), REFERENCE_TOOL];
       const dataNames = new Set(dataTools.map(t => t.name));
       const allTools = [...(tools || []), ...dataTools];
       const toolCtx = { disease: req.body?.disease || screen?.disease?.name, snapshotId: req.body?.snapshotId || screen?.snapshot?.id, modality: screen?.snapshot?.modality, litWindow: screen?.litWindow };
@@ -817,7 +819,9 @@ function setupRoutes() {
             const args = safeArgs(c.function?.arguments);
             let result: any;
             if (dataNames.has(nm)) {
-              try { result = await execAgentTool(nm, args, toolCtx); } catch (e: any) { result = { error: String(e?.message || e) }; }
+              try {
+                result = nm === REFERENCE_TOOL.name ? lookupReference(args?.term) : await execAgentTool(nm, args, toolCtx);
+              } catch (e: any) { result = { error: String(e?.message || e) }; }
               trace.push({ tool: nm, args });
             } else result = { queued: 'this browser action runs after you answer; assume it happens' };
             convo.push({ role: 'tool', tool_call_id: c.id, content: JSON.stringify(result).slice(0, 20_000) });

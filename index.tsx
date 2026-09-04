@@ -3727,6 +3727,11 @@ const App = () => {
   const activeModel = aiModels.find(m => m.id === aiModel);
   const modelHasTools = activeModel ? activeModel.tools : true;
   const upstreamIsHermes = activeModel?.upstream === 'hermes';
+  // Upstreams that charge for prompt size every turn, or cap tokens-per-minute, get the
+  // glossary as a term INDEX plus a lookup tool instead of ~24,000 inlined characters.
+  // PLEASER replays the whole transcript each turn; the OpenAI key allows 10k tokens a
+  // minute on some models, and the inlined blocks alone pushed one question to 10,617.
+  const compactReference = upstreamIsHermes || activeModel?.upstream === 'openai';
 
   useEffect(() => {
     if (!isAuthenticated) return;
@@ -5519,7 +5524,7 @@ CRITICAL RULES:
       // transcript to its model on EVERY turn, so inline meant paying 24k again
       // and again — measured at 75s for a first turn and ~25s after. There, the
       // model gets the term NAMES and calls lookup_reference for the one it needs.
-      const referenceSection = upstreamIsHermes
+      const referenceSection = compactReference
         ? `      REFERENCE — you do NOT have the definitions inline. Call lookup_reference { term } to fetch one.
       When the user asks what a term/column/metric/abbreviation/modality/goal/tier MEANS, or asks for its RANGE, FORMULA, DATA SOURCE or evidence level, you MUST call lookup_reference first and answer only from what it returns. Never answer a definition from memory, and never invent a range, formula or source. If the lookup reports the term is unknown, say so plainly.
       Terms available: ${[...new Set([...GLOSSARY.map(e => e.term), ...MODALITY_GLOSSARY.map(e => e.term)])].sort((a, b) => a.localeCompare(b)).join(', ')}`
