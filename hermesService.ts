@@ -91,11 +91,13 @@ export const createChat = async (title: string): Promise<string> => {
   return String(id);
 };
 
-/** Post one turn. Returns the assistant's text. `model` picks the Hermes model. */
-export const sendMessage = async (chatId: string, content: string, model?: string): Promise<string> => {
+/** Post one turn. Returns the assistant's text. `model` picks the Hermes model.
+ *  `timeoutMs` overrides the default for turns that are legitimately slow — reading a
+ *  full paper through paperclip runs past the 240s that suits an ordinary chat turn. */
+export const sendMessage = async (chatId: string, content: string, model?: string, timeoutMs?: number): Promise<string> => {
   const body: Record<string, unknown> = { content };
   if (model) body.model = model;
-  const d = await call(`/api/chats/${encodeURIComponent(chatId)}/messages`, { method: 'POST', body: JSON.stringify(body) });
+  const d = await call(`/api/chats/${encodeURIComponent(chatId)}/messages`, { method: 'POST', body: JSON.stringify(body) }, timeoutMs);
   const text = typeof d?.content === 'string' ? d.content.trim() : '';
   if (!text) throw new Error('Hermes returned no text');
   return text;

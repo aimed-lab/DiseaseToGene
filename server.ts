@@ -1741,6 +1741,7 @@ function setupRoutes() {
     { name: 'find_novel_tractable', description: 'Druggable targets with NO developed drug and NO disease trial yet — the discovery query.', parameters: { type: 'OBJECT', properties: { disease: { type: 'STRING' }, limit: { type: 'NUMBER' } } } },
     { name: 'compare_genes', description: 'Side-by-side comparison of 2–4 genes in the current disease: board rank and score (leader = 100), every criterion score with its weight, and each stored evidence axis with its source. Use for "compare X vs Y" and "why is X ranked above Y".', parameters: { type: 'OBJECT', properties: { genes: { type: 'ARRAY', items: { type: 'STRING' } }, disease: { type: 'STRING' } }, required: ['genes'] } },
     { name: 'gene_relationship', description: 'How two genes relate in the current disease: direct STRING interaction and its score, shared interaction partners, both genes\' board standing, and papers that mention both together with the disease (Europe PMC). Use for "how is A related to B".', parameters: { type: 'OBJECT', properties: { gene_a: { type: 'STRING' }, gene_b: { type: 'STRING' }, disease: { type: 'STRING' } }, required: ['gene_a', 'gene_b'] } },
+    { name: 'read_paper', description: 'Read the FULL TEXT of one scientific paper and return what it actually tested: the claimed target, whether any genetic perturbation (knockdown/knockout/rescue) was performed, which control compounds were run and at what concentrations, the study type, and author conflicts. Use this whenever a question turns on what a specific paper did or did not show — counts of papers cannot answer that. Identify the paper by DOI, PubMed id, or exact title.', parameters: { type: 'OBJECT', properties: { doi: { type: 'STRING' }, pmid: { type: 'STRING' }, title: { type: 'STRING' }, focus: { type: 'STRING', description: 'Optional: what to look for, e.g. "was a selective control compound tested".' } } } },
     { name: 'deep_dive_gene', description: 'LIVE deep dive for ONE gene — the same detail the app\'s target card shows: cohort-aware expression and protein change, dependency, constraint, tissue, per-trial records, latest papers, network centrality with context, STRING neighbours, single-cell, modality fit. Slower (3–8 s) and NOT part of the ranking. Use only for the one or two genes the question names, after get_gene_evidence.', parameters: { type: 'OBJECT', properties: { gene: { type: 'STRING' }, disease: { type: 'STRING' } }, required: ['gene'] } },
   ];
   const jparse = (v: any) => { try { return typeof v === 'string' ? JSON.parse(v) : v; } catch { return null; } };
@@ -1816,6 +1817,64 @@ function setupRoutes() {
     return val;
   }
   const orPhrases = (terms: string[]) => terms.map(t => `"${t}"`).join(' OR ');
+
+  // ── Reading a paper, not counting papers ────────────────────────────────────
+  // Our literature axis stores counts. A question like "did that study run a knockout?"
+  // cannot be answered from a count, and the answer is never in the abstract either — it
+  // is in the results, or in their absence. PLEASER hosts `paperclip`, a full-text
+  // filesystem of biomedical papers, so we call it rather than building a second one.
+  //
+  // Three rules make it affordable. The extraction runs on PLEASER's own cheap model, not
+  // on whichever model is answering. Only a small structured record comes back, never the
+  // paper. And the record is cached, so a paper is read once rather than once per question.
+  const paperReads = new Map<string, Promise<any>>();   // one read per paper in flight, shared by every caller
+  const PAPER_SCHEMA = `{"claimed_target":"","study_type":"preprint|peer-reviewed, and in vitro|in vivo|clinical","genetic_perturbation":"knockdown/knockout/rescue performed, with detail — or exactly: none reported","control_compounds":"selective comparators tested, their concentrations and whether they reproduced the effect — or: none reported","potency":"key IC50s or doses with units","main_findings":["",""],"author_conflicts":"affiliations with a company owning the compound — or: none stated","limitations":""}`;
+  async function paperMeta(doi?: string, pmid?: string, title?: string) {
+    // Try each identifier in turn, most specific first. Europe PMC does NOT index every
+    // preprint by PubMed id — the ADT-030 preprint resolves on DOI and on title, but
+    // EXT_ID returns nothing — so a single-query lookup silently fails on exactly the
+    // recent papers a target question is most likely to be about.
+    const queries = [
+      doi && `DOI:"${doi}"`,
+      pmid && `EXT_ID:${pmid}`,
+      title && `TITLE:"${String(title).replace(/"/g, '')}"`,
+    ].filter(Boolean) as string[];
+    try {
+      let hit: any = null;
+      for (const q of queries) {
+        const r = await fetch(`https://www.ebi.ac.uk/europepmc/webservices/rest/search?query=${encodeURIComponent(q)}&format=json&resultType=core&pageSize=1`);
+        hit = (await r.json())?.resultList?.result?.[0];
+        if (hit) break;
+      }
+      if (!hit) return null;
+      return { title: hit.title, journal: hit.journalInfo?.journal?.title || hit.bookOrReportDetails?.publisher || hit.source,
+        year: hit.pubYear, doi: hit.doi, pmid: hit.pmid || hit.id, is_preprint: hit.source === 'PPR',
+        open_access: hit.isOpenAccess === 'Y', abstract: String(hit.abstractText || '').slice(0, 2000) };
+    } catch { return null; }
+  }
+  async function readPaperViaPleaser(meta: any, focus?: string): Promise<any> {
+    if (!hermes.hermesEnabled()) return { error: 'PLEASER is not configured on this server' };
+    const ref = [meta?.title && `"${meta.title}"`, meta?.doi && `DOI ${meta.doi}`, meta?.pmid && `PMID ${meta.pmid}`].filter(Boolean).join(', ');
+    if (!ref) return { error: 'no usable identifier for the paper' };
+    const prompt = `Use the paperclip tool to locate and read the FULL TEXT of this paper: ${ref}.
+${focus ? `Pay particular attention to: ${focus}
+` : ''}Then reply with ONE JSON object and nothing else — no prose, no code fence — in exactly this shape:
+${PAPER_SCHEMA}
+Rules: fill every field only from the full text you retrieved. Where the paper does not report something, write exactly "none reported" rather than guessing. Never answer from memory. If paperclip cannot retrieve the full text, reply with {"error":"full text unavailable"}.`;
+    let chatId = '';
+    try {
+      chatId = await hermes.createChat('D2T read_paper');
+      // Reading a full paper legitimately runs past a chat turn's 240s default.
+      const raw = await hermes.sendMessage(chatId, prompt, process.env.PLEASER_PAPER_MODEL || 'glm-air', 600_000);
+      const m = String(raw || '').match(/\{[\s\S]*\}/);
+      if (!m) return { error: 'the reader returned no structured result', raw: String(raw || '').slice(0, 400) };
+      try { return JSON.parse(m[0]); } catch { return { error: 'unparseable result', raw: m[0].slice(0, 400) }; }
+    } catch (e: any) {
+      return { error: `paper reader unreachable: ${String(e?.message || e).slice(0, 140)}` };
+    } finally {
+      if (chatId) { try { await hermes.deleteChat(chatId); } catch { /* best effort */ } }
+    }
+  }
   // Users say "FAK", the store says PTK2. Resolve an alias to the symbol the snapshot uses
   // (STRING's preferred name is HGNC for human), so board lookups, evidence lookups and
   // edge matching all use one name. Returns the input unchanged when it is already known.
@@ -1902,6 +1961,46 @@ function setupRoutes() {
         },
         pathway_overlap: 'not computed (use the Knowledge Graph view for pathway co-membership)',
       };
+    }
+    if (name === 'read_paper') {
+      // Reading a full paper through paperclip takes minutes and sometimes exceeds
+      // PLEASER's own ~300s gateway cap, so this must not block an answer. We wait a short
+      // while, and if the read is still running we say so and let the model answer from
+      // measured evidence — the read continues in the background and caches, so the next
+      // ask is instant. A paper is read once, not once per question.
+      const doi = String(args?.doi || '').trim(), pmid = String(args?.pmid || '').trim(), title = String(args?.title || '').trim();
+      if (!doi && !pmid && !title) return { error: 'give a doi, a pmid, or an exact title' };
+      const meta = await paperMeta(doi, pmid, title);
+      const ident = meta ? { title: meta.title, doi: meta.doi, pmid: meta.pmid } : { doi, pmid, title };
+      const paper = meta
+        ? { title: meta.title, journal: meta.journal, year: meta.year, doi: meta.doi, pmid: meta.pmid,
+            status: meta.is_preprint ? 'PREPRINT — not peer reviewed' : 'peer-reviewed', open_access: meta.open_access }
+        : { doi, pmid, title, note: 'not found in Europe PMC' };
+      const key = cacheKey('paper_extract', `${ident.doi || ''}|${ident.pmid || ''}|${ident.title || ''}|${String(args?.focus || '')}`);
+
+      const cached = await readApiCache(key);
+      if (cached?.body) return cached.body;
+
+      if (!paperReads.has(key)) {
+        const job = readPaperViaPleaser(ident, args?.focus)
+          .then(async (extract: any) => {
+            const body: any = { paper, full_text_extract: extract,
+              source: 'paperclip via PLEASER (full text) · Europe PMC (metadata)',
+              how_to_read: 'These fields come from the paper itself. "none reported" means the paper does not contain it — an absence you may cite, such as no knockout having been performed. Keep it separate from the measured evidence in our own store.' };
+            if (extract && !extract.error) await writeApiCache(key, { status: 200, body, contentType: 'application/json' });
+            else if (meta?.abstract) body.abstract_fallback = meta.abstract;
+            return body;
+          })
+          .catch((e: any) => ({ paper, full_text_extract: { error: String(e?.message || e).slice(0, 160) } }));
+        paperReads.set(key, job);
+        job.finally(() => setTimeout(() => paperReads.delete(key), 10 * 60_000));
+      }
+
+      const done = await Promise.race([paperReads.get(key)!, new Promise(r => setTimeout(() => r(null), 40_000))]);
+      if (done) return done;
+      return { paper, status: 'reading',
+        note: 'The full text is being read now; a first read takes a few minutes. Answer from the measured evidence for now, say plainly that the paper text is still loading, and offer to check again shortly — the result is cached and the next ask returns immediately.',
+        ...(meta?.abstract ? { abstract_meanwhile: meta.abstract } : {}) };
     }
     if (name === 'deep_dive_gene') {
       const b = await agentBoard(Number(snap.id), ctx.modality, ctx.litWindow);
