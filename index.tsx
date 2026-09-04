@@ -5642,7 +5642,11 @@ ${modalityResultBlock(getLastModalityResult()) || '      (No modality analysis h
         if (!res.ok) throw new Error(data.error || `AI request failed (${res.status})`);
         // Evidence tools now run server-side on every path; say which ones answered so the
         // user can tell a cited answer from a generic one.
-        const used: string[] = Array.isArray(data.trace) ? [...new Set((data.trace as any[]).map(t => String(t.tool)))] : [];
+        // The upstreams record the trace differently — PLEASER pushes tool NAMES, Gemini and
+        // OpenAI push {tool, args} — so read both shapes rather than printing "undefined".
+        const used: string[] = Array.isArray(data.trace)
+          ? [...new Set((data.trace as any[]).map(t => (typeof t === 'string' ? t : t?.tool)).filter(Boolean).map(String))]
+          : [];
         const text = data.text ? String(data.text) + (used.length ? `\n\n_🔬 evidence tools used: ${used.join(', ')}_` : '') : data.text;
         return { text: text as string | undefined, functionCalls: data.functionCalls as any[] | undefined };
       };

@@ -742,7 +742,7 @@ function setupRoutes() {
         // Resolve data tools here, up to a small step budget. Each hop is a full
         // Hermes round trip (6–15s measured), so the ceiling is deliberately low —
         // an unbounded loop would be minutes of silence for the user.
-        const trace: string[] = [];
+        const trace: any[] = [];
         for (let step = 0; step < 3; step++) {
           const call = parseHermesToolCall(text, knownTools);
           if (!call) break;                                    // prose — done
@@ -759,7 +759,7 @@ function setupRoutes() {
               ? lookupReference(call.args?.term)
               : await execAgentTool(call.name, call.args, { disease: req.body?.disease, snapshotId: req.body?.snapshotId });
           } catch (e: any) { result = { error: String(e?.message || e) }; }
-          trace.push(call.name);
+          trace.push({ tool: call.name, args: call.args || {} });   // same shape as the other upstreams
           // Cap the payload: a full evidence dossier can dwarf the context and the
           // useful part is always at the top of the object.
           const payload = JSON.stringify(result).slice(0, 20_000);
