@@ -1764,6 +1764,30 @@ function setupRoutes() {
     finally { clearTimeout(t); }
   };
   const trimJson = (v: any, max = 2500): any => { const s = JSON.stringify(v ?? null); return s.length <= max ? v : { truncated: true, preview: s.slice(0, max) }; };
+  // Ontology labels are not the phrase papers use. Europe PMC has 2 records for
+  // "exocrine pancreatic carcinoma", 233 for its exact synonym "pancreatic carcinoma" and
+  // 2,247 for the broader "pancreatic cancer" — so searching the label alone makes a
+  // well-studied gene pair look unstudied. The co-mention query therefore searches the
+  // label OR its Open Targets EXACT synonyms, and reports the broad-synonym count
+  // separately rather than folding a superset of the disease into one number.
+  const diseaseTermsCache = new Map<string, { exact: string[]; broad: string[] }>();
+  async function diseaseSearchTerms(diseaseId: string, label: string): Promise<{ exact: string[]; broad: string[] }> {
+    const key = `${diseaseId}|${label}`;
+    const hit = diseaseTermsCache.get(key); if (hit) return hit;
+    const exact: string[] = [], broad: string[] = [];
+    try {
+      const d = await otFetch(`query($id:String!){ disease(efoId:$id){ synonyms{ relation terms } } }`, { id: diseaseId });
+      for (const s of d?.disease?.synonyms || []) {
+        if (s.relation === 'hasExactSynonym') exact.push(...(s.terms || []));
+        else if (s.relation === 'hasBroadSynonym') broad.push(...(s.terms || []));
+      }
+    } catch { /* no synonyms reachable — the label alone still works */ }
+    const norm = (a: string[]) => [...new Set(a.map(t => String(t || '').trim()).filter(t => t.length > 3))].slice(0, 8);
+    const val = { exact: norm([label, ...exact]), broad: norm(broad) };
+    diseaseTermsCache.set(key, val);
+    return val;
+  }
+  const orPhrases = (terms: string[]) => terms.map(t => `"${t}"`).join(' OR ');
   // Users say "FAK", the store says PTK2. Resolve an alias to the symbol the snapshot uses
   // (STRING's preferred name is HGNC for human), so board lookups, evidence lookups and
   // edge matching all use one name. Returns the input unchanged when it is already known.
@@ -1808,13 +1832,17 @@ function setupRoutes() {
       const a = ra.symbol, bb = rb.symbol;
       if (!a || !bb) return { error: 'gene_a and gene_b are required' };
       const { epmcHits, epmcTopPapers } = await import('./evidenceProviders.js');
-      // Co-mention query uses both the HGNC symbol and the alias the user typed (FAK OR PTK2).
+      // Co-mention query uses both the HGNC symbol and the alias the user typed (FAK OR PTK2),
+      // and the disease label OR its exact synonyms (see diseaseSearchTerms).
       const term = (r: { symbol: string; alias_of?: string }) => (r.alias_of ? `(${r.symbol} OR ${r.alias_of})` : r.symbol);
-      const coQuery = `${term(ra)} AND ${term(rb)} AND "${snap.disease_name}"`;
-      const [pair, pa, pb, coHits, coPapers, evA, evB] = await Promise.all([
+      const dTerms = await diseaseSearchTerms(String(snap.disease_id || ''), String(snap.disease_name || ''));
+      const coQuery = `${term(ra)} AND ${term(rb)} AND (${orPhrases(dTerms.exact)})`;
+      const broadQuery = dTerms.broad.length ? `${term(ra)} AND ${term(rb)} AND (${orPhrases(dTerms.broad)})` : null;
+      const [pair, pa, pb, coHits, broadHits, coPapers, evA, evB] = await Promise.all([
         fetch(`https://string-db.org/api/json/network?identifiers=${encodeURIComponent(a + '\r' + bb)}&species=9606&required_score=150&caller_identity=diseasetotarget_app`).then(r => (r.ok ? r.json() : [])).catch(() => []),
         stringPartners(a), stringPartners(bb),
         epmcHits(coQuery).catch(() => null),
+        broadQuery ? epmcHits(broadQuery).catch(() => null) : Promise.resolve(null),
         epmcTopPapers(coQuery, 5).catch(() => []),
         evidenceOf(svc, Number(snap.id), a), evidenceOf(svc, Number(snap.id), bb),
       ]);
@@ -1835,7 +1863,15 @@ function setupRoutes() {
         shared_partners: { count: shared.length, top: sharedInSnap, source: 'STRING v12 interaction_partners (live), partners at score >= 0.4' },
         board: { [a]: standingOf(b, a), [bb]: standingOf(b, bb) },
         stored_evidence: { [a]: evA.evidence, [bb]: evB.evidence, sources: { [a]: evA.sources, [bb]: evB.sources }, note: `per-axis facts from snapshot #${snap.id} — dependency, mutation, expression, clinical are the lines that say what each gene IS in this disease` },
-        co_mentions: { papers_mentioning_both_with_disease: coHits, top_papers: coPapers, source: 'Europe PMC (live)', query: coQuery },
+        co_mentions: {
+          papers_mentioning_both_with_disease: coHits,
+          disease_terms_searched: dTerms.exact,
+          papers_under_broader_disease_terms: broadHits,
+          broader_terms: dTerms.broad,
+          top_papers: coPapers,
+          source: 'Europe PMC (live)', query: coQuery,
+          how_to_read: 'The main count searches the disease label OR its exact synonyms, because ontology labels are often not the phrase papers use. The broader count uses broad synonyms, which cover a superset of this disease — quote it as such, never as this disease alone.',
+        },
         pathway_overlap: 'not computed (use the Knowledge Graph view for pathway co-membership)',
       };
     }
