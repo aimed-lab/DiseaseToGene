@@ -1736,7 +1736,9 @@ function setupRoutes() {
         disease: snap.disease_name, snapshot_id: snap.id,
         genes: { a: ra.alias_of ? `${a} (HGNC symbol for ${ra.alias_of})` : a, b: rb.alias_of ? `${bb} (HGNC symbol for ${rb.alias_of})` : bb },
         direct_interaction: edge
-          ? { string_combined_score: Number(edge.score), evidence_channels: { experimental: edge.escore, database: edge.dscore, textmining: edge.tscore, coexpression: edge.ascore }, source: 'STRING v12 (live)', how_to_read: 'combined score 0–1; database = curated pathway/complex membership, textmining = co-occurrence in abstracts, experimental = physical-interaction assays. A database+textmining edge means "in the same pathway / co-cited", not necessarily direct binding.' }
+          ? { string_combined_score: Number(edge.score), evidence_channels: { experimental: edge.escore, database: edge.dscore, textmining: edge.tscore, coexpression: edge.ascore }, source: 'STRING v12 (live)',
+              interaction_type: Number(edge.escore) > 0 ? `physical interaction supported by experimental evidence (experimental channel ${edge.escore})` : 'FUNCTIONAL ASSOCIATION ONLY — curated pathway/complex membership and/or literature co-occurrence; STRING has NO experimental binding evidence for this pair. Do not call it a direct or physical interaction.',
+              how_to_read: 'combined score 0–1; database = curated pathway/complex membership, textmining = co-occurrence in abstracts, experimental = physical-interaction assays, coexpression = correlated expression.' }
           : { string_combined_score: null, note: 'no STRING interaction at combined score >= 0.15 (live)' },
         shared_partners: { count: shared.length, top: sharedInSnap, source: 'STRING v12 interaction_partners (live), partners at score >= 0.4' },
         board: { [a]: standingOf(b, a), [bb]: standingOf(b, bb) },
