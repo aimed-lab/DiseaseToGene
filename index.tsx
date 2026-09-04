@@ -109,6 +109,7 @@ import KnowledgeGraphView from './KnowledgeGraphView';
 import RankingBoardView from './RankingBoardView';
 import MethodologyView from './MethodologyView';
 import DiseaseBar from './DiseaseBar';
+import GlobalSearch, { type GlobalSearchHandle } from './GlobalSearch';
 import { applyDiseaseAccent } from './diseaseAccent';
 import ModalityFitView from './ModalityFitView';
 import { navigate, isMethodologyPath, isModalityPath, isResetPasswordPath, catchRecoveryHash, ROUTES } from './nav';
@@ -1010,7 +1011,7 @@ type AdminUser = {
 };
 
 const ProfileDropdown = ({
-  currentUser, theme, onSignOut, globalWeights, previewAsResearcher, onTogglePreview,
+  currentUser, theme, onSignOut, globalWeights, previewAsResearcher, onTogglePreview, openDocsSignal,
 }: {
   currentUser: UserSession;
   theme: Theme;
@@ -1018,6 +1019,9 @@ const ProfileDropdown = ({
   globalWeights: { genetic: number; expression: number; target: number };
   previewAsResearcher?: boolean;
   onTogglePreview?: () => void;
+  /** Bumped by the footer's Documentation link — the overlay lives here, so it is opened
+   *  by signal rather than duplicated. */
+  openDocsSignal?: number;
 }) => {
   const isDark  = theme === 'dark';
   const isAdmin = currentUser.role === 'admin';   // real role (independent of preview mode)
@@ -1056,6 +1060,7 @@ const ProfileDropdown = ({
   }, [menuOpen]);
 
   const openPage = (p: 'settings' | 'docs') => { setMenuOpen(false); setPage(p); };
+  React.useEffect(() => { if (openDocsSignal) { setMenuOpen(false); setPage('docs'); } }, [openDocsSignal]);
   const closePage = () => setPage(null);
 
   // ── Profile state (used inside Settings page) ─────────────────────────────
@@ -2286,6 +2291,17 @@ const CohortFilterSidebar = ({ theme, targets, activeDisease, onScoreRangesChang
 
       {/* ── Icon rail ─────────────────────────────────────────────────────── */}
       <div className={`flex flex-col items-center py-3 gap-0.5 w-[52px] border-r flex-shrink-0 ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
+        {/* Panel toggle — at the TOP of the rail and labelled. It used to be an unlabelled
+            chevron at the bottom, which read as decoration and went unfound. */}
+        <button
+          onClick={() => setIsExpanded(p => !p)}
+          title={isExpanded ? 'Collapse this panel' : 'Expand this panel'}
+          aria-expanded={isExpanded}
+          className={`w-9 h-9 mb-1.5 flex flex-col items-center justify-center rounded-lg transition-all gap-0.5 ${isDark ? 'text-slate-400 hover:text-slate-100 hover:bg-slate-800/60' : 'text-slate-500 hover:text-slate-900 hover:bg-slate-100'}`}
+        >
+          {isExpanded ? <ChevronLeft className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+          <span className="text-[7px] font-bold uppercase tracking-wide leading-none">{isExpanded ? 'Hide' : 'Open'}</span>
+        </button>
         {LEFT_NAV_ITEMS.map(item => {
           const active = activeNav === item.id;
           const Icon = item.icon;
@@ -2308,13 +2324,6 @@ const CohortFilterSidebar = ({ theme, targets, activeDisease, onScoreRangesChang
           );
         })}
         <div className="flex-1" />
-        <button
-          onClick={() => setIsExpanded(p => !p)}
-          title={isExpanded ? 'Collapse' : 'Expand'}
-          className={`w-9 h-9 flex items-center justify-center rounded-lg transition-all mb-1 ${isDark ? 'text-slate-500 hover:text-slate-200 hover:bg-slate-800/60' : 'text-slate-400 hover:text-slate-700 hover:bg-slate-50'}`}
-        >
-          {isExpanded ? <ChevronLeft className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
-        </button>
       </div>
 
       {/* ── Expanded panel ────────────────────────────────────────────────── */}
@@ -3734,6 +3743,8 @@ const App = () => {
   };
 
   const [isLeftSidebarOpen, setIsLeftSidebarOpen] = useState(true);
+  const globalSearchRef = useRef<GlobalSearchHandle>(null);   // header search — the disease bar and the footer focus it
+  const [docsSignal, setDocsSignal] = useState(0);            // bumped by the footer to open the Documentation overlay
   const [scoreRangeFilter, setScoreRangeFilter] = useState<Record<string, [number, number]>>({});
   const [rankRangeFilter, setRankRangeFilter]   = useState<Record<string, [number, number]>>({});
   const [visibleColumns, setVisibleColumns]     = useState<string[]>(
@@ -5750,6 +5761,18 @@ ${modalityResultBlock(getLastModalityResult()) || '      (No modality analysis h
           theme={theme}
           isAdmin={effectiveIsAdmin}
         />
+        {/* One entry point for "take me to X": switches disease, focuses a target, opens a
+            pathway's genes. The disease bar's "Change" focuses this rather than carrying a
+            second switcher of its own. */}
+        <GlobalSearch
+          ref={globalSearchRef}
+          theme={theme}
+          targets={researchState.targets}
+          activeDiseaseId={researchState.activeDisease?.id ?? null}
+          onPickDisease={handleLoadSnapshot}
+          onPickGene={(sym) => { setViewMode('list'); setResearchState(p => ({ ...p, focusSymbol: sym })); }}
+          busy={snapshotsLoading}
+        />
         <div className="flex items-center gap-2 shrink-0">
           {previewAsResearcher && (
             <button onClick={() => setPreviewAsResearcher(false)} title="You're previewing the researcher view — click to exit"
@@ -5768,11 +5791,12 @@ ${modalityResultBlock(getLastModalityResult()) || '      (No modality analysis h
               globalWeights={globalWeights}
               previewAsResearcher={previewAsResearcher}
               onTogglePreview={() => setPreviewAsResearcher(v => !v)}
+              openDocsSignal={docsSignal}
             />
           )}
         </div>
       </header>
-      <DiseaseBar theme={theme} activeDisease={researchState.activeDisease} onSwitch={handleLoadSnapshot} busy={snapshotsLoading} />
+      <DiseaseBar theme={theme} activeDisease={researchState.activeDisease} onChangeDisease={() => globalSearchRef.current?.focus()} />
       <main className="flex-1 flex overflow-hidden relative p-2 gap-2">
         <aside className={`order-2 border flex flex-col shrink-0 transition-all duration-300 rounded-xl overflow-hidden shadow-lg shadow-slate-950/5 ${isModalityPath(routePath) ? 'relative z-[60]' : ''} ${isLeftSidebarOpen ? 'w-[340px]' : 'w-0 opacity-0 pointer-events-none'} ${theme === 'dark' ? 'bg-[#0b111c]/95 border-slate-800/80' : 'bg-white border-slate-200'}`}>
            <div className={`p-4 border-b flex items-center justify-between ${theme === 'dark' ? 'bg-[#0b111c] border-slate-800' : 'bg-white border-slate-200'}`}>
@@ -6630,6 +6654,28 @@ ${modalityResultBlock(getLastModalityResult()) || '      (No modality analysis h
            </div>
         </section>
       </main>
+
+      {/* ── Footer ───────────────────────────────────────────────────────────
+          The standing references — what this is, and where to read more — collected in one
+          band instead of living only behind the profile menu. Documentation opens the same
+          overlay that menu opens (one copy, two doors); About is the public Methodology
+          page; Contact and GitHub go to the repo. */}
+      <footer className={`shrink-0 px-4 md:px-6 py-2 flex flex-wrap items-center gap-x-4 gap-y-1 border-t text-[11px] ${theme === 'dark' ? 'bg-[#070b12] border-slate-800/80 text-slate-500' : 'bg-white border-slate-200 text-slate-500'}`}>
+        <span className="flex items-center gap-2 min-w-0">
+          <span className={`font-black tracking-tight ${theme === 'dark' ? 'text-slate-300' : 'text-slate-700'}`}>Disease<span style={{ color: 'var(--disease-accent)' }}>2</span>Target</span>
+          <span className="opacity-60">v0.1</span>
+          <span className="hidden sm:inline opacity-40">·</span>
+          <span className="hidden sm:inline">Powered by multi-source evidence</span>
+        </span>
+        <span className="flex-1" />
+        <nav className="flex items-center gap-3">
+          <button onClick={() => navigate(ROUTES.methodology)} className="font-semibold hover:underline">About</button>
+          <button onClick={() => setDocsSignal(n => n + 1)} className="font-semibold hover:underline">Documentation</button>
+          <a href="https://github.com/aimed-lab/DiseaseToGene/issues/new" target="_blank" rel="noreferrer" className="font-semibold hover:underline">Contact</a>
+          <a href="https://github.com/aimed-lab/DiseaseToGene" target="_blank" rel="noreferrer" className="font-semibold hover:underline">GitHub</a>
+        </nav>
+        <span className="hidden lg:inline opacity-70 italic">Build better therapies, together.</span>
+      </footer>
 
       {/* Score Information Drawer */}
       <div className={`fixed inset-y-0 right-0 w-96 bg-white dark:bg-[#0d0d0d] border-l border-neutral-200 dark:border-neutral-800 shadow-2xl z-[100] transition-transform duration-300 ease-in-out transform ${activeScoreInfo ? 'translate-x-0' : 'translate-x-full'}`}>
