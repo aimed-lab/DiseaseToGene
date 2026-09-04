@@ -286,19 +286,43 @@ const toOpenAiTools = (tools: any[]) => tools.map((t: any) => ({
 }));
 export const safeArgs = (s: any): any => { try { return typeof s === 'string' ? JSON.parse(s || '{}') : (s || {}); } catch { return {}; } };
 
-/** One OpenAI chat-completions round trip. Errors (including rate limits) propagate so the
- *  caller shows OpenAI's own message rather than a guess about why it failed. */
+/** One OpenAI chat-completions round trip, with the two retries this account actually needs.
+ *
+ *  429: the key allows 50 requests a minute, and ONE co-pilot answer is several requests (a
+ *  tool loop spends one per step), so a burst can trip the window. We wait out Retry-After
+ *  and try again rather than surfacing a limit the user cannot act on.
+ *
+ *  400 on reasoning_effort: the gpt-5.6 family rejects function tools on this endpoint unless
+ *  reasoning_effort is 'none' ("Function tools with reasoning_effort are not supported …").
+ *  Detected from the error text rather than a hardcoded model list, so a future model that
+ *  behaves the same way is handled without a code change. */
 async function openaiChat(messages: any[], tools?: any[]): Promise<any> {
-  const body: Record<string, unknown> = { model: OPENAI_MODEL, messages };
-  if (tools?.length) { body.tools = toOpenAiTools(tools); body.tool_choice = 'auto'; }
-  const r = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
-    body: JSON.stringify(body),
-  });
-  const d: any = await r.json().catch(() => ({}));
-  if (!r.ok || d.error) throw new Error(`OpenAI ${d.error?.code || r.status}: ${d.error?.message || r.statusText}`);
-  return d.choices?.[0]?.message || {};
+  const base: Record<string, unknown> = { model: OPENAI_MODEL, messages };
+  if (tools?.length) { base.tools = toOpenAiTools(tools); base.tool_choice = 'auto'; }
+  let body = base;
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const r = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
+      body: JSON.stringify(body),
+    });
+    const d: any = await r.json().catch(() => ({}));
+    if (r.ok && !d.error) return d.choices?.[0]?.message || {};
+
+    const msg = String(d.error?.message || r.statusText || '');
+    if (r.status === 429 && attempt < 2) {
+      const waitMs = Math.min(20_000, (Number(r.headers.get('retry-after')) || (attempt + 1) * 6) * 1000);
+      await new Promise(res => setTimeout(res, waitMs));
+      continue;
+    }
+    if (r.status === 400 && /reasoning_effort/i.test(msg) && body.reasoning_effort === undefined) {
+      body = { ...base, reasoning_effort: 'none' };
+      continue;
+    }
+    throw new Error(`OpenAI ${d.error?.code || r.status}: ${msg}`);
+  }
+  throw new Error('OpenAI: rate limited — the key allows 50 requests a minute. Wait a moment, or switch the model picker to Gemini.');
 }
 
 // Which Hermes models can be trusted with prompt-described tools. This is a
