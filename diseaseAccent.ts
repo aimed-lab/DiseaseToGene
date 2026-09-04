@@ -1,5 +1,5 @@
 // diseaseAccent.ts ─────────────────────────────────────────────────────────────
-// One accent colour per disease, applied to the app FRAME (disease bar, logo badge, active
+// An accent colour applied to the app FRAME (disease bar, logo badge, active
 // tab, view-title chips) — never to content. The idea is Amazon's contextual colouring:
 // after a few sessions the frame colour alone tells you which disease you are in, before
 // you read a single number, and a screenshot cannot be mistaken for another disease.
@@ -9,6 +9,11 @@
 // To change a colour, edit NAMED below — one line.
 
 export interface DiseaseAccent { hex: string; soft: string; strong: string; name: string }
+
+// Decision (user, 4 Sep 2026): ONE colour for every disease — the app blue reads better
+// across diseases than a palette. The per-disease table below stays so this is a one-line
+// switch if the lab changes its mind; the bar, badge and tab still take the accent variable.
+export const PER_DISEASE_ACCENT = false;
 
 const DEFAULT: DiseaseAccent = { hex: '#2563eb', soft: 'rgba(37,99,235,0.10)', strong: '#1d4ed8', name: 'blue' };
 
@@ -38,6 +43,7 @@ function hashed(key: string): DiseaseAccent {
 }
 
 export function accentFor(disease?: { id?: string | null; name?: string | null } | null): DiseaseAccent {
+  if (!PER_DISEASE_ACCENT) return DEFAULT;
   if (!disease || (!disease.id && !disease.name)) return DEFAULT;
   const key = `${disease.id || ''} ${disease.name || ''}`;
   const hit = NAMED.find(n => n.match.test(key));
