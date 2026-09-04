@@ -513,6 +513,26 @@ export function renderScreenBlock(s?: ScreenContext | null): string {
   if (s.topGenes?.length) L.push(`- Top of the board right now: ${s.topGenes.join(', ')}`);
   return L.join('\n');
 }
+// Which snapshot answers a co-pilot question. A disease the caller NAMED beats the snapshot
+// that merely happens to be on screen. Before this the ambient snapshot id was checked first,
+// so asking "is PDE10A a target in pancreatic cancer?" while glioblastoma was loaded answered
+// from glioblastoma — it quoted a rank out of 6,000 and snapshot #123, both glioblastoma's —
+// however plainly the question named another disease.
+//
+// Precedence: named disease > ambient snapshot id > ambient disease name > newest snapshot.
+// A named disease we do not hold falls through rather than erroring, so the model still gets
+// an answer and the evidence rules make it state which snapshot the numbers came from.
+export function pickSnapshot(snaps: any[], named?: string, ambient?: string, snapshotId?: number) {
+  const sorted = [...(snaps || [])].sort((a, b) => Number(b.id) - Number(a.id));
+  const match = (q: string) => sorted.find(s => { const n = String(s.disease_name || '').toLowerCase(); return n.includes(q) || q.includes(n); });
+  const nq = String(named || '').toLowerCase().trim();
+  if (nq) { const m = match(nq); if (m) return m; }
+  if (snapshotId) return sorted.find(s => Number(s.id) === Number(snapshotId)) || sorted[0];
+  const aq = String(ambient || '').toLowerCase().trim();
+  if (aq) { const m = match(aq); if (m) return m; }
+  return sorted[0];
+}
+
 export const EVIDENCE_RULES = `EVIDENCE RULES (non-negotiable):
 - Every number, rank, count, phase, score or paper you state MUST come from a tool result in this conversation or from the screen context above. If you have not called a tool yet, call one — never answer an evidence question from general knowledge.
 - "Compare A and B" / "why is A above B" → call compare_genes. "How is A related to B" → call gene_relationship. One gene's full picture → get_gene_evidence first, then deep_dive_gene only if the stored summary is not enough. deep_dive_gene is LIVE and slower: at most two genes per question, never for lists or ranking questions.
@@ -1724,21 +1744,9 @@ function setupRoutes() {
   // The co-pilot's single-shot chat can filter the loaded list; this lets the model PLAN and
   // call evidence tools across several steps, then synthesise. Same Gemini setup as
   // /api/ai/gemini-chat, but the tool loop runs server-side against Oracle/ORDS.
-  // A disease the caller NAMED beats the snapshot that merely happens to be on screen.
-  // Previously the ambient snapshot id was checked first, so asking "is PDE10A a target in
-  // pancreatic cancer?" while glioblastoma was loaded answered from glioblastoma however
-  // clearly the question named another disease — the model could not override it.
   async function agentSnapshot(named?: string, ambient?: string, snapshotId?: number) {
     const svc = await readSvc();
-    const snaps: any[] = await svc.listSnapshots();
-    const sorted = [...snaps].sort((a, b) => Number(b.id) - Number(a.id));
-    const match = (q: string) => sorted.find(s => { const n = String(s.disease_name || '').toLowerCase(); return n.includes(q) || q.includes(n); });
-    const nq = String(named || '').toLowerCase().trim();
-    if (nq) { const m = match(nq); if (m) return m; }                      // explicit request
-    if (snapshotId) return sorted.find(s => Number(s.id) === Number(snapshotId)) || sorted[0];
-    const aq = String(ambient || '').toLowerCase().trim();
-    if (aq) { const m = match(aq); if (m) return m; }                      // what is on screen
-    return sorted[0];
+    return pickSnapshot(await svc.listSnapshots(), named, ambient, snapshotId);
   }
   const AGENT_TOOLS = [
     { name: 'list_diseases', description: 'List the diseases loaded in the platform (name, snapshot id, gene count). Call first if unsure which disease is available.', parameters: { type: 'OBJECT', properties: {} } },
