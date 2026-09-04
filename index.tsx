@@ -119,7 +119,7 @@ import { navigate, isMethodologyPath, isModalityPath, isResetPasswordPath, catch
 catchRecoveryHash();
 import { glossaryPromptBlock, GLOSSARY } from './dashboardGlossary';
 import { modalityPromptBlock, modalityResultBlock, MODALITY_GLOSSARY } from './modalityGlossary';
-import { boardSnapshotBlock, getActiveBoardSnapshot } from './boardStore';
+import { boardSnapshotBlock, getActiveBoardSnapshot, screenContext } from './boardStore';
 import { getLastModalityResult } from './modalityStore';
 import JobsView from './JobsView';
 import { getCbioMutations } from './cbioportalService';
@@ -5438,6 +5438,7 @@ CRITICAL RULES:
             question: q,
             disease: getActiveBoardSnapshot()?.disease_name || researchState.activeDisease?.name || '',
             snapshotId: getActiveBoardSnapshot()?.id ?? undefined,
+            screen: screenContext(viewMode, researchState.activeDisease, researchState.focusSymbol),
           }),
         });
         const j = await resp.json();
@@ -5478,7 +5479,7 @@ CRITICAL RULES:
         { name: 'preview_filter_effect', description: 'Report how many targets a condition would leave, without applying it.', parameters: { type: Type.OBJECT, properties: { condition: { type: Type.OBJECT, properties: { field: { type: Type.STRING }, operator: { type: Type.STRING }, value: { type: Type.NUMBER } } } }, required: ['condition'] } },
         { name: 'filter_targets', description: 'Replace the whole filter set on the Target List. Use apply_filters to add to it instead.', parameters: { type: Type.OBJECT, properties: { conditions: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { field: { type: Type.STRING }, operator: { type: Type.STRING, enum: ['>', '<', '>=', '<=', '=', '!=', 'between', 'contains', 'not_contains'] }, value: { type: Type.NUMBER }, value2: { type: Type.NUMBER }, boolValue: { type: Type.BOOLEAN }, stringValue: { type: Type.STRING } }, required: ['field', 'operator'] } }, logic: { type: Type.STRING, enum: ['AND', 'OR'] } }, required: ['conditions'] } },
         { name: 'sort_targets', description: 'Sort the Target List by one or more fields.', parameters: { type: Type.OBJECT, properties: { sorts: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { field: { type: Type.STRING }, direction: { type: Type.STRING, enum: ['asc', 'desc'] } }, required: ['field', 'direction'] } } }, required: ['sorts'] } },
-        { name: 'compare_targets', description: 'Compare named genes side by side across their evidence.', parameters: { type: Type.OBJECT, properties: { symbols: { type: Type.ARRAY, items: { type: Type.STRING } } }, required: ['symbols'] } },
+        { name: 'compare_targets', description: 'Show a side-by-side table of genes ON THE LOADED TARGET LIST (browser page only, no stored evidence). For an evidence-based comparison use compare_genes instead.', parameters: { type: Type.OBJECT, properties: { symbols: { type: Type.ARRAY, items: { type: Type.STRING } } }, required: ['symbols'] } },
         { name: 'summarize_targets', description: 'Summarise a set of targets in prose.', parameters: { type: Type.OBJECT, properties: { target_set: { type: Type.STRING, enum: ['current', 'filtered', 'top_literature', 'high_overall_low_target'] } }, required: ['target_set'] } },
         { name: 'explain_target', description: 'Explain why one gene scores as it does, from its stored evidence.', parameters: { type: Type.OBJECT, properties: { symbol: { type: Type.STRING } }, required: ['symbol'] } },
         { name: 'get_target_details', description: 'Return every stored field for one gene in the Target List.', parameters: { type: Type.OBJECT, properties: { symbol: { type: Type.STRING } }, required: ['symbol'] } },
@@ -5599,12 +5600,19 @@ ${modalityResultBlock(getLastModalityResult()) || '      (No modality analysis h
             // So evidence lookups answer about the snapshot on screen, not the newest.
             snapshotId: getActiveBoardSnapshot()?.id ?? undefined,
             disease: getActiveBoardSnapshot()?.disease_name || researchState.activeDisease?.name || undefined,
+            // What the user is looking at: view, disease, board snapshot, selected gene with its
+            // criterion scores, top of the board. The server renders it into the prompt.
+            screen: screenContext(viewMode, researchState.activeDisease, researchState.focusSymbol),
           }),
         });
         const data = await res.json();
         // Surface server-side errors (missing key, Gemini API errors) instead of silently returning empty
         if (!res.ok) throw new Error(data.error || `AI request failed (${res.status})`);
-        return { text: data.text as string | undefined, functionCalls: data.functionCalls as any[] | undefined };
+        // Evidence tools now run server-side on every path; say which ones answered so the
+        // user can tell a cited answer from a generic one.
+        const used: string[] = Array.isArray(data.trace) ? [...new Set((data.trace as any[]).map(t => String(t.tool)))] : [];
+        const text = data.text ? String(data.text) + (used.length ? `\n\n_🔬 evidence tools used: ${used.join(', ')}_` : '') : data.text;
+        return { text: text as string | undefined, functionCalls: data.functionCalls as any[] | undefined };
       };
 
       let response = await callAI(currentMessages);

@@ -470,13 +470,13 @@ export async function fetchPubmedLiterature(symbol: string, disease: string): Pr
 
 // Europe PMC — matches the drill-down "Europe PMC" block (7,975 for KRAS).
 const EPMC_BASE = 'https://www.ebi.ac.uk/europepmc/webservices/rest/search';
-async function epmcHits(query: string): Promise<number> {
+export async function epmcHits(query: string): Promise<number> {
   const d = await getJson(`${EPMC_BASE}?query=${encodeURIComponent(query)}&format=json&resultType=idlist&pageSize=1`);
   return num(d?.hitCount) ?? 0;
 }
 // Top papers, newest first — one extra Europe PMC call, cited-by ordering unavailable on
 // the free endpoint so we take the most recent, which is what "momentum" is about anyway.
-async function epmcTopPapers(query: string, n = 5): Promise<LiteraturePaper[]> {
+export async function epmcTopPapers(query: string, n = 5): Promise<LiteraturePaper[]> {
   const d = await getJson(`${EPMC_BASE}?query=${encodeURIComponent(query)}&format=json&resultType=lite&pageSize=${n}&sort=P_PDATE_D%20desc`);
   const rows: any[] = d?.resultList?.result || [];
   return rows.map(r => ({

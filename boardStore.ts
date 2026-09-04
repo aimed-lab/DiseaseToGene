@@ -46,6 +46,39 @@ export function getActiveBoardSnapshot(): BoardSnapshot | null {
   return active;
 }
 
+// ── What the user has SELECTED on the board, for the co-pilot's screen context ──
+// Published by RankingBoardView whenever the selection or the board changes. The server
+// renders it (renderScreenBlock) so the model can say "APOE is rank 4 on your board,
+// leading on genetics" from what is actually on screen rather than re-deriving it.
+export interface BoardFocus {
+  symbol: string;
+  boardRank: number; total: number; display: number;
+  tier?: string;
+  criteria: Record<string, number | null>;
+  weights: Record<string, number>;
+  strengths?: string[]; drags?: string[];
+}
+let focus: BoardFocus | null = null;
+let topGenes: string[] = [];
+let litWindow: string = 'all';
+export function setBoardFocus(f: BoardFocus | null): void { focus = f; }
+export function setBoardTop(genes: string[], window: string): void { topGenes = genes; litWindow = window; }
+export function getBoardFocus(): BoardFocus | null { return focus; }
+export function getBoardTop(): string[] { return topGenes; }
+export function getBoardLitWindow(): string { return litWindow; }
+
+/** Everything the co-pilot needs to know about the screen, assembled at send time. */
+export function screenContext(view: string, disease: { id: string; name: string } | null, listFocus: string | null): Record<string, unknown> {
+  return {
+    view, disease,
+    snapshot: active ? { id: active.id, disease_name: active.disease_name, gene_count: active.gene_count, version: active.version, modality: active.modality, activeCriteria: active.activeCriteria } : null,
+    focus: view === 'board' ? focus : null,
+    listFocus,
+    topGenes: view === 'board' ? topGenes : [],
+    litWindow,
+  };
+}
+
 /** The prompt line describing it. Empty string when the board has not been opened. */
 export function boardSnapshotBlock(): string {
   if (!active) return '';

@@ -12,7 +12,7 @@ import { navigate } from './nav';
 import { CRITERIA, MODALITY_PROFILES, LIT_WINDOWS, buildBoard, criterionBreakdown, computeVerdict, findBetterAlternatives, type CriterionKey, type ModalityKey, type ScoredGene, type SubMetric, type CriterionBreakdown, type LitWindow } from './rankingBoard';
 import { buildTargetReportHTML, type ReportCriterion } from './targetReport';
 import type { Theme } from './types';
-import { setActiveBoardSnapshot } from './boardStore';
+import { setActiveBoardSnapshot, setBoardFocus, setBoardTop } from './boardStore';
 import { isAgora, AGORA_COUNT } from './agoraNominated';
 
 // Only READY modalities are offered. The others (antibody/PROTAC/RNA/gene therapy) are
@@ -471,6 +471,17 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
       modality,
     } : null);
   }, [snapMeta?.id, snapMeta?.disease_name, snapMeta?.gene_count, activeSig, modality]);
+
+  // …and what is selected / at the top, so the co-pilot answers about the screen.
+  useEffect(() => {
+    setBoardTop(board.scored.slice(0, 10).map(s => s.symbol), litWindow);
+    setBoardFocus(selected ? {
+      symbol: selected.symbol, boardRank: selected.boardRank, total: board.scored.length, display: selected.display,
+      tier: verdict?.tier, criteria: selected.criteria, weights: effWeights,
+      strengths: verdict?.strengths, drags: verdict?.drags,
+    } : null);
+    return () => { setBoardFocus(null); };
+  }, [selected, verdict, board, effWeights, litWindow]);
 
   if (loading) {
     // Rotating status so the user sees it's actively working, not frozen.

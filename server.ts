@@ -13,6 +13,7 @@ import { enrichGene, enrichGenes } from "./enrichService.js";
 import * as ordsSvc from "./ordsService.js"; // pure fetch client → safe to bundle for Vercel
 import * as hermes from "./hermesService.js"; // PLEASER chat upstream — pure fetch client
 import { deriveBoardRows } from "./boardRows.js"; // the Ranking Board's row shape (shared with benchmark + MCP)
+import { buildBoard, MODALITY_PROFILES } from "./rankingBoard.js"; // the board engine — the co-pilot's "board rank" is the on-screen rank
 import { GLOSSARY } from "./dashboardGlossary.js";        // pure data — safe on the server
 import { MODALITY_GLOSSARY } from "./modalityGlossary.js"; // pure data — safe on the server
 // NOTE: relative imports carry an explicit .js extension (Node-ESM requirement). On Vercel
@@ -417,6 +418,45 @@ export const parseHermesToolCall = (text: string, known: Set<string>): { name: s
 // interface" and offered to try other data sources. Two causes worth blocking:
 // a tool result is often an INSTRUCTION rather than data, and Hermes has its own
 // PLEASER MCP tooling it can confuse this with.
+// ── Screen context + evidence rules for the co-pilot ─────────────────────────
+// Requirement (Jake, Sep 2026): the AI must understand the current screen and the current
+// disease, and cite the platform's evidence rather than answer from general knowledge.
+// The client sends what the user is looking at; this renders it once for both the chat
+// and the research agent, so the two cannot drift.
+export interface ScreenContext {
+  view?: string;
+  disease?: { id?: string; name?: string } | null;
+  snapshot?: { id?: number; disease_name?: string; gene_count?: number | null; version?: number | null; modality?: string; activeCriteria?: string[] } | null;
+  focus?: { symbol: string; boardRank?: number; total?: number; display?: number; tier?: string; criteria?: Record<string, number | null>; weights?: Record<string, number>; strengths?: string[]; drags?: string[] } | null;
+  listFocus?: string | null;
+  topGenes?: string[];
+  litWindow?: string;
+}
+const VIEW_LABEL: Record<string, string> = { board: 'Target Ranking Board', dashboard: 'Evidence explorer', list: 'Target List', funnel: 'Prioritisation Funnel', rankings: 'Rankings / Gene × Source matrix', graph: 'Knowledge Graph', modality: 'Modality fit', jobs: 'Jobs', enrichment: 'Enrichment' };
+export function renderScreenBlock(s?: ScreenContext | null): string {
+  if (!s || (!s.disease?.name && !s.view && !s.snapshot?.id)) return '';
+  const L: string[] = ['WHAT THE USER IS LOOKING AT RIGHT NOW — answer in this context; do not switch disease unless the user names another one:'];
+  if (s.disease?.name) L.push(`- Disease: ${s.disease.name}${s.disease.id ? ` (${s.disease.id})` : ''}`);
+  if (s.view) L.push(`- Screen: ${VIEW_LABEL[s.view] || s.view}`);
+  if (s.snapshot?.id) L.push(`- Snapshot on the board: #${s.snapshot.id}${s.snapshot.version != null ? ` v${s.snapshot.version}` : ''}${s.snapshot.disease_name ? ` — ${s.snapshot.disease_name}` : ''}${s.snapshot.gene_count != null ? `, ${s.snapshot.gene_count} genes` : ''}${s.snapshot.modality ? `; modality ${s.snapshot.modality}` : ''}${s.snapshot.activeCriteria?.length ? `; criteria with data: ${s.snapshot.activeCriteria.join(', ')}` : ''}${s.litWindow ? `; literature window: ${s.litWindow === 'recent3y' ? 'last 3 years' : 'all time'}` : ''}`);
+  if (s.focus?.symbol) {
+    const f = s.focus;
+    L.push(`- Selected gene on the board: ${f.symbol}${f.boardRank != null ? ` — board rank ${f.boardRank}${f.total ? ` of ${f.total}` : ''}` : ''}${f.display != null ? `, score ${Number(f.display).toFixed(1)} (leader = 100)` : ''}${f.tier ? `, tier "${f.tier}"` : ''}`);
+    if (f.criteria) L.push(`  criterion scores (0–100): ${Object.entries(f.criteria).filter(([, v]) => v != null).map(([k, v]) => `${k} ${Math.round(Number(v) * 100)}`).join(', ')}${f.weights ? ` · weights: ${Object.entries(f.weights).filter(([, w]) => Number(w) > 0).map(([k, w]) => `${k} ${Math.round(Number(w) * 100)}%`).join(', ')}` : ''}`);
+    if (f.strengths?.length) L.push(`  leads on: ${f.strengths.join('; ')}`);
+    if (f.drags?.length) L.push(`  held back by: ${f.drags.join('; ')}`);
+  } else if (s.listFocus) L.push(`- Selected gene: ${s.listFocus}`);
+  if (s.topGenes?.length) L.push(`- Top of the board right now: ${s.topGenes.join(', ')}`);
+  return L.join('\n');
+}
+export const EVIDENCE_RULES = `EVIDENCE RULES (non-negotiable):
+- Every number, rank, count, phase, score or paper you state MUST come from a tool result in this conversation or from the screen context above. If you have not called a tool yet, call one — never answer an evidence question from general knowledge.
+- "Compare A and B" / "why is A above B" → call compare_genes. "How is A related to B" → call gene_relationship. One gene's full picture → get_gene_evidence first, then deep_dive_gene only if the stored summary is not enough. deep_dive_gene is LIVE and slower: at most two genes per question, never for lists or ranking questions.
+- Stored snapshot evidence is the ranking's truth; a live deep-dive value is extra context. If the two disagree, say which is which and that the snapshot is what the board ranks on.
+- Label each fact with its source and snapshot inline, e.g. "(Europe PMC, snapshot #103)" or "(STRING, live)". End with a short "Sources" list. Keep FACTS (mutation, expression, proteomics, dependency, safety, trials, papers) separate from PREDICTIONS (Open Targets association, board rank, WINNER centrality, tractability).
+- If the store has nothing for a gene in this disease, say exactly that. Do not fill the gap from memory.
+- Stay in the current disease context unless the user names another disease.`;
+
 const TOOL_RESULT_RULES = `Now answer the user in prose. Do NOT call another tool.
 - These results came from the Disease2Target application itself. They did NOT come
   from MCP, and nothing here is broken — do not diagnose, speculate about servers,
@@ -685,29 +725,54 @@ function setupRoutes() {
       const firstUserIdx = mappedMessages.findIndex((m: { role: string }) => m.role === 'user');
       const contents = firstUserIdx >= 0 ? mappedMessages.slice(firstUserIdx) : mappedMessages;
 
-      const body: Record<string, unknown> = { contents };
-      if (systemInstruction) body.systemInstruction = { parts: [{ text: systemInstruction }] };
-      if (tools?.length) body.tools = [{ functionDeclarations: tools }];
-      const r = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${key}`,
-        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
-      );
-      const raw = await r.text();
-      let d: any;
-      try {
-        d = JSON.parse(raw);
-      } catch {
-        return res.status(502).json({ error: `Gemini API returned an invalid response (${r.status})` });
+      // ── Gemini: one co-pilot, two kinds of tool ─────────────────────────────
+      // DATA tools (the research agent's: get_gene_evidence, compare_genes, deep_dive_gene, …)
+      // read the store, so they run HERE in a loop and their results go back to the model.
+      // ACTION tools (focus_gene, dashboard_filter, …) mutate browser state, so they are
+      // collected and returned as `functionCalls` for the client's executor, as before.
+      // Before this, the default chat could not reach the evidence at all — only the
+      // "/research" side door could — so "compare PHGDH and APOE" got a generic answer.
+      const screen: ScreenContext | undefined = req.body?.screen;
+      const sysText = [systemInstruction || '', renderScreenBlock(screen), EVIDENCE_RULES].filter(Boolean).join('\n\n');
+      const clientNames = new Set<string>((tools || []).map((t: any) => t?.name).filter(Boolean));
+      const dataTools = AGENT_TOOLS.filter(t => !clientNames.has(t.name));
+      const dataNames = new Set(dataTools.map(t => t.name));
+      const allTools = [...(tools || []), ...dataTools];
+      const trace: any[] = [];
+      const pendingClient: any[] = [];
+      const toolCtx = { disease: req.body?.disease || screen?.disease?.name, snapshotId: req.body?.snapshotId || screen?.snapshot?.id, modality: screen?.snapshot?.modality, litWindow: screen?.litWindow };
+      for (let step = 0; step < 6; step++) {
+        const body: Record<string, unknown> = { contents, systemInstruction: { parts: [{ text: sysText }] } };
+        if (allTools.length) body.tools = [{ functionDeclarations: allTools }];
+        const r = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${key}`,
+          { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
+        );
+        const raw = await r.text();
+        let d: any;
+        try { d = JSON.parse(raw); } catch { return res.status(502).json({ error: `Gemini API returned an invalid response (${r.status})` }); }
+        if (!r.ok || d.error) return res.status(502).json({ error: `Gemini API error ${d.error?.code || r.status}: ${d.error?.message || r.statusText}` });
+        const parts: any[] = d.candidates?.[0]?.content?.parts || [];
+        const calls = parts.filter((p: any) => p.functionCall).map((p: any) => p.functionCall);
+        const dataCalls = calls.filter((c: any) => dataNames.has(c.name));
+        const clientCalls = calls.filter((c: any) => !dataNames.has(c.name));
+        const text = parts.find((p: any) => p.text)?.text?.trim() || '';
+        pendingClient.push(...clientCalls);
+        if (!dataCalls.length) { if (trace.length) console.log(`[copilot] ${trace.map(t => `${t.tool}(${JSON.stringify(t.args)})`).join(' → ')}`); return res.json({ text, functionCalls: pendingClient, trace }); }
+        contents.push({ role: 'model', parts });
+        const resp: any[] = [];
+        for (const c of dataCalls) {
+          let result: any;
+          try { result = await execAgentTool(c.name, c.args || {}, toolCtx); } catch (e: any) { result = { error: String(e?.message || e) }; }
+          trace.push({ tool: c.name, args: c.args || {} });
+          resp.push({ functionResponse: { name: c.name, response: { result } } });
+        }
+        // Gemini expects a response for every call in the turn; browser actions are queued
+        // and will run after the answer, so say so rather than leave the model waiting.
+        for (const c of clientCalls) resp.push({ functionResponse: { name: c.name, response: { result: { queued: 'this browser action runs after you answer; assume it happens' } } } });
+        contents.push({ role: 'user', parts: resp });
       }
-      if (!r.ok || d.error) {
-        return res.status(502).json({
-          error: `Gemini API error ${d.error?.code || r.status}: ${d.error?.message || r.statusText}`,
-        });
-      }
-      const candidate = d.candidates?.[0]?.content;
-      const text = candidate?.parts?.find((p: any) => p.text)?.text?.trim() || "";
-      const functionCalls = candidate?.parts?.filter((p: any) => p.functionCall).map((p: any) => p.functionCall) || [];
-      res.json({ text, functionCalls });
+      res.json({ text: 'I could not finish gathering that in the available steps. Try a narrower question.', functionCalls: pendingClient, trace });
     } catch (err: any) {
       res.status(502).json({ error: err.message });
     }
@@ -1549,17 +1614,143 @@ function setupRoutes() {
     return sorted.find(s => { const n = String(s.disease_name || '').toLowerCase(); return n.includes(dq) || dq.includes(n); }) || sorted[0];
   }
   const AGENT_TOOLS = [
-    { name: 'list_diseases', description: 'List the cancers loaded in the platform (name, snapshot id, gene count). Call first if unsure which disease is available.', parameters: { type: 'OBJECT', properties: {} } },
-    { name: 'rank_targets', description: 'Top-ranked targets for a disease (Open Targets overall association) with component scores. Use for "top targets" questions.', parameters: { type: 'OBJECT', properties: { disease: { type: 'STRING' }, top_n: { type: 'NUMBER' } } } },
-    { name: 'get_gene_evidence', description: 'All stored evidence for ONE gene: mutation, expression, proteomics, dependency, safety, tissue, druggability, clinical, literature, network, annotation.', parameters: { type: 'OBJECT', properties: { gene: { type: 'STRING' }, disease: { type: 'STRING' } }, required: ['gene'] } },
+    { name: 'list_diseases', description: 'List the diseases loaded in the platform (name, snapshot id, gene count). Call first if unsure which disease is available.', parameters: { type: 'OBJECT', properties: {} } },
+    { name: 'rank_targets', description: 'Top targets for a disease by the Open Targets overall association (the candidate-selection order, NOT the board composite) with component scores.', parameters: { type: 'OBJECT', properties: { disease: { type: 'STRING' }, top_n: { type: 'NUMBER' } } } },
+    { name: 'get_gene_evidence', description: 'All stored evidence for ONE gene in the current disease snapshot, one summary line per axis: mutation, expression, proteomics, dependency, safety, tissue, druggability, clinical, literature, network, annotation — plus its board standing.', parameters: { type: 'OBJECT', properties: { gene: { type: 'STRING' }, disease: { type: 'STRING' } }, required: ['gene'] } },
     { name: 'get_clinical_trials', description: 'Per-trial clinical records for a gene: NCT id, phase, status, year, sponsor, why-stopped.', parameters: { type: 'OBJECT', properties: { gene: { type: 'STRING' }, disease: { type: 'STRING' } }, required: ['gene'] } },
     { name: 'find_novel_tractable', description: 'Druggable targets with NO developed drug and NO disease trial yet — the discovery query.', parameters: { type: 'OBJECT', properties: { disease: { type: 'STRING' }, limit: { type: 'NUMBER' } } } },
+    { name: 'compare_genes', description: 'Side-by-side comparison of 2–4 genes in the current disease: board rank and score (leader = 100), every criterion score with its weight, and each stored evidence axis with its source. Use for "compare X vs Y" and "why is X ranked above Y".', parameters: { type: 'OBJECT', properties: { genes: { type: 'ARRAY', items: { type: 'STRING' } }, disease: { type: 'STRING' } }, required: ['genes'] } },
+    { name: 'gene_relationship', description: 'How two genes relate in the current disease: direct STRING interaction and its score, shared interaction partners, both genes\' board standing, and papers that mention both together with the disease (Europe PMC). Use for "how is A related to B".', parameters: { type: 'OBJECT', properties: { gene_a: { type: 'STRING' }, gene_b: { type: 'STRING' }, disease: { type: 'STRING' } }, required: ['gene_a', 'gene_b'] } },
+    { name: 'deep_dive_gene', description: 'LIVE deep dive for ONE gene — the same detail the app\'s target card shows: cohort-aware expression and protein change, dependency, constraint, tissue, per-trial records, latest papers, network centrality with context, STRING neighbours, single-cell, modality fit. Slower (3–8 s) and NOT part of the ranking. Use only for the one or two genes the question names, after get_gene_evidence.', parameters: { type: 'OBJECT', properties: { gene: { type: 'STRING' }, disease: { type: 'STRING' } }, required: ['gene'] } },
   ];
   const jparse = (v: any) => { try { return typeof v === 'string' ? JSON.parse(v) : v; } catch { return null; } };
-  async function execAgentTool(name: string, args: any, ctx: { disease?: string; snapshotId?: number }): Promise<any> {
+
+  // The board, computed server-side with the SAME engine the UI uses (rankingBoard.ts over
+  // boardRows.ts), so "board rank" in an answer is the rank on screen. One entry cached; it
+  // is invalidated by the snapshot entry's timestamp.
+  const agentBoardCache = new Map<string, { board: any; rows: any[]; bySymbol: Map<string, any>; total: number }>();
+  async function agentBoard(snapId: number, modality?: string, litWindow?: string) {
+    const entry = await loadSnapshotCached(snapId);
+    const m = (modality && (MODALITY_PROFILES as any)[modality]) ? modality : 'small_molecule';
+    const lw = litWindow === 'recent3y' ? 'recent3y' : 'all';
+    const key = `${snapId}:${m}:${lw}:${entry.at}`;
+    const hit = agentBoardCache.get(key); if (hit) return hit;
+    const rows = dashboardRows(snapId, entry);
+    const board = buildBoard(rows, m as any, undefined, { litWindow: lw });
+    const bySymbol = new Map<string, any>(board.scored.map((s: any) => [String(s.symbol).toUpperCase(), s]));
+    const val = { board, rows, bySymbol, total: board.scored.length };
+    agentBoardCache.clear(); agentBoardCache.set(key, val);
+    return val;
+  }
+  const standingOf = (b: { board: any; bySymbol: Map<string, any>; total: number }, gene: string) => {
+    const s = b.bySymbol.get(gene); if (!s) return null;
+    return {
+      board_rank: s.boardRank, of: b.total, score_leader_100: +Number(s.display).toFixed(1), open_targets_rank: s.sourceRank ?? null, gated: !!s.gated,
+      criteria_0_100: Object.fromEntries(Object.entries(s.criteria).map(([k, v]) => [k, v == null ? null : Math.round(Number(v) * 100)])),
+      weights_pct: Object.fromEntries(Object.entries(b.board.weights).filter(([, w]) => Number(w) > 0).map(([k, w]) => [k, Math.round(Number(w) * 100)])),
+    };
+  };
+  // One summary line per axis, with its source, from the stored snapshot rows.
+  const evidenceOf = async (svc: any, snapId: number, gene: string) => {
+    const rows = (await svc.evidenceForGene(gene)).filter((r: any) => Number(r.snapshot_id) === Number(snapId));
+    const evidence: Record<string, any> = {}, sources: Record<string, string> = {};
+    for (const r of rows) { const j = jparse(r.value_json); evidence[r.evidence_type] = (j && (j.display || j.value_text)) || r.value_text || j; if (r.source) sources[r.evidence_type] = String(r.source); }
+    return { found: rows.length > 0, evidence, sources };
+  };
+  const stringPartners = async (gene: string, limit = 100): Promise<Array<{ symbol: string; score: number }>> => {
+    try {
+      const r = await fetch(`https://string-db.org/api/json/interaction_partners?identifiers=${encodeURIComponent(gene)}&species=9606&required_score=400&limit=${limit}&caller_identity=diseasetotarget_app`);
+      if (!r.ok) return [];
+      const rows: any[] = await r.json().catch(() => []);
+      return (Array.isArray(rows) ? rows : []).map(x => ({ symbol: String(x.preferredName_B || '').toUpperCase(), score: Number(x.score) || 0 })).filter(n => n.symbol && n.symbol !== gene);
+    } catch { return []; }
+  };
+  const fetchJsonTimeout = async (url: string, ms: number): Promise<any> => {
+    const ac = new AbortController(); const t = setTimeout(() => ac.abort(), ms);
+    try { const r = await fetch(url, { signal: ac.signal }); if (!r.ok) return { error: `HTTP ${r.status}` }; return await r.json(); }
+    catch (e: any) { return { error: String(e?.name === 'AbortError' ? 'timeout' : e?.message || e) }; }
+    finally { clearTimeout(t); }
+  };
+  const trimJson = (v: any, max = 2500): any => { const s = JSON.stringify(v ?? null); return s.length <= max ? v : { truncated: true, preview: s.slice(0, max) }; };
+
+  async function execAgentTool(name: string, args: any, ctx: { disease?: string; snapshotId?: number; modality?: string; litWindow?: string }): Promise<any> {
     const svc = await readSvc();
     const snap = await agentSnapshot(args?.disease || ctx.disease, ctx.snapshotId);
     if (!snap) return { error: 'no snapshot loaded' };
+    const up = (v: any) => String(v || '').toUpperCase().trim();
+    if (name === 'compare_genes') {
+      const raw = Array.isArray(args?.genes) ? args.genes : String(args?.genes || '').split(/[,\s]+/);
+      const genes = [...new Set(raw.map(up).filter(Boolean))].slice(0, 4) as string[];
+      if (genes.length < 2) return { error: 'give at least two gene symbols' };
+      const b = await agentBoard(Number(snap.id), ctx.modality, ctx.litWindow);
+      const out: any = { disease: snap.disease_name, snapshot_id: snap.id, modality: ctx.modality || 'small_molecule', genes: {} };
+      for (const g of genes) {
+        const ev = await evidenceOf(svc, Number(snap.id), g);
+        out.genes[g] = { in_snapshot: b.bySymbol.has(g), board: standingOf(b, g), evidence: ev.evidence, evidence_sources: ev.sources };
+      }
+      out.how_to_read = 'board = the composite the Ranking Board shows (prediction). evidence = stored per-axis facts for this snapshot; cite each with its source and the snapshot id.';
+      return out;
+    }
+    if (name === 'gene_relationship') {
+      const a = up(args?.gene_a), bb = up(args?.gene_b);
+      if (!a || !bb) return { error: 'gene_a and gene_b are required' };
+      const b = await agentBoard(Number(snap.id), ctx.modality, ctx.litWindow);
+      const { epmcHits, epmcTopPapers } = await import('./evidenceProviders.js');
+      const coQuery = `${a} AND ${bb} AND "${snap.disease_name}"`;
+      const [pair, pa, pb, coHits, coPapers] = await Promise.all([
+        fetch(`https://string-db.org/api/json/network?identifiers=${encodeURIComponent(a + '\r' + bb)}&species=9606&required_score=150&caller_identity=diseasetotarget_app`).then(r => (r.ok ? r.json() : [])).catch(() => []),
+        stringPartners(a), stringPartners(bb),
+        epmcHits(coQuery).catch(() => null),
+        epmcTopPapers(coQuery, 5).catch(() => []),
+      ]);
+      const edge = (Array.isArray(pair) ? pair : []).find((e: any) => { const x = up(e.preferredName_A), y = up(e.preferredName_B); return (x === a && y === bb) || (x === bb && y === a); });
+      const pbMap = new Map(pb.map(n => [n.symbol, n.score]));
+      const shared = pa.filter(n => pbMap.has(n.symbol)).map(n => ({ symbol: n.symbol, score_with_a: n.score, score_with_b: pbMap.get(n.symbol) })).sort((x, y) => Math.min(y.score_with_a, y.score_with_b!) - Math.min(x.score_with_a, x.score_with_b!)).slice(0, 15);
+      const sharedInSnap = shared.map(s => ({ ...s, board_rank: b.bySymbol.get(s.symbol)?.boardRank ?? null }));
+      return {
+        disease: snap.disease_name, snapshot_id: snap.id,
+        direct_interaction: edge ? { string_combined_score: Number(edge.score), evidence_channels: { experimental: edge.escore, database: edge.dscore, textmining: edge.tscore, coexpression: edge.ascore }, source: 'STRING v12 (live)' } : { string_combined_score: null, note: 'no STRING interaction at combined score >= 0.15 (live)' },
+        shared_partners: { count: shared.length, top: sharedInSnap, source: 'STRING v12 interaction_partners (live), partners at score >= 0.4' },
+        board: { [a]: standingOf(b, a), [bb]: standingOf(b, bb) },
+        co_mentions: { papers_mentioning_both_with_disease: coHits, top_papers: coPapers, source: 'Europe PMC (live)', query: coQuery },
+        pathway_overlap: 'not computed (use the Knowledge Graph view for pathway co-membership)',
+      };
+    }
+    if (name === 'deep_dive_gene') {
+      const g = up(args?.gene); if (!g) return { error: 'gene is required' };
+      const dn = String(snap.disease_name || ''), did = String(snap.disease_id || '');
+      const base = `http://127.0.0.1:${process.env.PORT || 3000}`;
+      const q = (p: string) => fetchJsonTimeout(`${base}${p}`, 12_000);
+      const b = await agentBoard(Number(snap.id), ctx.modality, ctx.litWindow);
+      const [stored, enrich, clinical, lit, net, nbrs, prot, modality, sc] = await Promise.all([
+        evidenceOf(svc, Number(snap.id), g),
+        q(`/api/enrich-gene?gene=${g}&diseaseId=${encodeURIComponent(did)}&diseaseName=${encodeURIComponent(dn)}`),
+        q(`/api/clinical?gene=${g}&disease=${encodeURIComponent(dn)}&diseaseId=${encodeURIComponent(did)}`),
+        q(`/api/literature?gene=${g}&disease=${encodeURIComponent(dn)}`),
+        q(`/api/network?gene=${g}&disease=${encodeURIComponent(dn)}`),
+        q(`/api/graph/neighbors?gene=${g}`),
+        q(`/api/proteomics?gene=${g}&disease=${encodeURIComponent(dn)}&diseaseId=${encodeURIComponent(did)}`),
+        q(`/api/druggability/modality?gene=${g}`),
+        q(`/api/singlecell?gene=${g}`),
+      ]);
+      const trials = clinical?.data?.trials;
+      return {
+        gene: g, disease: dn, snapshot_id: snap.id,
+        board: standingOf(b, g),
+        stored_snapshot_evidence: stored.evidence, stored_sources: stored.sources,
+        live: {
+          note: 'Fetched live from the same providers the target card uses. Context only — NOT what the board ranks on. Dates and counts may differ from the snapshot.',
+          expression_and_axes: trimJson(enrich, 3000),
+          proteomics: trimJson(prot?.data ? { meta: prot.meta, scale: prot.scale, data: prot.data } : prot, 2000),
+          clinical: trimJson(clinical?.data ? { ...clinical.data, trials: Array.isArray(trials) ? trials.slice(0, 10) : trials } : clinical, 3000),
+          literature: trimJson(lit, 2500),
+          network: trimJson(net?.data ?? net, 1200),
+          string_neighbors_top15: Array.isArray(nbrs?.neighbors) ? nbrs.neighbors.slice(0, 15).map((n: any) => ({ ...n, board_rank: b.bySymbol.get(String(n.symbol).toUpperCase())?.boardRank ?? null })) : nbrs,
+          modality_fit: trimJson(modality, 2000),
+          single_cell: trimJson(sc, 1500),
+        },
+      };
+    }
     if (name === 'list_diseases') {
       const snaps: any[] = await svc.listSnapshots();
       const byD = new Map<string, any>();
@@ -1574,12 +1765,11 @@ function setupRoutes() {
       return { disease: snap.disease_name, snapshot_id: snap.id, targets: top };
     }
     if (name === 'get_gene_evidence') {
-      const gene = String(args?.gene || '').toUpperCase();
-      const rows = (await svc.evidenceForGene(gene)).filter((r: any) => Number(r.snapshot_id) === Number(snap.id));
-      if (!rows.length) return { gene, disease: snap.disease_name, evidence: null, note: 'no stored evidence for this gene in this snapshot' };
-      const ev: any = {};
-      for (const r of rows) { const j = jparse(r.value_json); ev[r.evidence_type] = (j && (j.display || j.value_text)) || r.value_text || j; }
-      return { gene, disease: snap.disease_name, evidence: ev };
+      const gene = up(args?.gene);
+      const ev = await evidenceOf(svc, Number(snap.id), gene);
+      let board: any = null; try { board = standingOf(await agentBoard(Number(snap.id), ctx.modality, ctx.litWindow), gene); } catch { /* board optional */ }
+      if (!ev.found && !board) return { gene, disease: snap.disease_name, snapshot_id: snap.id, evidence: null, note: 'no stored evidence for this gene in this snapshot' };
+      return { gene, disease: snap.disease_name, snapshot_id: snap.id, board, evidence: ev.evidence, evidence_sources: ev.sources };
     }
     if (name === 'get_clinical_trials') {
       const gene = String(args?.gene || '').toUpperCase();
@@ -1606,8 +1796,12 @@ function setupRoutes() {
     if (!question) return res.status(400).json({ error: "question required" });
     const gkey = process.env.GEMINI_API_KEY;
     if (!gkey) return res.status(503).json({ error: "GEMINI_API_KEY not configured" });
-    const sys = `You are the Disease2Target research agent. Answer research questions about cancer targets by CALLING TOOLS to gather evidence — in as many steps as needed — then synthesising.
-Rules: prefer tools over guessing; call several tools when a question spans sources; cite gene names and numbers from tool results; clearly separate FACTS (mutation, expression, proteomics, dependency, clinical, literature) from PREDICTIONS (Open Targets score, WINNER network, tractability); be concise and end with a short ranked answer.${disease ? `\nCurrent disease context: ${disease}.` : ''}`;
+    const screen: ScreenContext | undefined = req.body?.screen;
+    const sys = [
+      `You are the Disease2Target research agent. Answer research questions about disease targets by CALLING TOOLS to gather evidence — in as many steps as needed — then synthesising. Be concise; when the question is a comparison or a ranking, end with a short ranked answer.${disease ? `\nCurrent disease context: ${disease}.` : ''}`,
+      renderScreenBlock(screen),
+      EVIDENCE_RULES,
+    ].filter(Boolean).join('\n\n');
     const contents: any[] = [{ role: 'user', parts: [{ text: String(question) }] }];
     const trace: any[] = [];
     try {
@@ -1624,12 +1818,13 @@ Rules: prefer tools over guessing; call several tools when a question spans sour
         contents.push({ role: 'model', parts });
         const respParts: any[] = [];
         for (const c of calls) {
-          let result: any; try { result = await execAgentTool(c.name, c.args || {}, { disease, snapshotId }); } catch (e: any) { result = { error: String(e?.message || e) }; }
+          let result: any; try { result = await execAgentTool(c.name, c.args || {}, { disease: disease || screen?.disease?.name, snapshotId: snapshotId || screen?.snapshot?.id, modality: screen?.snapshot?.modality, litWindow: screen?.litWindow }); } catch (e: any) { result = { error: String(e?.message || e) }; }
           trace.push({ tool: c.name, args: c.args || {} });
           respParts.push({ functionResponse: { name: c.name, response: { result } } });
         }
         contents.push({ role: 'user', parts: respParts });
       }
+      if (trace.length) console.log(`[agent] ${trace.map(t => `${t.tool}(${JSON.stringify(t.args)})`).join(' → ')}`);
       res.json({ answer: answer || '(stopped after max reasoning steps)', trace });
     } catch (e: any) { res.status(502).json({ error: e?.message || 'agent error', trace }); }
   });
