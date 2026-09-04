@@ -3702,6 +3702,18 @@ const App = () => {
   const [chatInput, setChatInput] = useState("");
   const [dashboardCmd, setDashboardCmd] = useState<DashboardCommand | null>(null);   // co-pilot → DashboardView control channel
   const [isChatting, setIsChatting] = useState(false);
+  // Lets the user stop a question already in flight. An AI turn can be several upstream
+  // requests (a tool loop is one per step), so a mistyped question left to run costs real
+  // quota — aborting the fetch ends the turn at the current step instead of paying for it.
+  const chatAbortRef = useRef<AbortController | null>(null);
+  const stopChat = () => { chatAbortRef.current?.abort(); chatAbortRef.current = null; };
+  // Escape stops a running answer, so the reflex that cancels everything else works here too.
+  useEffect(() => {
+    if (!isChatting) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') stopChat(); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [isChatting]);
 
   // ── Co-pilot upstream (Gemini or PLEASER/Hermes) ────────────────────────────
   // Hermes cannot take D2T's tools — PLEASER drops request-level tool
@@ -5423,6 +5435,9 @@ CRITICAL RULES:
 
   const handleChat = async (e?: React.FormEvent) => {
     e?.preventDefault(); if (!chatInput.trim() || isChatting) return;
+    chatAbortRef.current?.abort();               // never leave an older turn running
+    const chatAbort = new AbortController();
+    chatAbortRef.current = chatAbort;
     
     const terminalResponse = handleTerminalCommand(chatInput);
     if (terminalResponse) {
@@ -5442,7 +5457,7 @@ CRITICAL RULES:
       setChatInput(""); setIsChatting(true);
       try {
         const resp = await authenticatedFetch('/api/ai/agent', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: chatAbort.signal,
           // Same scoping as the chat path: answer about the snapshot the user has
           // open on the board, falling back to the loaded disease.
           body: JSON.stringify({
@@ -5602,6 +5617,7 @@ ${modalityResultBlock(getLastModalityResult()) || '      (No modality analysis h
         const res = await authenticatedFetch('/api/ai/gemini-chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          signal: chatAbort.signal,
           // Tools are omitted on an upstream that cannot honour them, so the model
           // is never shown capabilities it will not be able to use.
           body: JSON.stringify({
@@ -5664,9 +5680,11 @@ ${modalityResultBlock(getLastModalityResult()) || '      (No modality analysis h
         setMessages(prev => [...prev, { role: 'assistant', content: response.text || "I received your message but couldn't generate a response. Please check that GEMINI_API_KEY is configured on the server.", timestamp: new Date() }]);
       }
     } catch (e) {
+      const aborted = (e as any)?.name === 'AbortError';
       const msg = e instanceof Error ? e.message : String(e);
-      setMessages(prev => [...prev, { role: 'assistant', content: `Error: ${msg}`, timestamp: new Date() }]);
+      setMessages(prev => [...prev, { role: 'assistant', content: aborted ? '_Stopped._' : `Error: ${msg}`, timestamp: new Date() }]);
     } finally {
+      if (chatAbortRef.current === chatAbort) chatAbortRef.current = null;
       setIsChatting(false);
     }
   };
@@ -5854,7 +5872,16 @@ ${modalityResultBlock(getLastModalityResult()) || '      (No modality analysis h
                   </div>
                 </div>
               ))}
-              {isChatting && (<div className="flex items-center gap-2 text-blue-600 px-2"><Loader2 className="w-3.5 h-3.5 animate-spin" /><span className="text-[10px] font-bold uppercase tracking-widest">Synthesizing...</span></div>)}
+              {isChatting && (
+                <div className="flex items-center gap-2 px-2">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-600" />
+                  <span className="text-[10px] font-bold uppercase tracking-widest text-blue-600">Synthesizing…</span>
+                  <button type="button" onClick={stopChat} title="Stop this answer (Esc)"
+                    className={`ml-1 flex items-center gap-1 rounded-md border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider transition-colors ${theme === 'dark' ? 'border-slate-700 text-slate-300 hover:bg-slate-800' : 'border-slate-300 text-slate-600 hover:bg-slate-100'}`}>
+                    <X className="w-3 h-3" /> Stop
+                  </button>
+                </div>
+              )}
            </div>
            <form onSubmit={handleChat} className={`p-4 border-t ${theme === 'dark' ? 'bg-[#0b111c] border-slate-800' : 'bg-white border-slate-200'}`}>
              {chatSuggestions.length > 0 && !isChatting && (
