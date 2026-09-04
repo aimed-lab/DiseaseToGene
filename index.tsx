@@ -3392,7 +3392,7 @@ const App = () => {
     try { sessionStorage.removeItem('dtt_research_state'); } catch { /* ignore */ }
   };
 
-  const [viewMode, setViewMode] = useState<ViewMode>('list');
+  const [viewMode, setViewMode] = useState<ViewMode>('board');   // the Ranking Board is the front door; Targets is one click away
   // Role guard: if a researcher (or an admin previewing as one) lands on an admin-only
   // view — via the co-pilot, a restored session, or a stale link — snap back to the Board.
   // This is the real choke point; hiding nav buttons alone wouldn't be enough.
