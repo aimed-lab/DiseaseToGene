@@ -261,6 +261,67 @@ const geminiGenerate = async (contents: object[], model = GEMINI_MODEL, response
 // reads to say so in the UI rather than silently losing the ability to filter.
 const GEMINI_CHOICE = { id: 'gemini', label: `Google ${GEMINI_MODEL}`, upstream: 'gemini' as const, tools: true };
 
+// ── OpenAI upstream ───────────────────────────────────────────────────────────
+// A third co-pilot upstream beside Gemini and PLEASER. The key in use has a hard
+// 50-requests-a-day allowance, so every call is counted against a budget that is
+// PERSISTED to disk: an in-memory counter would reset on each dev-server restart and
+// quietly overspend the day's quota. A quota you discover by exhausting it is worse
+// than one the app enforces, so past the limit we refuse with a plain message rather
+// than let OpenAI return the error.
+const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+const OPENAI_DAILY_LIMIT = Number(process.env.OPENAI_DAILY_LIMIT || 50);
+const openaiEnabled = (): boolean => !!process.env.OPENAI_API_KEY;
+const OPENAI_CHOICE = { id: 'openai', label: `OpenAI ${OPENAI_MODEL}`, upstream: 'openai' as const, tools: true };
+
+const AI_USAGE_FILE = path.join(process.cwd(), 'data', 'ai_usage.json');
+let aiUsage: { day: string; openai: number } = { day: '', openai: 0 };
+try { aiUsage = JSON.parse(fs.readFileSync(AI_USAGE_FILE, 'utf-8')) || aiUsage; } catch { /* first run */ }
+const utcDay = () => new Date().toISOString().slice(0, 10);
+function openaiBudget(): { used: number; limit: number; left: number; day: string } {
+  if (aiUsage.day !== utcDay()) aiUsage = { day: utcDay(), openai: 0 };   // rolls at UTC midnight
+  return { used: aiUsage.openai, limit: OPENAI_DAILY_LIMIT, left: Math.max(0, OPENAI_DAILY_LIMIT - aiUsage.openai), day: aiUsage.day };
+}
+function openaiSpend(n = 1): void {
+  openaiBudget();
+  aiUsage.openai += n;
+  try { fs.mkdirSync(path.dirname(AI_USAGE_FILE), { recursive: true }); fs.writeFileSync(AI_USAGE_FILE, JSON.stringify(aiUsage)); } catch { /* best effort */ }
+}
+
+// Gemini declares tool parameters with UPPERCASE types (OBJECT / STRING / ARRAY);
+// OpenAI wants lowercase JSON Schema. One converter so the SAME tool definitions
+// serve both upstreams and cannot drift apart.
+const toOpenAiSchema = (s: any): any => {
+  if (!s || typeof s !== 'object') return s;
+  const out: any = { ...s };
+  if (typeof out.type === 'string') out.type = out.type.toLowerCase();
+  if (out.properties) out.properties = Object.fromEntries(Object.entries(out.properties).map(([k, v]) => [k, toOpenAiSchema(v)]));
+  if (out.items) out.items = toOpenAiSchema(out.items);
+  return out;
+};
+const toOpenAiTools = (tools: any[]) => tools.map((t: any) => ({
+  type: 'function',
+  function: { name: t.name, description: t.description || '', parameters: toOpenAiSchema(t.parameters) || { type: 'object', properties: {} } },
+}));
+export const safeArgs = (s: any): any => { try { return typeof s === 'string' ? JSON.parse(s || '{}') : (s || {}); } catch { return {}; } };
+
+/** One OpenAI chat-completions round trip. Throws (rather than silently degrading) when
+ *  the day's budget is gone, so the caller can tell the user which model to switch to. */
+async function openaiChat(messages: any[], tools?: any[]): Promise<any> {
+  const b = openaiBudget();
+  if (b.left <= 0) throw new Error(`OpenAI daily limit reached — ${b.used} of ${b.limit} requests used today (resets at UTC midnight). Switch the model picker to Gemini, or try tomorrow.`);
+  const body: Record<string, unknown> = { model: OPENAI_MODEL, messages };
+  if (tools?.length) { body.tools = toOpenAiTools(tools); body.tool_choice = 'auto'; }
+  const r = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
+    body: JSON.stringify(body),
+  });
+  openaiSpend(1);   // count the ATTEMPT: a rejected request still counts against most quotas
+  const d: any = await r.json().catch(() => ({}));
+  if (!r.ok || d.error) throw new Error(`OpenAI ${d.error?.code || r.status}: ${d.error?.message || r.statusText}`);
+  return d.choices?.[0]?.message || {};
+}
+
 // Which Hermes models can be trusted with prompt-described tools. This is a
 // per-MODEL property, not a per-upstream one, and it was measured rather than
 // assumed: glm-air scored 13/13 across two probes (18 tools + glossary, and
@@ -549,6 +610,12 @@ function setupRoutes() {
   // instead of a dropdown entry that always errors.
   app.get("/api/ai/models", async (_req, res) => {
     const models: any[] = [{ ...GEMINI_CHOICE, available: Boolean(process.env.GEMINI_API_KEY) }];
+    // OpenAI carries its remaining daily budget in the label, so the picker itself says
+    // how many requests are left rather than making the user find out by running out.
+    if (openaiEnabled()) {
+      const b = openaiBudget();
+      models.push({ ...OPENAI_CHOICE, label: `${OPENAI_CHOICE.label} · ${b.left}/${b.limit} left today`, available: b.left > 0 });
+    }
     for (const m of await hermesModels()) {
       models.push({ id: `hermes:${m.id}`, label: `${m.label} · PLEASER`, upstream: 'hermes', tools: HERMES_TOOL_MODELS.includes(m.id), available: true });
     }
@@ -576,12 +643,17 @@ function setupRoutes() {
     if (prompt.length > 50_000) {
       return res.status(413).json({ error: "prompt exceeds the 50,000 character limit" });
     }
-    if (!process.env.GEMINI_API_KEY) {
-      return res.status(503).json({ error: "GEMINI_API_KEY not configured" });
+    // Gemini is the default here (no daily cap); OpenAI stands in only when Gemini is
+    // absent, so one-shot helpers never quietly eat the 50-a-day allowance.
+    if (!process.env.GEMINI_API_KEY && !openaiEnabled()) {
+      return res.status(503).json({ error: "No AI upstream configured (set GEMINI_API_KEY or OPENAI_API_KEY)" });
     }
     try {
-      const text = await geminiGenerate([{ parts: [{ text: prompt.trim() }] }]);
-      return res.json({ text });
+      if (process.env.GEMINI_API_KEY) {
+        return res.json({ text: await geminiGenerate([{ parts: [{ text: prompt.trim() }] }]) });
+      }
+      const msg = await openaiChat([{ role: 'user', content: prompt.trim() }]);
+      return res.json({ text: String(msg.content || '').trim() });
     } catch (err: any) {
       res.status(502).json({ error: err.message });
     }
@@ -710,6 +782,54 @@ function setupRoutes() {
         return res.json({ text, functionCalls: [], upstream: 'hermes', model, trace });
       } catch (err: any) {
         return res.status(502).json({ error: err.message });
+      }
+    }
+
+    // ── OpenAI upstream ───────────────────────────────────────────────────────
+    // Same shape as the Gemini branch below: DATA tools run here in a loop, browser
+    // ACTION tools are returned for the client's executor. The step budget is tighter
+    // (each step is one request against a 50-a-day allowance).
+    if (model === 'openai') {
+      if (!openaiEnabled()) return res.status(503).json({ error: 'OPENAI_API_KEY is not configured on this server' });
+      const screen: ScreenContext | undefined = req.body?.screen;
+      const sysText = [systemInstruction || '', renderScreenBlock(screen), EVIDENCE_RULES].filter(Boolean).join('\n\n');
+      const clientNames = new Set<string>((tools || []).map((t: any) => t?.name).filter(Boolean));
+      const dataTools = AGENT_TOOLS.filter(t => !clientNames.has(t.name));
+      const dataNames = new Set(dataTools.map(t => t.name));
+      const allTools = [...(tools || []), ...dataTools];
+      const toolCtx = { disease: req.body?.disease || screen?.disease?.name, snapshotId: req.body?.snapshotId || screen?.snapshot?.id, modality: screen?.snapshot?.modality, litWindow: screen?.litWindow };
+      const convo: any[] = [{ role: 'system', content: sysText }];
+      for (const m of messages as any[]) convo.push({ role: m.role === 'user' ? 'user' : 'assistant', content: String(m.content || '') });
+      const trace: any[] = [];
+      const pendingClient: any[] = [];
+      try {
+        for (let step = 0; step < 4; step++) {
+          const msg = await openaiChat(convo, allTools);
+          const calls: any[] = msg.tool_calls || [];
+          const text = String(msg.content || '').trim();
+          const dataCalls = calls.filter(c => dataNames.has(c.function?.name));
+          pendingClient.push(...calls.filter(c => !dataNames.has(c.function?.name)).map(c => ({ name: c.function.name, args: safeArgs(c.function.arguments) })));
+          if (!dataCalls.length) {
+            if (trace.length) console.log(`[copilot·openai] ${trace.map(t => `${t.tool}(${JSON.stringify(t.args)})`).join(' → ')}`);
+            return res.json({ text, functionCalls: pendingClient, trace, budget: openaiBudget() });
+          }
+          convo.push(msg);
+          // OpenAI requires a tool message for EVERY tool_call in the assistant turn,
+          // so browser actions get an acknowledgement rather than being left unanswered.
+          for (const c of calls) {
+            const nm = c.function?.name;
+            const args = safeArgs(c.function?.arguments);
+            let result: any;
+            if (dataNames.has(nm)) {
+              try { result = await execAgentTool(nm, args, toolCtx); } catch (e: any) { result = { error: String(e?.message || e) }; }
+              trace.push({ tool: nm, args });
+            } else result = { queued: 'this browser action runs after you answer; assume it happens' };
+            convo.push({ role: 'tool', tool_call_id: c.id, content: JSON.stringify(result).slice(0, 20_000) });
+          }
+        }
+        return res.json({ text: 'I could not finish gathering that within the OpenAI step budget. Try a narrower question, or switch to Gemini.', functionCalls: pendingClient, trace, budget: openaiBudget() });
+      } catch (e: any) {
+        return res.status(502).json({ error: e?.message || 'OpenAI error', trace, budget: openaiBudget() });
       }
     }
 
