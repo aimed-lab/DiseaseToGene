@@ -110,6 +110,7 @@ import RankingBoardView from './RankingBoardView';
 import MethodologyView from './MethodologyView';
 import DiseaseChip from './DiseaseChip';
 import GlobalSearch, { type GlobalSearchHandle } from './GlobalSearch';
+import WelcomeView from './WelcomeView';
 import { applyDiseaseAccent } from './diseaseAccent';
 import ModalityFitView from './ModalityFitView';
 import { navigate, isMethodologyPath, isModalityPath, isResetPasswordPath, catchRecoveryHash, ROUTES } from './nav';
@@ -6010,7 +6011,9 @@ ${modalityResultBlock(getLastModalityResult()) || '      (No modality analysis h
            <div className={`flex-1 overflow-hidden relative ${theme === 'dark' ? 'bg-transparent text-neutral-200' : 'bg-transparent text-neutral-900'}`}>
               {loading && (<div className="absolute inset-0 bg-neutral-900/40 backdrop-blur-[2px] z-50 flex flex-col items-center justify-center gap-4 rounded-xl"><Loader2 className="w-8 h-8 animate-spin text-blue-500" /><p className="text-[11px] font-bold uppercase text-white tracking-widest">{loadingMessage}</p></div>)}
               
-              {sidebarNav === 'assess' ? (
+              {!researchState.activeDisease ? (
+                <WelcomeView theme={theme} onPick={handleLoadSnapshot} busy={snapshotsLoading} />
+              ) : sidebarNav === 'assess' ? (
                 assessMode ? (
                 <AssessmentView
                   genes={assessGenes}

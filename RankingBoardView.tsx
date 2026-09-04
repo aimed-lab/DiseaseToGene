@@ -164,9 +164,14 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
   useEffect(() => {
     fetchSnapshots().then(s => {
       setSnapshots(s);
+      // Follow the disease the app has loaded. The old fallback to s[0] meant that with no
+      // disease chosen the board quietly showed the NEWEST snapshot — a full ranking with
+      // nothing on screen saying which disease it was. The app now gates every view on a
+      // chosen disease, so this only has to honour it.
       const dq = (diseaseName || '').toLowerCase();
       const match = dq ? s.find(x => String(x.disease_name || '').toLowerCase().includes(dq)) : null;
-      setSnapId(String((match || s[0])?.id || ''));
+      if (!match) { setError(dq ? `No stored snapshot for "${diseaseName}".` : 'No disease selected.'); setLoading(false); return; }
+      setSnapId(String(match.id));
     }).catch(e => { setError(String(e?.message || e)); setLoading(false); });
   }, [diseaseName]);
 
