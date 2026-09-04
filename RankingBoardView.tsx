@@ -9,7 +9,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Loader2, Trophy, Search, X, Sliders, RotateCcw, Award, ChevronDown, ChevronUp, ChevronsUpDown, BookOpen, FileText, Atom, Microscope, Download } from 'lucide-react';
 import { fetchSnapshots, authenticatedFetch, type RankingSnapshotMeta } from './supabase';
 import { navigate } from './nav';
-import { CRITERIA, MODALITY_PROFILES, buildBoard, criterionBreakdown, computeVerdict, findBetterAlternatives, type CriterionKey, type ModalityKey, type ScoredGene, type SubMetric, type CriterionBreakdown } from './rankingBoard';
+import { CRITERIA, MODALITY_PROFILES, LIT_WINDOWS, buildBoard, criterionBreakdown, computeVerdict, findBetterAlternatives, type CriterionKey, type ModalityKey, type ScoredGene, type SubMetric, type CriterionBreakdown, type LitWindow } from './rankingBoard';
 import { buildTargetReportHTML, type ReportCriterion } from './targetReport';
 import type { Theme } from './types';
 import { setActiveBoardSnapshot } from './boardStore';
@@ -113,6 +113,10 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
   // gene in the snapshot is nominated rather than offering an empty filter.
   type DatasetKey = 'all' | 'agora';
   const [dataset, setDataset] = useState<DatasetKey>('all');
+  // Literature window — which publication count the Literature criterion scores on. Both
+  // counts are already stored per gene (all time, and the harvest's 3-year window), so this
+  // re-scores instantly with no fetch. Unlike the dataset filter this DOES change scores.
+  const [litWindow, setLitWindow] = useState<LitWindow>('all');
   const toggleSort = (key: string) =>
     setSort(p => (p?.key === key ? (p.dir === 'desc' ? { key, dir: 'asc' } : null) : { key, dir: 'desc' }));
 
@@ -206,7 +210,7 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
     return () => clearInterval(id);
   }, [loading]);
 
-  const board = useMemo(() => buildBoard(genes, modality, weightOverride || undefined), [genes, modality, weightOverride]);
+  const board = useMemo(() => buildBoard(genes, modality, weightOverride || undefined, { litWindow }), [genes, modality, weightOverride, litWindow]);
   // Criteria that actually have data in this snapshot (dependency drops out for a non-cancer disease
   // like Alzheimer's) — drives every criterion loop below, so absent axes never show.
   const datasetCounts = useMemo(() => {
@@ -273,7 +277,7 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
         standing: rel != null ? rel * 100 : null,
         weightPct: (effWeights[c.key] || 0) * 100,
         hasData: v != null,
-        breakdown: criterionBreakdown(c.key, selected.raw),
+        breakdown: criterionBreakdown(c.key, selected.raw, { litWindow }),
       };
     });
     const html = buildTargetReportHTML({
@@ -531,6 +535,15 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
               <option value="agora">Agora nominated · {datasetCounts.agora.toLocaleString()}</option>
             </select>
           )}
+          {/* Literature window — scores the Literature criterion on the all-time or 3-year
+              publication count. Changes scores (unlike the dataset filter), so it is labelled. */}
+          <select
+            value={litWindow}
+            onChange={e => setLitWindow(e.target.value as LitWindow)}
+            title="Which publication count the Literature criterion scores on. Re-scores the board."
+            className={`text-xs rounded-md border px-2 py-1 outline-none ${card} ${isDark ? 'text-white' : 'text-slate-900'}`}>
+            {LIT_WINDOWS.map(w => <option key={w.key} value={w.key}>Literature · {w.label}</option>)}
+          </select>
           <div className="flex-1" />
           <div className={`flex items-center gap-1 rounded-md border px-2 ${card}`}>
             <Search className="w-3.5 h-3.5 text-slate-400" />
@@ -798,7 +811,7 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
                       {isLiveNet ? (
                         <p className="text-[9px] text-slate-400 mt-2 italic">Live connectivity ({neighborSet.size} STRING partners) — no stored disease-network score for this gene: it is outside the snapshot’s Open Targets candidate graph, or STRING v12.0 has no protein for it. Shown for context, not counted in the overall.</p>
                       ) : (
-                        <DeepDive breakdown={criterionBreakdown(c.key, selected.raw)} isDark={isDark} barBg={barBg} />
+                        <DeepDive breakdown={criterionBreakdown(c.key, selected.raw, { litWindow })} isDark={isDark} barBg={barBg} />
                       )}
                     </div>
                   )}

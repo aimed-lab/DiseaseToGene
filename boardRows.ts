@@ -42,6 +42,8 @@ export function deriveBoardRows(scores: BoardScoreRow[], evidence: BoardEvidence
         trials_by_phase: clinLegacy ? null : (clin?.trials_by_phase ?? null),
         max_disease_phase: clinLegacy ? null : (clin?.max_disease_trial_phase ?? null),
         n_publications: lit?.paper_count ?? null,
+        lit_recent_count: lit?.recent_count ?? null,    // papers in the harvest's 3-year window
+        lit_low_conf: lit?.low_confidence ?? false,     // < 5 papers: velocity is quantised noise
         velocity: lit?.velocity ?? null,
         // ── axes added for the dashboard ──
         target_class: ann?.target_class ?? null,

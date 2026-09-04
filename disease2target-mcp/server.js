@@ -42,10 +42,10 @@ const evidence = (id) => memo(`evidence:${id}`, () => ords.snapshotEvidence(id))
 
 // The board for a snapshot + modality: the app's own engine over the app's own row shape.
 // Heavy the first time (a full evidence pull, ~55k rows), then cached.
-const boardFor = (id, modality) => memo(`board:${id}:${modality}`, async () => {
+const boardFor = (id, modality, litWindow = 'all') => memo(`board:${id}:${modality}:${litWindow}`, async () => {
   const [sc, ev] = await Promise.all([scores(id), evidence(id)]);
   const rows = deriveBoardRows(sc, ev);
-  const board = buildBoard(rows, modality);
+  const board = buildBoard(rows, modality, undefined, { litWindow });
   const bySymbol = new Map(board.scored.map(s => [String(s.symbol).toUpperCase(), s]));
   return { rows, board, bySymbol, total: board.scored.length };
 });
@@ -152,7 +152,8 @@ async function toolRankBoard(args) {
   const modality = modalityOf(args);
   const topN = Math.max(1, Math.min(500, Number(args.top_n) || 25));
   const dataset = String(args.dataset || 'all').toLowerCase();
-  const [{ board, total }, full] = await Promise.all([boardFor(snap.id, modality), snapshotFull(snap.id)]);
+  const litWindow = String(args.lit_window || 'all') === 'recent3y' ? 'recent3y' : 'all';
+  const [{ board, total }, full] = await Promise.all([boardFor(snap.id, modality, litWindow), snapshotFull(snap.id)]);
   const prov = provenanceOf(full);
   const ad = isAD(snap);
   let list = board.scored;
@@ -177,7 +178,7 @@ async function toolRankBoard(args) {
     const src = candidateSourceOf(s.raw, prov);
     o += `| ${s.boardRank} | ${s.symbol}${s.gated ? ' ⛔' : ''} | ${s.display.toFixed(1)} | ${s.sourceRank ?? '—'} | ${src} |${ad ? ` ${isAgora(s.symbol) ? '✓' : ''} |` : ''} ${active.map(k => pct100(s.criteria[k])).join(' | ')} | ${s.coverage}/${active.length} |\n`;
   }
-  o += `\n_Criterion columns are 0–100 (criterion score × 100). ⛔ = gated ineligible for this modality (sunk and sorted last). Network = disease-specific WINNER percentile within this snapshot's candidate graph — never comparable across snapshots. Board rank is a **prediction** built from labelled facts and predictions; see \`get_target_dossier\` for the per-gene breakdown._`;
+  o += `\n_Criterion columns are 0–100 (criterion score × 100). ⛔ = gated ineligible for this modality (sunk and sorted last). Network = disease-specific WINNER percentile within this snapshot's candidate graph — never comparable across snapshots. Literature = log-scaled publication count (${litWindow === 'recent3y' ? 'last 3 years' : 'all time'}; pass lit_window="recent3y" for the 3-year window); velocity is not scored. Board rank is a **prediction** built from labelled facts and predictions; see \`get_target_dossier\` for the per-gene breakdown._`;
   return text(o);
 }
 
@@ -430,7 +431,7 @@ const TOOLS = [
   {
     name: 'rank_board',
     description: 'The platform\'s composite ranking — the Ranking Board: eight evidence criteria (genetics, expression, dependency, tractability, safety, clinical, literature, network) in a transparent weighted sum, leader = 100, using the app\'s own scoring engine. Use for "what are the top targets for X?". Optional dataset="agora" restricts an Alzheimer snapshot to the 967 AMP-AD nominated targets (a view, not a re-score).',
-    inputSchema: { type: 'object', properties: { ...diseaseArg, ...modalityArg, top_n: { type: 'number', description: 'How many top-ranked targets to return (default 25, max 500).' }, dataset: { type: 'string', description: '"all" (default) or "agora" (Alzheimer only).' } } },
+    inputSchema: { type: 'object', properties: { ...diseaseArg, ...modalityArg, top_n: { type: 'number', description: 'How many top-ranked targets to return (default 25, max 500).' }, dataset: { type: 'string', description: '"all" (default) or "agora" (Alzheimer only).' }, lit_window: { type: 'string', description: 'Publication count the Literature criterion scores on: "all" (default, all time) or "recent3y" (the harvest\'s 3-year window).' } } },
     handler: toolRankBoard,
   },
   {

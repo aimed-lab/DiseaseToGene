@@ -61,7 +61,7 @@ var CRITERIA = [
   {
     key: "literature",
     label: "Literature",
-    definition: "Research momentum \u2014 recent publication velocity for the gene in this disease.",
+    definition: "Research attention \u2014 how many publications link the gene to this disease (all time, or the last 3 years), on a log scale. Publication velocity is shown alongside but not scored.",
     source: "Europe PMC",
     citations: [
       "Ferguson C, et al. Europe PMC in 2020. Nucleic Acids Res 2021;49(D1):D1507-D1514. doi:10.1093/nar/gkaa994"
@@ -155,7 +155,20 @@ function proteinFrame(g) {
     scaleNote: "\xF73 for tumour-vs-normal"
   };
 }
-function criterionScores(g) {
+var LIT_WINDOWS = [
+  { key: "all", label: "All time", note: "every Europe PMC paper linking the gene and the disease" },
+  { key: "recent3y", label: "Last 3 years", note: "papers dated from 1 Jan three years before the harvest year to the end of the harvest year (\u22483.7 years)" }
+];
+var LIT_LOG_CAP = 5;
+function literatureCount(g, opts) {
+  const n = opts?.litWindow === "recent3y" ? g?.lit_recent_count : g?.n_publications;
+  return n != null && isFinite(Number(n)) ? Number(n) : null;
+}
+function literatureScore(g, opts) {
+  const n = literatureCount(g, opts);
+  return n != null ? clamp01(Math.log10(1 + n) / LIT_LOG_CAP) : null;
+}
+function criterionScores(g, opts) {
   const exprMag = g.expr_log2fc != null ? clamp01(Math.abs(g.expr_log2fc) / 4) * (g.expr_low_conf ? 0.25 : 1) : null;
   const protMag = protMagOf(g);
   const loeufTol = g.loeuf != null ? clamp01(g.loeuf / 1.5) : null;
@@ -171,7 +184,7 @@ function criterionScores(g) {
     tractability: g.druggability_score != null ? clamp01(g.druggability_score) : null,
     safety: loeufTol != null ? clamp01(loeufTol * essPenalty * liabPenalty) : g.is_common_essential != null ? clamp01(0.5 * essPenalty * liabPenalty) : null,
     clinical: blend([[phase, 0.6], [trials, 0.4]]),
-    literature: g.velocity != null ? clamp01(g.velocity) : null,
+    literature: literatureScore(g, opts),
     // Disease-specific WINNER, scored as its within-run PERCENTILE (0–100 → 0–1). The raw
     // max-normalised value is compressed (median ≈ 0.03 because TP53 sets the max), which
     // left the criterion near zero for almost every gene. Snapshots written before the
@@ -179,7 +192,7 @@ function criterionScores(g) {
     network: g.winner_pct != null ? clamp01(g.winner_pct / 100) : g.winner_score != null ? clamp01(g.winner_score) : null
   };
 }
-function criterionBreakdown(key, g) {
+function criterionBreakdown(key, g, opts) {
   const num = (x, d = 2) => x == null || !isFinite(Number(x)) ? null : Number(x).toFixed(d);
   const pct = (x, d = 0) => x == null || !isFinite(Number(x)) ? null : `${(Number(x) * 100).toFixed(d)}%`;
   switch (key) {
@@ -257,15 +270,19 @@ function criterionBreakdown(key, g) {
         ]
       };
     }
-    case "literature":
+    case "literature": {
+      const win = LIT_WINDOWS.find((w) => w.key === (opts?.litWindow || "all")) || LIT_WINDOWS[0];
+      const n = literatureCount(g, opts);
       return {
-        formula: "Publication velocity mapped to 0\u20131 \u2014 recent research momentum for the gene in this disease.",
+        formula: `log10(1 + publications, ${win.label.toLowerCase()}) \xF7 ${LIT_LOG_CAP}, capped at 1 \u2014 research attention on a log scale (1 paper 0.06 \xB7 100 \u2192 0.40 \xB7 5,000 \u2192 0.74 \xB7 45,000 \u2192 0.93). Velocity is context, not scored.`,
         metrics: [
-          { label: "Publication velocity", value: pct(g.velocity), sub: g.velocity != null ? clamp01(g.velocity) : null, role: "term", weightPct: 100, kind: "fact", note: "Europe PMC \u2014 recent publication rate (novelty-fair: absence isn\u2019t punished elsewhere)." },
-          { label: "Publications", value: g.n_publications != null ? String(g.n_publications) : null, role: "context", kind: "fact", note: "Total papers linking the gene to this disease." },
+          { label: `Publications (${win.label.toLowerCase()})`, value: n != null ? n.toLocaleString() : null, sub: literatureScore(g, opts), role: "term", weightPct: 100, kind: "fact", note: `Europe PMC \u2014 ${win.note}. Query: gene symbol AND disease name.` },
+          { label: "Publication velocity", value: pct(g.velocity), role: "context", kind: "fact", note: `Share of all papers dated in the last 3 years \u2014 momentum, shown for context only.${g.lit_low_conf ? " Low-confidence: fewer than 5 papers, so the ratio is quantised noise." : ""}` },
+          { label: opts?.litWindow === "recent3y" ? "Publications (all time)" : "Publications (last 3 years)", value: (opts?.litWindow === "recent3y" ? g.n_publications : g.lit_recent_count) != null ? Number(opts?.litWindow === "recent3y" ? g.n_publications : g.lit_recent_count).toLocaleString() : null, role: "context", kind: "fact", note: "The other window, for reference." },
           { label: "Patents", value: g.n_patents != null ? String(g.n_patents) : null, role: "context", kind: "fact", note: "Patent count mentioning the gene (context only)." }
         ]
       };
+    }
     case "network": {
       const legacy = g.winner_pct == null && g.winner_score != null;
       return {
@@ -322,10 +339,10 @@ function normaliseWeights(w) {
   for (const c of CRITERIA) out[c.key] = Math.max(0, w[c.key] || 0) / total;
   return out;
 }
-function buildBoard(genes, modality, weightOverride) {
+function buildBoard(genes, modality, weightOverride, opts) {
   const profile = MODALITY_PROFILES[modality];
   const rawW = weightOverride || profile.weights;
-  const allCriteria = genes.map((g) => criterionScores(g));
+  const allCriteria = genes.map((g) => criterionScores(g, opts));
   const criterionCoverage = {};
   for (const c of CRITERIA) {
     let n = 0;
@@ -413,6 +430,10 @@ function deriveBoardRows(scores, evidence) {
       trials_by_phase: clinLegacy ? null : clin?.trials_by_phase ?? null,
       max_disease_phase: clinLegacy ? null : clin?.max_disease_trial_phase ?? null,
       n_publications: lit?.paper_count ?? null,
+      lit_recent_count: lit?.recent_count ?? null,
+      // papers in the harvest's 3-year window
+      lit_low_conf: lit?.low_confidence ?? false,
+      // < 5 papers: velocity is quantised noise
       velocity: lit?.velocity ?? null,
       // ── axes added for the dashboard ──
       target_class: ann?.target_class ?? null,
@@ -1434,6 +1455,8 @@ export {
   AGORA_NOMINATED,
   CORE_CRITERIA,
   CRITERIA,
+  LIT_LOG_CAP,
+  LIT_WINDOWS,
   MODALITY_PROFILES,
   agoraNominations,
   buildBoard,
@@ -1442,6 +1465,8 @@ export {
   criterionScores,
   deriveBoardRows,
   isAgora,
+  literatureCount,
+  literatureScore,
   normaliseWeights,
   protMagOf,
   proteinFrame,

@@ -9,8 +9,8 @@
 export {
   buildBoard, criterionScores, criterionBreakdown, computeVerdict,
   CRITERIA, CORE_CRITERIA, MODALITY_PROFILES, readyModalities, normaliseWeights,
-  protMagOf, proteinFrame,
+  protMagOf, proteinFrame, literatureScore, literatureCount, LIT_WINDOWS, LIT_LOG_CAP,
 } from '../rankingBoard.ts';
-export type { CriterionKey, ModalityKey, ScoredGene } from '../rankingBoard.ts';
+export type { CriterionKey, ModalityKey, ScoredGene, LitWindow, BoardOptions } from '../rankingBoard.ts';
 export { deriveBoardRows } from '../boardRows.ts';
 export { AGORA_NOMINATED, AGORA_COUNT, isAgora, agoraNominations } from '../agoraNominated.ts';
