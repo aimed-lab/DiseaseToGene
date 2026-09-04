@@ -71,6 +71,7 @@ import {
   AlertCircle,
   Flag,
   Maximize,
+  Minimize,
   TableProperties,
   Plus,
   ArrowUpDown,
@@ -3761,6 +3762,34 @@ const App = () => {
   };
 
   const [isLeftSidebarOpen, setIsLeftSidebarOpen] = useState(true);
+  // Co-pilot panel size. Answers now carry tables, per-criterion breakdowns and source
+  // lists, which a fixed 340px column wraps into a ribbon — so the panel is draggable and
+  // can take the whole window. Width persists per browser; the drag is pointer-based so it
+  // works with a trackpad, a mouse or a pen.
+  const COPILOT_MIN = 320, COPILOT_DEFAULT = 340;
+  const [copilotWidth, setCopilotWidth] = useState<number>(() => {
+    try { const v = Number(localStorage.getItem('d2t.copilotWidth')); return v >= COPILOT_MIN ? v : COPILOT_DEFAULT; } catch { return COPILOT_DEFAULT; }
+  });
+  const [copilotFull, setCopilotFull] = useState(false);
+  const [copilotDragging, setCopilotDragging] = useState(false);
+  const copilotDrag = useRef<{ x: number; w: number } | null>(null);
+  useEffect(() => { try { localStorage.setItem('d2t.copilotWidth', String(copilotWidth)); } catch { /* private mode */ } }, [copilotWidth]);
+  const copilotMax = () => Math.max(COPILOT_MIN, Math.round(window.innerWidth * 0.85));
+  const startCopilotDrag = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+    copilotDrag.current = { x: e.clientX, w: copilotWidth };
+    setCopilotDragging(true);
+  };
+  const onCopilotDrag = (e: React.PointerEvent<HTMLDivElement>) => {
+    const d = copilotDrag.current; if (!d) return;
+    // The panel is docked right, so dragging LEFT makes it wider.
+    setCopilotWidth(Math.max(COPILOT_MIN, Math.min(copilotMax(), d.w + (d.x - e.clientX))));
+  };
+  const endCopilotDrag = (e: React.PointerEvent<HTMLDivElement>) => {
+    copilotDrag.current = null; setCopilotDragging(false);
+    try { e.currentTarget.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
+  };
   const globalSearchRef = useRef<GlobalSearchHandle>(null);   // header search — the disease bar and the footer focus it
   const [docsSignal, setDocsSignal] = useState(0);            // bumped by the footer to open the Documentation overlay
   const [scoreRangeFilter, setScoreRangeFilter] = useState<Record<string, [number, number]>>({});
@@ -5823,7 +5852,27 @@ ${modalityResultBlock(getLastModalityResult()) || '      (No modality analysis h
         </div>
       </header>
       <main className="flex-1 flex overflow-hidden relative p-2 gap-2">
-        <aside className={`order-2 border flex flex-col shrink-0 transition-all duration-300 rounded-xl overflow-hidden shadow-lg shadow-slate-950/5 ${isModalityPath(routePath) ? 'relative z-[60]' : ''} ${isLeftSidebarOpen ? 'w-[340px]' : 'w-0 opacity-0 pointer-events-none'} ${theme === 'dark' ? 'bg-[#0b111c]/95 border-slate-800/80' : 'bg-white border-slate-200'}`}>
+        {copilotFull && isLeftSidebarOpen && (
+          <div onClick={() => setCopilotFull(false)} title="Click to leave full window"
+            className="fixed inset-0 z-[85] bg-slate-950/50 backdrop-blur-[2px]" />
+        )}
+        <aside
+          style={copilotFull ? undefined : { width: isLeftSidebarOpen ? copilotWidth : 0 }}
+          className={`border flex flex-col rounded-xl overflow-hidden shadow-lg shadow-slate-950/5 relative
+            ${copilotFull ? 'fixed inset-2 md:inset-8 z-[90]' : `order-2 shrink-0 ${isLeftSidebarOpen ? '' : 'opacity-0 pointer-events-none'} ${isModalityPath(routePath) ? 'z-[60]' : ''}`}
+            ${copilotDragging ? '' : 'transition-[width,opacity,inset] duration-300'}
+            ${theme === 'dark' ? 'bg-[#0b111c]/95 border-slate-800/80' : 'bg-white border-slate-200'}`}>
+           {/* Drag edge — the panel is docked right, so pull LEFT to widen. Double-click resets. */}
+           {!copilotFull && isLeftSidebarOpen && (
+             <div
+               onPointerDown={startCopilotDrag} onPointerMove={onCopilotDrag} onPointerUp={endCopilotDrag} onPointerCancel={endCopilotDrag}
+               onDoubleClick={() => setCopilotWidth(COPILOT_DEFAULT)}
+               role="separator" aria-orientation="vertical" aria-label="Resize the co-pilot panel"
+               title="Drag to resize · double-click to reset"
+               className="absolute left-0 top-0 bottom-0 w-2 z-30 cursor-col-resize group flex items-center justify-center">
+               <div className={`h-10 w-1 rounded-full transition-colors ${copilotDragging ? 'bg-blue-500' : (theme === 'dark' ? 'bg-slate-700 group-hover:bg-blue-500' : 'bg-slate-300 group-hover:bg-blue-500')}`} />
+             </div>
+           )}
            <div className={`p-4 border-b flex items-center justify-between ${theme === 'dark' ? 'bg-[#0b111c] border-slate-800' : 'bg-white border-slate-200'}`}>
              <div className="flex items-center gap-3">
                <div className="h-8 w-8 rounded-lg bg-blue-600/10 text-blue-600 dark:text-blue-400 flex items-center justify-center">
@@ -5834,9 +5883,26 @@ ${modalityResultBlock(getLastModalityResult()) || '      (No modality analysis h
                  <div className={`text-[12px] font-bold ${theme === 'dark' ? 'text-slate-100' : 'text-slate-950'}`}>Targets context</div>
                </div>
              </div>
-             <button onClick={() => setIsLeftSidebarOpen(false)} className={`p-1.5 rounded-lg ${theme === 'dark' ? 'hover:bg-slate-800' : 'hover:bg-slate-100'}`}><PanelRight className={`w-3.5 h-3.5 ${theme === 'dark' ? 'text-slate-200' : 'text-slate-900'}`} /></button>
+             <div className="flex items-center gap-1">
+               <button onClick={() => setCopilotFull(f => !f)}
+                 title={copilotFull ? 'Leave full window' : 'Open in full window'}
+                 aria-pressed={copilotFull}
+                 className={`p-1.5 rounded-lg ${theme === 'dark' ? 'hover:bg-slate-800' : 'hover:bg-slate-100'}`}>
+                 {copilotFull
+                   ? <Minimize className={`w-3.5 h-3.5 ${theme === 'dark' ? 'text-slate-200' : 'text-slate-900'}`} />
+                   : <Maximize className={`w-3.5 h-3.5 ${theme === 'dark' ? 'text-slate-200' : 'text-slate-900'}`} />}
+               </button>
+               <button onClick={() => { setCopilotFull(false); setIsLeftSidebarOpen(false); }}
+                 title="Close the co-pilot"
+                 className={`p-1.5 rounded-lg ${theme === 'dark' ? 'hover:bg-slate-800' : 'hover:bg-slate-100'}`}>
+                 <PanelRight className={`w-3.5 h-3.5 ${theme === 'dark' ? 'text-slate-200' : 'text-slate-900'}`} />
+               </button>
+             </div>
            </div>
-           <div ref={chatScrollRef} className="flex-1 overflow-y-auto p-5 space-y-6">
+           {/* Full window centres the thread: a bubble at 88% of a wide screen is an
+               unreadable line length, and the point of expanding is to read tables, not to
+               stretch prose. */}
+           <div ref={chatScrollRef} className={`flex-1 overflow-y-auto p-5 space-y-6 ${copilotFull ? 'w-full max-w-4xl mx-auto' : ''}`}>
               {messages.filter(m => (m.content && m.content.trim().length > 0) || (m.options && m.options.length > 0) || (m.filterOptions && m.filterOptions.length > 0)).map((m, i) => (
                 <div key={i} className={`flex flex-col ${m.role === 'user' ? 'items-end' : 'items-start'}`}>
                   <div className={`max-w-[88%] inline-block px-4 py-2.5 rounded-lg text-[13px] shadow-sm ${m.role === 'user' ? 'bg-blue-600 text-white' : (theme === 'dark' ? 'bg-[#111827] border border-slate-800 text-slate-100' : 'bg-white text-slate-950 border border-slate-200 shadow-sm')}`}>
