@@ -800,7 +800,7 @@ const TabNavigation = ({
     const active = t.route ? isModalityPath() : viewMode === t.id;
     return (
       <button key={t.id} onClick={() => (t.route ? navigate(t.route) : onViewModeChange(t.id as ViewMode))} className={btnCls(active)}
-        style={active ? { boxShadow: 'inset 0 -2px 0 0 var(--disease-accent)' } : undefined}>
+        style={active ? { background: 'var(--disease-accent)', color: '#fff' } : undefined}>
         <t.i className={iconCls(active)} />
         {t.l}
       </button>

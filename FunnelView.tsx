@@ -563,7 +563,6 @@ export const FunnelView: React.FC<Props> = ({ theme = 'light', activeDiseaseName
             <div style={{ width: 0, height: 0, borderLeft: '5px solid transparent', borderRight: '5px solid transparent', borderTop: '7px solid #fff' }} />
           </div>
           <span style={{ fontWeight: 700, letterSpacing: '.16em', fontSize: 13, color: t.tx }}>FUNNEL</span>
-          {diseaseName && <span style={{ background: 'var(--disease-accent)', color: '#fff', fontSize: 11, fontWeight: 900, padding: '3px 8px', borderRadius: 6, maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={diseaseName}>{diseaseName}</span>}
         </div>
         <div style={{ height: 22, width: 1, background: t.line }} />
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>

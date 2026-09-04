@@ -122,7 +122,7 @@ export const RankingsView: React.FC<Props> = ({ theme = 'light', activeDiseaseNa
   return (
     <div style={wrap}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '14px 18px', borderBottom: `1px solid ${border}`, position: 'sticky', top: 0, background: bg, zIndex: 2, flexWrap: 'wrap' }}>
-        <div style={{ fontWeight: 800, fontSize: 15, display: 'flex', alignItems: 'center', gap: 8 }}>Rankings{diseaseName && <span style={{ background: 'var(--disease-accent)', color: '#fff', fontSize: 11, fontWeight: 900, padding: '3px 8px', borderRadius: 6, maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={diseaseName}>{diseaseName}</span>} <span style={{ color: muted, fontWeight: 600, fontSize: 12 }}>· from Oracle store</span></div>
+        <div style={{ fontWeight: 800, fontSize: 15, display: 'flex', alignItems: 'center', gap: 8 }}>Rankings <span style={{ color: muted, fontWeight: 600, fontSize: 12 }}>· from Oracle store</span></div>
         <select value={selectedId} onChange={(e) => setSelectedId(e.target.value)} style={{ background: headBg, color: ink, border: `1px solid ${border}`, borderRadius: 8, padding: '6px 10px', fontSize: 12 }}>
           {snapshots.length === 0 && <option value="">No stored snapshots yet</option>}
           {snapshots.map((s) => (

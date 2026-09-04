@@ -282,7 +282,6 @@ export const DashboardView: React.FC<Props> = ({ theme = 'light', command = null
     <div style={{ height: '100%', overflowY: 'auto', padding: 20, color: text }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
         <h2 style={{ fontSize: 20, fontWeight: 900, letterSpacing: '-0.02em', margin: 0 }}>Evidence</h2>
-        {snap && <span style={{ background: 'var(--disease-accent)', color: '#fff', fontSize: 11, fontWeight: 900, padding: '3px 8px', borderRadius: 6, maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={snap.disease_name}>{snap.disease_name}</span>}
         <select value={snapId} onChange={e => setSnapId(e.target.value)}
           style={{ background: bg, color: text, border: `1px solid ${border}`, borderRadius: 8, padding: '7px 10px', fontSize: 12, fontWeight: 700 }}>
           {snapshots.map(s => (

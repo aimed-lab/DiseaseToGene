@@ -43,15 +43,19 @@ export default function DiseaseBar({ theme, activeDisease, onSwitch, busy }: Pro
   const muted = isDark ? '#94a3b8' : '#64748b';
   const chip: React.CSSProperties = { fontSize: 10, fontWeight: 800, letterSpacing: '0.04em', padding: '2px 7px', borderRadius: 6, background: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(15,23,42,0.05)', color: muted, whiteSpace: 'nowrap' };
 
+  // Compact outlined control: the disease NAME is the hero of this bar, not the switcher.
+  // With no disease loaded it is filled, because then it is the one thing to do.
   const select = (
-    <div className="relative inline-flex items-center">
+    <div className="relative inline-flex items-center shrink-0">
       <select
         value=""
         disabled={busy}
         onChange={e => { const id = e.target.value; if (id) onSwitch(id); }}
         title={activeDisease ? 'Switch to another disease (loads its latest snapshot)' : 'Choose a disease to begin'}
-        className="appearance-none text-[11px] font-black uppercase tracking-wider rounded-md pl-3 pr-7 py-1.5 outline-none cursor-pointer text-white disabled:opacity-60"
-        style={{ background: a.hex }}>
+        className="appearance-none text-[10.5px] font-bold rounded-md pl-2.5 pr-6 py-1 outline-none cursor-pointer disabled:opacity-60"
+        style={activeDisease
+          ? { background: 'transparent', color: a.strong, border: `1px solid ${a.hex}` }
+          : { background: a.hex, color: '#fff', border: `1px solid ${a.hex}` }}>
         <option value="" disabled>{activeDisease ? 'Switch disease' : 'Choose a disease…'}</option>
         {diseases.map(d => (
           <option key={d.id} value={String(d.id)} disabled={!!activeDisease && d.disease_id === activeDisease.id}>
@@ -59,7 +63,7 @@ export default function DiseaseBar({ theme, activeDisease, onSwitch, busy }: Pro
           </option>
         ))}
       </select>
-      {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin text-white absolute right-2 pointer-events-none" /> : <ChevronDown className="w-3.5 h-3.5 text-white absolute right-2 pointer-events-none" />}
+      {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin absolute right-1.5 pointer-events-none" style={{ color: activeDisease ? a.strong : '#fff' }} /> : <ChevronDown className="w-3.5 h-3.5 absolute right-1.5 pointer-events-none" style={{ color: activeDisease ? a.strong : '#fff' }} />}
     </div>
   );
 
@@ -68,7 +72,7 @@ export default function DiseaseBar({ theme, activeDisease, onSwitch, busy }: Pro
       <div role="status" className="px-4 md:px-6 py-2 flex items-center gap-3 border-b" style={{ background: a.soft, borderColor: a.hex, borderBottomWidth: 2 }}>
         <Activity className="w-4 h-4 shrink-0" style={{ color: a.hex }} />
         <span className="text-[13px] font-bold" style={{ color: text }}>No disease selected</span>
-        <span className="text-[12px] hidden sm:inline" style={{ color: muted }}>— every ranking, evidence panel and graph is scoped to one disease. Pick one to begin.</span>
+        <span className="text-[12px] hidden sm:inline" style={{ color: muted }}>— pick one; every view is scoped to it.</span>
         <div className="flex-1" />
         {select}
       </div>
@@ -87,7 +91,6 @@ export default function DiseaseBar({ theme, activeDisease, onSwitch, busy }: Pro
         {current && <span style={chip} title="Latest stored snapshot for this disease">snapshot #{current.id}{current.version != null ? ` · v${current.version}` : ''}</span>}
         {current?.gene_count != null && <span style={chip}>{Number(current.gene_count).toLocaleString()} genes</span>}
       </div>
-      <span className="hidden lg:inline text-[11px] truncate" style={{ color: muted }}>Everything on this page — ranking, evidence, targets, graph — is for this disease.</span>
       <div className="flex-1" />
       {select}
     </div>
