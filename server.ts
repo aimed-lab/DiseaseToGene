@@ -519,7 +519,7 @@ export const EVIDENCE_RULES = `EVIDENCE RULES (non-negotiable):
 - Stored snapshot evidence is the ranking's truth; a live deep-dive value is extra context. If the two disagree, say which is which and that the snapshot is what the board ranks on.
 - Label each fact with its source and snapshot inline, e.g. "(Europe PMC, snapshot #103)" or "(STRING, live)". End with a short "Sources" list. Keep FACTS (mutation, expression, proteomics, dependency, safety, trials, papers) separate from PREDICTIONS (Open Targets association, board rank, WINNER centrality, tractability).
 - If the store has nothing for a gene in this disease, say exactly that. Do not fill the gap from memory.
-- Stay in the current disease context unless the user names another disease.`;
+- Stay in the current disease context unless the user names another disease. When they DO name a different one, pass it as the "disease" argument on every tool call — otherwise you will answer from the disease that happens to be on screen. Always state which disease and snapshot your numbers came from.`;
 
 const TOOL_RESULT_RULES = `Now answer the user in prose. Do NOT call another tool.
 - These results came from the Disease2Target application itself. They did NOT come
@@ -1724,14 +1724,21 @@ function setupRoutes() {
   // The co-pilot's single-shot chat can filter the loaded list; this lets the model PLAN and
   // call evidence tools across several steps, then synthesise. Same Gemini setup as
   // /api/ai/gemini-chat, but the tool loop runs server-side against Oracle/ORDS.
-  async function agentSnapshot(disease?: string, snapshotId?: number) {
+  // A disease the caller NAMED beats the snapshot that merely happens to be on screen.
+  // Previously the ambient snapshot id was checked first, so asking "is PDE10A a target in
+  // pancreatic cancer?" while glioblastoma was loaded answered from glioblastoma however
+  // clearly the question named another disease — the model could not override it.
+  async function agentSnapshot(named?: string, ambient?: string, snapshotId?: number) {
     const svc = await readSvc();
     const snaps: any[] = await svc.listSnapshots();
     const sorted = [...snaps].sort((a, b) => Number(b.id) - Number(a.id));
+    const match = (q: string) => sorted.find(s => { const n = String(s.disease_name || '').toLowerCase(); return n.includes(q) || q.includes(n); });
+    const nq = String(named || '').toLowerCase().trim();
+    if (nq) { const m = match(nq); if (m) return m; }                      // explicit request
     if (snapshotId) return sorted.find(s => Number(s.id) === Number(snapshotId)) || sorted[0];
-    const dq = String(disease || '').toLowerCase().trim();
-    if (!dq) return sorted[0];
-    return sorted.find(s => { const n = String(s.disease_name || '').toLowerCase(); return n.includes(dq) || dq.includes(n); }) || sorted[0];
+    const aq = String(ambient || '').toLowerCase().trim();
+    if (aq) { const m = match(aq); if (m) return m; }                      // what is on screen
+    return sorted[0];
   }
   const AGENT_TOOLS = [
     { name: 'list_diseases', description: 'List the diseases loaded in the platform (name, snapshot id, gene count). Call first if unsure which disease is available.', parameters: { type: 'OBJECT', properties: {} } },
@@ -1828,6 +1835,11 @@ function setupRoutes() {
   // on whichever model is answering. Only a small structured record comes back, never the
   // paper. And the record is cached, so a paper is read once rather than once per question.
   const paperReads = new Map<string, Promise<any>>();   // one read per paper in flight, shared by every caller
+  // Papers do not change, so a finished extract is kept for the life of the process. This is
+  // not merely an optimisation: the Supabase api-cache table is absent on this deployment, so
+  // readApiCache/writeApiCache silently no-op and without this every ask would re-read the
+  // paper from scratch — minutes each time.
+  const paperExtracts = new Map<string, any>();
   const PAPER_SCHEMA = `{"claimed_target":"","study_type":"preprint|peer-reviewed, and in vitro|in vivo|clinical","genetic_perturbation":"knockdown/knockout/rescue performed, with detail — or exactly: none reported","control_compounds":"selective comparators tested, their concentrations and whether they reproduced the effect — or: none reported","potency":"key IC50s or doses with units","main_findings":["",""],"author_conflicts":"affiliations with a company owning the compound — or: none stated","limitations":""}`;
   async function paperMeta(doi?: string, pmid?: string, title?: string) {
     // Try each identifier in turn, most specific first. Europe PMC does NOT index every
@@ -1896,7 +1908,7 @@ Rules: fill every field only from the full text you retrieved. Where the paper d
 
   async function execAgentTool(name: string, args: any, ctx: { disease?: string; snapshotId?: number; modality?: string; litWindow?: string }): Promise<any> {
     const svc = await readSvc();
-    const snap = await agentSnapshot(args?.disease || ctx.disease, ctx.snapshotId);
+    const snap = await agentSnapshot(args?.disease, ctx.disease, ctx.snapshotId);
     if (!snap) return { error: 'no snapshot loaded' };
     const up = (v: any) => String(v || '').toUpperCase().trim();
     if (name === 'compare_genes') {
@@ -1978,8 +1990,9 @@ Rules: fill every field only from the full text you retrieved. Where the paper d
         : { doi, pmid, title, note: 'not found in Europe PMC' };
       const key = cacheKey('paper_extract', `${ident.doi || ''}|${ident.pmid || ''}|${ident.title || ''}|${String(args?.focus || '')}`);
 
+      if (paperExtracts.has(key)) return paperExtracts.get(key);
       const cached = await readApiCache(key);
-      if (cached?.body) return cached.body;
+      if (cached?.body) { paperExtracts.set(key, cached.body); return cached.body; }
 
       if (!paperReads.has(key)) {
         const job = readPaperViaPleaser(ident, args?.focus)
@@ -1987,7 +2000,7 @@ Rules: fill every field only from the full text you retrieved. Where the paper d
             const body: any = { paper, full_text_extract: extract,
               source: 'paperclip via PLEASER (full text) · Europe PMC (metadata)',
               how_to_read: 'These fields come from the paper itself. "none reported" means the paper does not contain it — an absence you may cite, such as no knockout having been performed. Keep it separate from the measured evidence in our own store.' };
-            if (extract && !extract.error) await writeApiCache(key, { status: 200, body, contentType: 'application/json' });
+            if (extract && !extract.error) { paperExtracts.set(key, body); await writeApiCache(key, { status: 200, body, contentType: 'application/json' }); }
             else if (meta?.abstract) body.abstract_fallback = meta.abstract;
             return body;
           })
