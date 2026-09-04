@@ -1672,6 +1672,24 @@ function setupRoutes() {
     finally { clearTimeout(t); }
   };
   const trimJson = (v: any, max = 2500): any => { const s = JSON.stringify(v ?? null); return s.length <= max ? v : { truncated: true, preview: s.slice(0, max) }; };
+  // Users say "FAK", the store says PTK2. Resolve an alias to the symbol the snapshot uses
+  // (STRING's preferred name is HGNC for human), so board lookups, evidence lookups and
+  // edge matching all use one name. Returns the input unchanged when it is already known.
+  const aliasCache = new Map<string, string>();
+  const resolveGeneSymbol = async (sym: string, known?: Map<string, any>): Promise<{ symbol: string; alias_of?: string }> => {
+    const s = String(sym || '').toUpperCase().trim();
+    if (!s) return { symbol: s };
+    if (known?.has(s)) return { symbol: s };
+    const hit = aliasCache.get(s); if (hit) return hit === s ? { symbol: s } : { symbol: hit, alias_of: s };
+    try {
+      const r = await fetch(`https://string-db.org/api/json/get_string_ids?identifiers=${encodeURIComponent(s)}&species=9606&limit=1&caller_identity=diseasetotarget_app`);
+      const rows: any[] = r.ok ? await r.json().catch(() => []) : [];
+      const pref = String(rows?.[0]?.preferredName || '').toUpperCase();
+      const resolved = pref && (!known || known.has(pref)) ? pref : s;
+      aliasCache.set(s, resolved);
+      return resolved === s ? { symbol: s } : { symbol: resolved, alias_of: s };
+    } catch { return { symbol: s }; }
+  };
 
   async function execAgentTool(name: string, args: any, ctx: { disease?: string; snapshotId?: number; modality?: string; litWindow?: string }): Promise<any> {
     const svc = await readSvc();
@@ -1684,44 +1702,56 @@ function setupRoutes() {
       if (genes.length < 2) return { error: 'give at least two gene symbols' };
       const b = await agentBoard(Number(snap.id), ctx.modality, ctx.litWindow);
       const out: any = { disease: snap.disease_name, snapshot_id: snap.id, modality: ctx.modality || 'small_molecule', genes: {} };
-      for (const g of genes) {
+      for (const g0 of genes) {
+        const r = await resolveGeneSymbol(g0, b.bySymbol); const g = r.symbol;
         const ev = await evidenceOf(svc, Number(snap.id), g);
-        out.genes[g] = { in_snapshot: b.bySymbol.has(g), board: standingOf(b, g), evidence: ev.evidence, evidence_sources: ev.sources };
+        out.genes[r.alias_of ? `${g} (HGNC symbol for ${r.alias_of})` : g] = { in_snapshot: b.bySymbol.has(g), board: standingOf(b, g), evidence: ev.evidence, evidence_sources: ev.sources };
       }
       out.how_to_read = 'board = the composite the Ranking Board shows (prediction). evidence = stored per-axis facts for this snapshot; cite each with its source and the snapshot id.';
       return out;
     }
     if (name === 'gene_relationship') {
-      const a = up(args?.gene_a), bb = up(args?.gene_b);
-      if (!a || !bb) return { error: 'gene_a and gene_b are required' };
       const b = await agentBoard(Number(snap.id), ctx.modality, ctx.litWindow);
+      const ra = await resolveGeneSymbol(args?.gene_a, b.bySymbol), rb = await resolveGeneSymbol(args?.gene_b, b.bySymbol);
+      const a = ra.symbol, bb = rb.symbol;
+      if (!a || !bb) return { error: 'gene_a and gene_b are required' };
       const { epmcHits, epmcTopPapers } = await import('./evidenceProviders.js');
-      const coQuery = `${a} AND ${bb} AND "${snap.disease_name}"`;
-      const [pair, pa, pb, coHits, coPapers] = await Promise.all([
+      // Co-mention query uses both the HGNC symbol and the alias the user typed (FAK OR PTK2).
+      const term = (r: { symbol: string; alias_of?: string }) => (r.alias_of ? `(${r.symbol} OR ${r.alias_of})` : r.symbol);
+      const coQuery = `${term(ra)} AND ${term(rb)} AND "${snap.disease_name}"`;
+      const [pair, pa, pb, coHits, coPapers, evA, evB] = await Promise.all([
         fetch(`https://string-db.org/api/json/network?identifiers=${encodeURIComponent(a + '\r' + bb)}&species=9606&required_score=150&caller_identity=diseasetotarget_app`).then(r => (r.ok ? r.json() : [])).catch(() => []),
         stringPartners(a), stringPartners(bb),
         epmcHits(coQuery).catch(() => null),
         epmcTopPapers(coQuery, 5).catch(() => []),
+        evidenceOf(svc, Number(snap.id), a), evidenceOf(svc, Number(snap.id), bb),
       ]);
-      const edge = (Array.isArray(pair) ? pair : []).find((e: any) => { const x = up(e.preferredName_A), y = up(e.preferredName_B); return (x === a && y === bb) || (x === bb && y === a); });
+      // STRING returns PREFERRED names (PTK2 for FAK); match on the resolved pair, either order.
+      const want = new Set([a, bb]);
+      const edge = (Array.isArray(pair) ? pair : []).find((e: any) => want.has(up(e.preferredName_A)) && want.has(up(e.preferredName_B)) && up(e.preferredName_A) !== up(e.preferredName_B));
       const pbMap = new Map(pb.map(n => [n.symbol, n.score]));
       const shared = pa.filter(n => pbMap.has(n.symbol)).map(n => ({ symbol: n.symbol, score_with_a: n.score, score_with_b: pbMap.get(n.symbol) })).sort((x, y) => Math.min(y.score_with_a, y.score_with_b!) - Math.min(x.score_with_a, x.score_with_b!)).slice(0, 15);
       const sharedInSnap = shared.map(s => ({ ...s, board_rank: b.bySymbol.get(s.symbol)?.boardRank ?? null }));
       return {
         disease: snap.disease_name, snapshot_id: snap.id,
-        direct_interaction: edge ? { string_combined_score: Number(edge.score), evidence_channels: { experimental: edge.escore, database: edge.dscore, textmining: edge.tscore, coexpression: edge.ascore }, source: 'STRING v12 (live)' } : { string_combined_score: null, note: 'no STRING interaction at combined score >= 0.15 (live)' },
+        genes: { a: ra.alias_of ? `${a} (HGNC symbol for ${ra.alias_of})` : a, b: rb.alias_of ? `${bb} (HGNC symbol for ${rb.alias_of})` : bb },
+        direct_interaction: edge
+          ? { string_combined_score: Number(edge.score), evidence_channels: { experimental: edge.escore, database: edge.dscore, textmining: edge.tscore, coexpression: edge.ascore }, source: 'STRING v12 (live)', how_to_read: 'combined score 0–1; database = curated pathway/complex membership, textmining = co-occurrence in abstracts, experimental = physical-interaction assays. A database+textmining edge means "in the same pathway / co-cited", not necessarily direct binding.' }
+          : { string_combined_score: null, note: 'no STRING interaction at combined score >= 0.15 (live)' },
         shared_partners: { count: shared.length, top: sharedInSnap, source: 'STRING v12 interaction_partners (live), partners at score >= 0.4' },
         board: { [a]: standingOf(b, a), [bb]: standingOf(b, bb) },
+        stored_evidence: { [a]: evA.evidence, [bb]: evB.evidence, sources: { [a]: evA.sources, [bb]: evB.sources }, note: `per-axis facts from snapshot #${snap.id} — dependency, mutation, expression, clinical are the lines that say what each gene IS in this disease` },
         co_mentions: { papers_mentioning_both_with_disease: coHits, top_papers: coPapers, source: 'Europe PMC (live)', query: coQuery },
         pathway_overlap: 'not computed (use the Knowledge Graph view for pathway co-membership)',
       };
     }
     if (name === 'deep_dive_gene') {
-      const g = up(args?.gene); if (!g) return { error: 'gene is required' };
+      const b = await agentBoard(Number(snap.id), ctx.modality, ctx.litWindow);
+      const rg = await resolveGeneSymbol(args?.gene, b.bySymbol); const g = rg.symbol;
+      if (!g) return { error: 'gene is required' };
       const dn = String(snap.disease_name || ''), did = String(snap.disease_id || '');
       const base = `http://127.0.0.1:${process.env.PORT || 3000}`;
       const q = (p: string) => fetchJsonTimeout(`${base}${p}`, 12_000);
-      const b = await agentBoard(Number(snap.id), ctx.modality, ctx.litWindow);
       const [stored, enrich, clinical, lit, net, nbrs, prot, modality, sc] = await Promise.all([
         evidenceOf(svc, Number(snap.id), g),
         q(`/api/enrich-gene?gene=${g}&diseaseId=${encodeURIComponent(did)}&diseaseName=${encodeURIComponent(dn)}`),
@@ -1765,9 +1795,11 @@ function setupRoutes() {
       return { disease: snap.disease_name, snapshot_id: snap.id, targets: top };
     }
     if (name === 'get_gene_evidence') {
-      const gene = up(args?.gene);
+      let board: any = null, bySym: Map<string, any> | undefined;
+      try { const b = await agentBoard(Number(snap.id), ctx.modality, ctx.litWindow); bySym = b.bySymbol; } catch { /* board optional */ }
+      const rg = await resolveGeneSymbol(args?.gene, bySym); const gene = rg.symbol;
       const ev = await evidenceOf(svc, Number(snap.id), gene);
-      let board: any = null; try { board = standingOf(await agentBoard(Number(snap.id), ctx.modality, ctx.litWindow), gene); } catch { /* board optional */ }
+      try { if (bySym) board = standingOf({ board: (await agentBoard(Number(snap.id), ctx.modality, ctx.litWindow)).board, bySymbol: bySym, total: bySym.size }, gene); } catch { /* board optional */ }
       if (!ev.found && !board) return { gene, disease: snap.disease_name, snapshot_id: snap.id, evidence: null, note: 'no stored evidence for this gene in this snapshot' };
       return { gene, disease: snap.disease_name, snapshot_id: snap.id, board, evidence: ev.evidence, evidence_sources: ev.sources };
     }
