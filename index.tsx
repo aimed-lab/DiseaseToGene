@@ -108,6 +108,8 @@ import DashboardView, { type DashboardCommand } from './DashboardView';
 import KnowledgeGraphView from './KnowledgeGraphView';
 import RankingBoardView from './RankingBoardView';
 import MethodologyView from './MethodologyView';
+import DiseaseBar from './DiseaseBar';
+import { applyDiseaseAccent } from './diseaseAccent';
 import ModalityFitView from './ModalityFitView';
 import { navigate, isMethodologyPath, isModalityPath, isResetPasswordPath, catchRecoveryHash, ROUTES } from './nav';
 
@@ -797,7 +799,8 @@ const TabNavigation = ({
   const flatBtn = (t: { id: string; i: any; l: string; route?: string }) => {
     const active = t.route ? isModalityPath() : viewMode === t.id;
     return (
-      <button key={t.id} onClick={() => (t.route ? navigate(t.route) : onViewModeChange(t.id as ViewMode))} className={btnCls(active)}>
+      <button key={t.id} onClick={() => (t.route ? navigate(t.route) : onViewModeChange(t.id as ViewMode))} className={btnCls(active)}
+        style={active ? { boxShadow: 'inset 0 -2px 0 0 var(--disease-accent)' } : undefined}>
         <t.i className={iconCls(active)} />
         {t.l}
       </button>
@@ -3497,6 +3500,10 @@ const App = () => {
     return () => { active = false; };
   }, [isAuthenticated, researchState.activeDisease?.name, researchState.paperResults.length]);
 
+  // Disease accent: the frame (disease bar, logo badge, active tab, title chips) takes the
+  // loaded disease's colour via CSS variables, so a glance says which disease you are in.
+  useEffect(() => { applyDiseaseAccent(researchState.activeDisease); }, [researchState.activeDisease?.id, researchState.activeDisease?.name]);
+
   // ── Harvest: fetch each loaded gene's full evidence and store it in Oracle ──
   // (one snapshot + per-gene ranking_scores + per-source evidence). Reuses the
   // same fetch functions the gene drill-down uses; posts the batch to /api/harvest.
@@ -5714,27 +5721,16 @@ ${modalityResultBlock(getLastModalityResult()) || '      (No modality analysis h
           Research ▾ dropdown overlays the breadcrumb bar instead of being painted under it. */}
       <header className={`relative z-30 px-4 md:px-6 py-2.5 flex items-center justify-between gap-3 border-b backdrop-blur-xl ${theme === 'dark' ? 'bg-[#070b12]/90 border-slate-800/80' : 'bg-white/95 border-slate-200'}`}>
         <div className="flex items-center gap-3 min-w-0 shrink-0">
-          <div className="h-9 w-9 rounded-xl bg-slate-950 dark:bg-blue-600 text-white flex items-center justify-center shadow-lg shadow-blue-600/15">
+          {/* The badge takes the loaded disease's accent (see diseaseAccent.ts); the disease
+              itself is announced by the DiseaseBar directly under this header, on every view. */}
+          <div className="h-9 w-9 rounded-xl text-white flex items-center justify-center shadow-lg" style={{ background: 'var(--disease-accent)' }}>
             <FlaskConical className="w-5 h-5" />
           </div>
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <h1 className="text-base md:text-lg font-black tracking-tight">Disease<span className="text-blue-600 dark:text-blue-400">2</span>Target</h1>
+              <h1 className="text-base md:text-lg font-black tracking-tight">Disease<span style={{ color: 'var(--disease-accent)' }}>2</span>Target</h1>
             </div>
-            {/* Which disease is loaded is the single most important piece of state in the
-                app, and until now it was legible only from the breadcrumb — which is hidden
-                on exactly the full-page views where users spend their time. It takes the
-                tagline's slot: the tagline is decoration, this is context. */}
-            {researchState.activeDisease ? (
-              <div className="flex items-center gap-1.5 min-w-0">
-                <span className="text-[9px] font-black uppercase tracking-widest text-slate-400 dark:text-slate-500 shrink-0">Disease</span>
-                <span className="inline-flex items-center gap-1 rounded-md bg-blue-600/10 dark:bg-blue-400/10 px-1.5 py-0.5 text-[11px] font-black text-blue-700 dark:text-blue-300 truncate" title={researchState.activeDisease.name}>
-                  {researchState.activeDisease.name}
-                </span>
-              </div>
-            ) : (
-              <p className="hidden md:block text-[11px] font-medium text-slate-500 dark:text-slate-400">Therapeutic target discovery and evidence ranking</p>
-            )}
+            <p className="hidden md:block text-[11px] font-medium text-slate-500 dark:text-slate-400">Therapeutic target discovery and evidence ranking</p>
           </div>
         </div>
         <TabNavigation
@@ -5768,6 +5764,7 @@ ${modalityResultBlock(getLastModalityResult()) || '      (No modality analysis h
           )}
         </div>
       </header>
+      <DiseaseBar theme={theme} activeDisease={researchState.activeDisease} onSwitch={handleLoadSnapshot} busy={snapshotsLoading} />
       <main className="flex-1 flex overflow-hidden relative p-2 gap-2">
         <aside className={`order-2 border flex flex-col shrink-0 transition-all duration-300 rounded-xl overflow-hidden shadow-lg shadow-slate-950/5 ${isModalityPath(routePath) ? 'relative z-[60]' : ''} ${isLeftSidebarOpen ? 'w-[340px]' : 'w-0 opacity-0 pointer-events-none'} ${theme === 'dark' ? 'bg-[#0b111c]/95 border-slate-800/80' : 'bg-white border-slate-200'}`}>
            <div className={`p-4 border-b flex items-center justify-between ${theme === 'dark' ? 'bg-[#0b111c] border-slate-800' : 'bg-white border-slate-200'}`}>
@@ -6041,18 +6038,19 @@ ${modalityResultBlock(getLastModalityResult()) || '      (No modality analysis h
                   )}
                   {viewMode === 'dashboard' && (
                     <div className="h-full overflow-hidden">
-                      <DashboardView theme={theme} command={dashboardCmd} />
+                      <DashboardView theme={theme} command={dashboardCmd} activeDiseaseName={researchState.activeDisease?.name} />
                     </div>
                   )}
                   {viewMode === 'funnel' && (
                     <div className="h-full p-4 overflow-hidden">
-                      <FunnelView theme={theme} />
+                      <FunnelView theme={theme} activeDiseaseName={researchState.activeDisease?.name} />
                     </div>
                   )}
                   {viewMode === 'rankings' && (
                     <div className="h-full p-4 overflow-hidden">
                       <RankingsView
                         theme={theme}
+                        activeDiseaseName={researchState.activeDisease?.name}
                         onSelectGene={(s) => { setResearchState(p => ({ ...p, focusSymbol: s })); setViewMode('list'); }}
                       />
                     </div>

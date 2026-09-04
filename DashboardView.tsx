@@ -30,7 +30,10 @@ export interface DashboardCommand {
   snapshotId?: number;
   reset?: boolean;
 }
-interface Props { theme?: 'dark' | 'light'; command?: DashboardCommand | null }
+interface Props { theme?: 'dark' | 'light'; command?: DashboardCommand | null; activeDiseaseName?: string }
+// Prefer the snapshot of the globally selected disease, so this view opens on the same disease as the bar above it.
+const pickSnap = (list: any[], name?: string) => (name && list.find(x => String(x.disease_name || '').toLowerCase().includes(name.toLowerCase()))) || list[0];
+
 
 type Axis = { axis: string; genes: number; pct: number };
 type Overview = {
@@ -124,7 +127,7 @@ const CHIPS: { id: Chip; label: string; title: string }[] = [
   { id: 'legacy_only', label: 'Legacy rows', title: 'Evidence written before the 2026-07 fixes — counts are not comparable. Re-enrich.' },
 ];
 
-export const DashboardView: React.FC<Props> = ({ theme = 'light', command = null }) => {
+export const DashboardView: React.FC<Props> = ({ theme = 'light', command = null, activeDiseaseName }) => {
   const isDark = theme === 'dark';
   const [snapshots, setSnapshots] = useState<RankingSnapshotMeta[]>([]);
   const [snapId, setSnapId] = useState('');
@@ -152,8 +155,8 @@ export const DashboardView: React.FC<Props> = ({ theme = 'light', command = null
   const card: React.CSSProperties = { background: bg, border: `1px solid ${border}`, borderRadius: 14, padding: 18 };
 
   useEffect(() => {
-    fetchSnapshots().then(s => { setSnapshots(s); if (s.length) setSnapId(String(s[0].id)); setLoading(false); });
-  }, []);
+    fetchSnapshots().then(s => { setSnapshots(s); if (s.length) setSnapId(String(pickSnap(s, activeDiseaseName).id)); setLoading(false); });
+  }, [activeDiseaseName]);
 
   useEffect(() => {
     if (!snapId) return;
@@ -279,6 +282,7 @@ export const DashboardView: React.FC<Props> = ({ theme = 'light', command = null
     <div style={{ height: '100%', overflowY: 'auto', padding: 20, color: text }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
         <h2 style={{ fontSize: 20, fontWeight: 900, letterSpacing: '-0.02em', margin: 0 }}>Evidence</h2>
+        {snap && <span style={{ background: 'var(--disease-accent)', color: '#fff', fontSize: 11, fontWeight: 900, padding: '3px 8px', borderRadius: 6, maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={snap.disease_name}>{snap.disease_name}</span>}
         <select value={snapId} onChange={e => setSnapId(e.target.value)}
           style={{ background: bg, color: text, border: `1px solid ${border}`, borderRadius: 8, padding: '7px 10px', fontSize: 12, fontWeight: 700 }}>
           {snapshots.map(s => (

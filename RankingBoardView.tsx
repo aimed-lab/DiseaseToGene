@@ -511,6 +511,7 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
           <div className="flex items-center gap-2">
             <Trophy className="w-4 h-4 text-amber-500" />
             <span className={`text-sm font-bold ${isDark ? 'text-white' : 'text-slate-900'}`}>Target Ranking Board</span>
+            {diseaseName && <span className="rounded-md px-1.5 py-0.5 text-[11px] font-black text-white truncate max-w-[220px]" style={{ background: 'var(--disease-accent)' }} title={diseaseName}>{diseaseName}</span>}
           </div>
           <select value={snapId} onChange={e => setSnapId(e.target.value)} className={`text-xs rounded-md border px-2 py-1 outline-none ${card} ${isDark ? 'text-white' : 'text-slate-900'}`}>
             {snapshots.map(s => <option key={s.id} value={String(s.id)}>{s.disease_name} · #{s.id}</option>)}

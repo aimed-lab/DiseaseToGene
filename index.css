@@ -1,6 +1,15 @@
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
 
+/* Disease accent — set per loaded disease by diseaseAccent.ts (applyDiseaseAccent). Used by
+   the frame only: disease bar, logo badge, active tab, view-title chips. Defaults to the
+   app blue when no disease is loaded. */
+:root {
+  --disease-accent: #2563eb;
+  --disease-accent-strong: #1d4ed8;
+  --disease-accent-soft: rgba(37, 99, 235, 0.10);
+}
+
 .markdown-body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
   line-height: 1.5;

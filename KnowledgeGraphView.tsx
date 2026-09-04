@@ -302,8 +302,9 @@ export default function KnowledgeGraphView({ theme, diseaseName }: { theme: Them
       <div className="h-full flex flex-col">
         <div className={`flex items-center gap-3 px-4 py-2.5 border-b ${isDark ? 'border-slate-800' : 'border-slate-200'} flex-wrap`}>
           <div className="flex items-center gap-2">
-            <Network className="w-4 h-4 text-blue-500" />
+            <Network className="w-4 h-4" style={{ color: 'var(--disease-accent)' }} />
             <span className={`text-sm font-bold ${isDark ? 'text-white' : 'text-slate-900'}`}>Knowledge Graph</span>
+            {data.disease_name && <span className="rounded-md px-1.5 py-0.5 text-[11px] font-black text-white truncate max-w-[220px]" style={{ background: 'var(--disease-accent)' }} title={data.disease_name}>{data.disease_name}</span>}
             {snapList.length > 1 ? (
               <select
                 value={String(data.snapshot_id)}
@@ -360,8 +361,9 @@ export default function KnowledgeGraphView({ theme, diseaseName }: { theme: Them
       {/* header */}
       <div className={`flex items-center gap-3 px-4 py-2.5 border-b ${isDark ? 'border-slate-800' : 'border-slate-200'} flex-wrap`}>
         <div className="flex items-center gap-2">
-          <Network className="w-4 h-4 text-blue-500" />
+          <Network className="w-4 h-4" style={{ color: 'var(--disease-accent)' }} />
           <span className={`text-sm font-bold ${isDark ? 'text-white' : 'text-slate-900'}`}>Knowledge Graph</span>
+          {data.disease_name && <span className="rounded-md px-1.5 py-0.5 text-[11px] font-black text-white truncate max-w-[220px]" style={{ background: 'var(--disease-accent)' }} title={data.disease_name}>{data.disease_name}</span>}
           {snapList.length > 1 ? (
             <select
               value={String(data.snapshot_id)}

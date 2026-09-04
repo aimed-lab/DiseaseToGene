@@ -17,7 +17,10 @@ import GeneDetailDrawer from './GeneDetailDrawer';
 // normalized axis), cascade semantics, direction-aware weighted-harmonic composite,
 // DB-backed & read-only, drawer parity, graceful "pending" axes.
 
-interface Props { theme?: 'dark' | 'light' }
+interface Props { theme?: 'dark' | 'light'; activeDiseaseName?: string }
+// Prefer the snapshot of the globally selected disease, so the funnel opens on the same disease as the bar above it.
+const pickSnap = (list: any[], name?: string) => (name && list.find(x => String(x.disease_name || '').toLowerCase().includes(name.toLowerCase()))) || list[0];
+
 
 type GeneFeature = {
   gene_symbol: string;
@@ -54,7 +57,7 @@ const lighten = (hex: string, t: number) => {
   return `rgb(${m(r)},${m(g)},${m(b)})`;
 };
 
-export const FunnelView: React.FC<Props> = ({ theme = 'light' }) => {
+export const FunnelView: React.FC<Props> = ({ theme = 'light', activeDiseaseName }) => {
   const isDark = theme === 'dark';
   const [snapshots, setSnapshots] = useState<RankingSnapshotMeta[]>([]);
   const [selectedId, setSelectedId] = useState('');
@@ -150,9 +153,9 @@ export const FunnelView: React.FC<Props> = ({ theme = 'light' }) => {
 
   useEffect(() => {
     let active = true;
-    fetchSnapshots().then(s => { if (!active) return; setSnapshots(s); if (s.length) setSelectedId(String(s[0].id)); setLoading(false); });
+    fetchSnapshots().then(s => { if (!active) return; setSnapshots(s); if (s.length) setSelectedId(String(pickSnap(s, activeDiseaseName).id)); setLoading(false); });
     return () => { active = false; };
-  }, []);
+  }, [activeDiseaseName]);
 
   useEffect(() => {
     if (!selectedId) { setFeatures([]); return; }
@@ -560,6 +563,7 @@ export const FunnelView: React.FC<Props> = ({ theme = 'light' }) => {
             <div style={{ width: 0, height: 0, borderLeft: '5px solid transparent', borderRight: '5px solid transparent', borderTop: '7px solid #fff' }} />
           </div>
           <span style={{ fontWeight: 700, letterSpacing: '.16em', fontSize: 13, color: t.tx }}>FUNNEL</span>
+          {diseaseName && <span style={{ background: 'var(--disease-accent)', color: '#fff', fontSize: 11, fontWeight: 900, padding: '3px 8px', borderRadius: 6, maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={diseaseName}>{diseaseName}</span>}
         </div>
         <div style={{ height: 22, width: 1, background: t.line }} />
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>

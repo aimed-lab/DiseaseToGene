@@ -5,7 +5,10 @@ import GeneDetailDrawer from './GeneDetailDrawer';
 interface Props {
   theme?: 'dark' | 'light';
   onSelectGene?: (symbol: string) => void;   // optional; rankings expands inline instead of navigating
+  activeDiseaseName?: string;                 // the globally selected disease — this view opens on its snapshot
 }
+const pickSnap = (list: any[], name?: string) => (name && list.find(x => String(x.disease_name || '').toLowerCase().includes(name.toLowerCase()))) || list[0];
+
 
 // Treat "empty" evidence summaries as absent (no real data) so the matrix ✓ means
 // genuine evidence. Robust for already-stored data; new harvests don't store empties.
@@ -27,7 +30,7 @@ const COLS = [
   { key: 'mutation', label: 'Mutation', kind: 'ev' as const },
 ];
 
-export const RankingsView: React.FC<Props> = ({ theme = 'light' }) => {
+export const RankingsView: React.FC<Props> = ({ theme = 'light', activeDiseaseName }) => {
   const isDark = theme === 'dark';
   const [snapshots, setSnapshots] = useState<RankingSnapshotMeta[]>([]);
   const [selectedId, setSelectedId] = useState<string>('');
@@ -44,11 +47,11 @@ export const RankingsView: React.FC<Props> = ({ theme = 'light' }) => {
     fetchSnapshots().then((s) => {
       if (!active) return;
       setSnapshots(s);
-      if (s.length) setSelectedId(String(s[0].id));
+      if (s.length) setSelectedId(String(pickSnap(s, activeDiseaseName).id));
       setLoading(false);
     });
     return () => { active = false; };
-  }, []);
+  }, [activeDiseaseName]);
 
   useEffect(() => {
     if (!selectedId) { setScores([]); setEvidence([]); return; }
@@ -119,7 +122,7 @@ export const RankingsView: React.FC<Props> = ({ theme = 'light' }) => {
   return (
     <div style={wrap}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '14px 18px', borderBottom: `1px solid ${border}`, position: 'sticky', top: 0, background: bg, zIndex: 2, flexWrap: 'wrap' }}>
-        <div style={{ fontWeight: 800, fontSize: 15 }}>Rankings <span style={{ color: muted, fontWeight: 600, fontSize: 12 }}>· from Oracle store</span></div>
+        <div style={{ fontWeight: 800, fontSize: 15, display: 'flex', alignItems: 'center', gap: 8 }}>Rankings{diseaseName && <span style={{ background: 'var(--disease-accent)', color: '#fff', fontSize: 11, fontWeight: 900, padding: '3px 8px', borderRadius: 6, maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={diseaseName}>{diseaseName}</span>} <span style={{ color: muted, fontWeight: 600, fontSize: 12 }}>· from Oracle store</span></div>
         <select value={selectedId} onChange={(e) => setSelectedId(e.target.value)} style={{ background: headBg, color: ink, border: `1px solid ${border}`, borderRadius: 8, padding: '6px 10px', fontSize: 12 }}>
           {snapshots.length === 0 && <option value="">No stored snapshots yet</option>}
           {snapshots.map((s) => (
