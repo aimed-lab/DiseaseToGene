@@ -108,7 +108,7 @@ import DashboardView, { type DashboardCommand } from './DashboardView';
 import KnowledgeGraphView from './KnowledgeGraphView';
 import RankingBoardView from './RankingBoardView';
 import MethodologyView from './MethodologyView';
-import DiseaseBar from './DiseaseBar';
+import DiseaseChip from './DiseaseChip';
 import GlobalSearch, { type GlobalSearchHandle } from './GlobalSearch';
 import { applyDiseaseAccent } from './diseaseAccent';
 import ModalityFitView from './ModalityFitView';
@@ -5739,18 +5739,16 @@ ${modalityResultBlock(getLastModalityResult()) || '      (No modality analysis h
       {/* relative z-30 gives the header its own stacking context ABOVE <main>, so the
           Research ▾ dropdown overlays the breadcrumb bar instead of being painted under it. */}
       <header className={`relative z-30 px-4 md:px-6 py-2.5 flex items-center justify-between gap-3 border-b backdrop-blur-xl ${theme === 'dark' ? 'bg-[#070b12]/90 border-slate-800/80' : 'bg-white/95 border-slate-200'}`}>
-        <div className="flex items-center gap-3 min-w-0 shrink-0">
-          {/* The badge takes the loaded disease's accent (see diseaseAccent.ts); the disease
-              itself is announced by the DiseaseBar directly under this header, on every view. */}
-          <div className="h-9 w-9 rounded-xl text-white flex items-center justify-center shadow-lg" style={{ background: 'var(--disease-accent)' }}>
+        {/* Brand, then the loaded disease — one phrase, and the disease is state, not a
+            tagline. The tagline this replaced said the same thing on every screen forever;
+            the disease changes what every screen means. */}
+        <div className="flex items-center gap-2.5 min-w-0">
+          <div className="h-9 w-9 rounded-xl text-white flex items-center justify-center shadow-lg shrink-0" style={{ background: 'var(--disease-accent)' }}>
             <FlaskConical className="w-5 h-5" />
           </div>
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <h1 className="text-base md:text-lg font-black tracking-tight">Disease<span style={{ color: 'var(--disease-accent)' }}>2</span>Target</h1>
-            </div>
-            <p className="hidden md:block text-[11px] font-medium text-slate-500 dark:text-slate-400">Therapeutic target discovery and evidence ranking</p>
-          </div>
+          <h1 className="text-base md:text-lg font-black tracking-tight whitespace-nowrap shrink-0">Disease<span style={{ color: 'var(--disease-accent)' }}>2</span>Target</h1>
+          <span className={`hidden md:block h-6 w-px shrink-0 ${theme === 'dark' ? 'bg-slate-700' : 'bg-slate-200'}`} />
+          <DiseaseChip theme={theme} activeDisease={researchState.activeDisease} onChangeDisease={() => globalSearchRef.current?.focus()} />
         </div>
         <TabNavigation
           viewMode={viewMode}
@@ -5796,7 +5794,6 @@ ${modalityResultBlock(getLastModalityResult()) || '      (No modality analysis h
           )}
         </div>
       </header>
-      <DiseaseBar theme={theme} activeDisease={researchState.activeDisease} onChangeDisease={() => globalSearchRef.current?.focus()} />
       <main className="flex-1 flex overflow-hidden relative p-2 gap-2">
         <aside className={`order-2 border flex flex-col shrink-0 transition-all duration-300 rounded-xl overflow-hidden shadow-lg shadow-slate-950/5 ${isModalityPath(routePath) ? 'relative z-[60]' : ''} ${isLeftSidebarOpen ? 'w-[340px]' : 'w-0 opacity-0 pointer-events-none'} ${theme === 'dark' ? 'bg-[#0b111c]/95 border-slate-800/80' : 'bg-white border-slate-200'}`}>
            <div className={`p-4 border-b flex items-center justify-between ${theme === 'dark' ? 'bg-[#0b111c] border-slate-800' : 'bg-white border-slate-200'}`}>
