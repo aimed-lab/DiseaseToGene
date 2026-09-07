@@ -2044,6 +2044,20 @@ Rules: fill every field only from the full text you retrieved. Where the paper d
       const cached = await readApiCache(key);
       if (cached?.body) { paperExtracts.set(key, cached.body); return cached.body; }
 
+      // On a serverless host there is no point starting a read. The isolate is frozen the
+      // moment this response is sent, so the job is killed mid-flight, nothing is ever
+      // written, and the in-process maps are gone by the next request — which lands on a
+      // different isolate anyway. The old code still started one, so every ask returned
+      // "still reading, check back shortly" and no ask ever succeeded. Saying plainly that
+      // the full text is unavailable here, and handing over the abstract, is worth more to
+      // the model than an invitation to retry forever.
+      if (process.env.VERCEL) {
+        return { paper,
+          status: 'full text unavailable in this deployment',
+          note: 'Reading a paper takes minutes and this host cannot keep work running after a reply, so no full-text extract can be produced here. Do not offer to check back later. Say the paper text was not read, answer from the measured evidence in our own store, and treat any abstract below as the abstract only — never as the paper.',
+          ...(meta?.abstract ? { abstract_only: meta.abstract } : {}) };
+      }
+
       if (!paperReads.has(key)) {
         const job = readPaperViaPleaser(ident, args?.focus)
           .then(async (extract: any) => {
