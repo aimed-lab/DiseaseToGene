@@ -539,6 +539,8 @@ export const EVIDENCE_RULES = `EVIDENCE RULES (non-negotiable):
 - Stored snapshot evidence is the ranking's truth; a live deep-dive value is extra context. If the two disagree, say which is which and that the snapshot is what the board ranks on.
 - Label each fact with its source and snapshot inline, e.g. "(Europe PMC, snapshot #103)" or "(STRING, live)". End with a short "Sources" list. Keep FACTS (mutation, expression, proteomics, dependency, safety, trials, papers) separate from PREDICTIONS (Open Targets association, board rank, WINNER centrality, tractability).
 - If the store has nothing for a gene in this disease, say exactly that. Do not fill the gap from memory.
+- Our stored evidence is indexed BY GENE. A question naming a drug or compound (daraxonrasib, defactinib, a combination) finds nothing there, and "no evidence in our store" is the WRONG answer to it. Use search_literature and search_trials, which search the live literature and the trial registry by any text. Reach for them whenever the question names a drug, asks whether something has been published or trialled, or asks for work "other than" what we hold.
+- Results from those two are LIVE EXTERNAL sources, never our ranking evidence. Label them (Europe PMC, live) or (ClinicalTrials.gov, live), keep them separate from snapshot evidence, and never let them change a board rank.
 - Stay in the current disease context unless the user names another disease. When they DO name a different one, pass it as the "disease" argument on every tool call — otherwise you will answer from the disease that happens to be on screen. Always state which disease and snapshot your numbers came from.`;
 
 const TOOL_RESULT_RULES = `Now answer the user in prose. Do NOT call another tool.
@@ -1799,6 +1801,8 @@ function setupRoutes() {
     { name: 'compare_genes', description: 'Side-by-side comparison of 2–4 genes in the current disease: board rank and score (leader = 100), every criterion score with its weight, and each stored evidence axis with its source. Use for "compare X vs Y" and "why is X ranked above Y".', parameters: { type: 'OBJECT', properties: { genes: { type: 'ARRAY', items: { type: 'STRING' } }, disease: { type: 'STRING' } }, required: ['genes'] } },
     { name: 'gene_relationship', description: 'How two genes relate in the current disease: direct STRING interaction and its score, shared interaction partners, both genes\' board standing, and papers that mention both together with the disease (Europe PMC). Use for "how is A related to B".', parameters: { type: 'OBJECT', properties: { gene_a: { type: 'STRING' }, gene_b: { type: 'STRING' }, disease: { type: 'STRING' } }, required: ['gene_a', 'gene_b'] } },
     { name: 'read_paper', description: 'Read the FULL TEXT of one scientific paper and return what it actually tested: the claimed target, whether any genetic perturbation (knockdown/knockout/rescue) was performed, which control compounds were run and at what concentrations, the study type, and author conflicts. Use this whenever a question turns on what a specific paper did or did not show — counts of papers cannot answer that. Identify the paper by DOI, PubMed id, or exact title.', parameters: { type: 'OBJECT', properties: { doi: { type: 'STRING' }, pmid: { type: 'STRING' }, title: { type: 'STRING' }, focus: { type: 'STRING', description: 'Optional: what to look for, e.g. "was a selective control compound tested".' } } } },
+    { name: 'search_literature', description: 'Free-text search of Europe PMC — the ONLY way to answer a question that is not about one gene in our store. Use it whenever the question names a DRUG or compound (e.g. "daraxonrasib", "defactinib"), asks whether anything has been published on a combination, or asks "are there other papers or abstracts proposing X". Our stored evidence is indexed by gene, so a drug name finds nothing there; this searches the actual literature, conference abstracts and preprints included. Returns titles, journals, years, PMIDs and DOIs you can cite and then pass to read_paper. Combine terms as you would in a search box, e.g. daraxonrasib AND defactinib AND pancreatic.', parameters: { type: 'OBJECT', properties: { query: { type: 'STRING', description: 'Europe PMC query. Plain terms and AND/OR both work.' }, from_year: { type: 'NUMBER', description: 'Optional earliest publication year.' }, limit: { type: 'NUMBER', description: 'How many results, default 10, max 25.' } }, required: ['query'] } },
+    { name: 'search_trials', description: 'Free-text search of ClinicalTrials.gov. Use it whenever the question names a DRUG rather than a gene, or asks whether a combination is being trialled — get_clinical_trials only takes a gene symbol and is scoped to our snapshot, so it cannot answer "is drug X in trials". Search by intervention (the drug), by condition (the disease), or both. Returns NCT ids, titles, phase, status, sponsor and the actual interventions.', parameters: { type: 'OBJECT', properties: { intervention: { type: 'STRING', description: 'Drug or compound name, e.g. defactinib. Use OR for several.' }, condition: { type: 'STRING', description: 'Disease, e.g. pancreatic cancer.' }, terms: { type: 'STRING', description: 'Any other free text.' }, limit: { type: 'NUMBER', description: 'How many results, default 10, max 25.' } } } },
     { name: 'deep_dive_gene', description: 'LIVE deep dive for ONE gene — the same detail the app\'s target card shows: cohort-aware expression and protein change, dependency, constraint, tissue, per-trial records, latest papers, network centrality with context, STRING neighbours, single-cell, modality fit. Slower (3–8 s) and NOT part of the ranking. Use only for the one or two genes the question names, after get_gene_evidence.', parameters: { type: 'OBJECT', properties: { gene: { type: 'STRING' }, disease: { type: 'STRING' } }, required: ['gene'] } },
   ];
   const jparse = (v: any) => { try { return typeof v === 'string' ? JSON.parse(v) : v; } catch { return null; } };
@@ -2024,6 +2028,84 @@ Rules: fill every field only from the full text you retrieved. Where the paper d
         pathway_overlap: 'not computed (use the Knowledge Graph view for pathway co-membership)',
       };
     }
+    // Both searches below hit live public APIs, NOT our snapshot. Every other tool is keyed
+    // by gene symbol, which is why a drug-name question ("are there trials for daraxonrasib
+    // and defactinib?") previously had nowhere to go: the model either guessed or reported
+    // nothing found, while a plain web chatbot answered it easily. These give it the same
+    // reach, with real identifiers so a claim can be checked and read_paper can follow up.
+    if (name === 'search_literature') {
+      const q = String(args?.query || '').trim();
+      if (!q) return { error: 'give a query' };
+      const limit = Math.min(Math.max(Number(args?.limit) || 10, 1), 25);
+      const yr = Number(args?.from_year);
+      const full = yr ? `${q} AND (FIRST_PDATE:[${yr}-01-01 TO 3000-12-31])` : q;
+      try {
+        const r = await fetch(`https://www.ebi.ac.uk/europepmc/webservices/rest/search?query=${encodeURIComponent(full)}&format=json&resultType=core&pageSize=${limit}`);
+        if (!r.ok) return { error: `Europe PMC returned ${r.status}` };
+        const d: any = await r.json();
+        // Europe PMC returns markup INSIDE the title, escaped: a KRAS review comes back as
+        // "Targeting &lt;i&gt;KRAS&lt;/i&gt; in Pancreatic Cancer". Unescape first, then strip
+        // the tags that reveals, or the model quotes a title with entities still in it.
+        const clean = (v: any) => v == null ? null : String(v)
+          .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
+          .replace(/&apos;|&#39;/g, "'").replace(/&amp;/g, '&')
+          .replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+        const hits = (d?.resultList?.result || []).map((x: any) => ({
+          title: clean(x.title),
+          journal: x.journalInfo?.journal?.title || x.bookOrReportDetails?.publisher || x.source,
+          year: x.pubYear,
+          pmid: x.pmid || null,
+          doi: x.doi || null,
+          type: Array.isArray(x.pubTypeList?.pubType) ? x.pubTypeList.pubType.join(', ') : (x.pubTypeList?.pubType || null),
+          is_preprint: String(x.source || '') === 'PPR',
+          cited_by: x.citedByCount ?? null,
+          abstract: x.abstractText ? clean(x.abstractText)?.slice(0, 500) : null,
+        }));
+        return {
+          query: full, total_matches: d?.hitCount ?? null, returned: hits.length, results: hits,
+          source: 'Europe PMC live search',
+          how_to_read: 'Live literature hits, NOT our stored evidence and NOT part of any ranking. Cite them as (Europe PMC, live) with the PMID or DOI. A hit with is_preprint true has not been peer reviewed, so say so. total_matches is the size of the whole result set, not what is listed here. To learn what a paper actually did rather than what its title claims, pass its DOI or PMID to read_paper.',
+        };
+      } catch (e: any) { return { error: `Europe PMC unreachable: ${String(e?.message || e).slice(0, 140)}` }; }
+    }
+
+    if (name === 'search_trials') {
+      const tidy = (v: any) => v == null ? null : String(v).replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+      const parts: string[] = [];
+      const intr = String(args?.intervention || '').trim();
+      const cond = String(args?.condition || '').trim();
+      const term = String(args?.terms || '').trim();
+      if (intr) parts.push(`query.intr=${encodeURIComponent(intr)}`);
+      if (cond) parts.push(`query.cond=${encodeURIComponent(cond)}`);
+      if (term) parts.push(`query.term=${encodeURIComponent(term)}`);
+      if (!parts.length) return { error: 'give an intervention, a condition, or terms' };
+      const limit = Math.min(Math.max(Number(args?.limit) || 10, 1), 25);
+      try {
+        const r = await fetch(`https://clinicaltrials.gov/api/v2/studies?${parts.join('&')}&pageSize=${limit}&countTotal=true`);
+        if (!r.ok) return { error: `ClinicalTrials.gov returned ${r.status}` };
+        const d: any = await r.json();
+        const trials = (d?.studies || []).map((st: any) => {
+          const ps = st?.protocolSection || {};
+          return {
+            nct_id: ps.identificationModule?.nctId || null,
+            title: tidy(ps.identificationModule?.briefTitle),
+            status: ps.statusModule?.overallStatus || null,
+            phase: Array.isArray(ps.designModule?.phases) ? ps.designModule.phases.join(', ') : null,
+            start: ps.statusModule?.startDateStruct?.date || null,
+            conditions: ps.conditionsModule?.conditions || [],
+            interventions: (ps.armsInterventionsModule?.interventions || []).map((i: any) => i.name).filter(Boolean),
+            sponsor: ps.sponsorCollaboratorsModule?.leadSponsor?.name || null,
+          };
+        });
+        return {
+          query: { intervention: intr || null, condition: cond || null, terms: term || null },
+          total_matches: d?.totalCount ?? null, returned: trials.length, results: trials,
+          source: 'ClinicalTrials.gov API v2, live search',
+          how_to_read: 'Live registry records, NOT our stored evidence and NOT part of any ranking. Cite by NCT id. Read the interventions list before claiming a trial tests a given drug, because a search can match on a comparator arm or on text elsewhere in the record. total_matches is the whole result set, not what is listed here.',
+        };
+      } catch (e: any) { return { error: `ClinicalTrials.gov unreachable: ${String(e?.message || e).slice(0, 140)}` }; }
+    }
+
     if (name === 'read_paper') {
       // Reading a full paper through paperclip takes minutes and sometimes exceeds
       // PLEASER's own ~300s gateway cap, so this must not block an answer. We wait a short
