@@ -544,8 +544,10 @@ export const EVIDENCE_RULES = `EVIDENCE RULES (non-negotiable):
   1. Search the EXACT pair in both search_trials and search_literature before anything else.
   2. Lead with the direct finding, including a negative one. "No registered trial tests these two together" is a real, useful answer and belongs in the first line, not buried. Say how you established it.
   3. Then widen deliberately, and label the widening: each drug on its own, and the mechanism CLASS (another drug hitting the same pathway paired with the same partner). Precedent for the concept is NOT evidence for the pair, and you must say which you are giving.
-  4. Name the genes the drugs act on and pull our own evidence for them with get_gene_evidence or compare_genes. Their standing in this disease, their network relationship and their trial history are things a general chatbot cannot know, and they are the reason to ask us rather than a search engine.
-  5. Close with a short reading list, every entry carrying a PMID, DOI or NCT id.
+  4. REQUIRED, not optional: name the genes the drugs act on (daraxonrasib acts on RAS, defactinib on FAK/PTK2, and say so explicitly) and then actually CALL get_gene_evidence or compare_genes on them, plus gene_relationship when the question pairs two drugs. An answer built only from search_trials and search_literature has failed this step. Their standing in this disease, their network relationship and their stored trial history are things a general chatbot cannot know, and they are the whole reason to ask us rather than a search engine.
+  5. REQUIRED: explain the biological rationale and search for it rather than asserting it. Run one more search_literature for the mechanism linking the two targets (for a resistance argument, terms like "KRAS inhibition resistance FAK" or "adaptive resistance RAS inhibitor"), and cite what you find. "Biologically conceivable" is not an explanation and is worth nothing to the reader; name the proposed pathway, say what would make the combination work, and attribute it.
+  6. You MAY quote figures that appear in an abstract a search returned, labelled as such, e.g. "median OS 13.2 vs 6.6 months (Europe PMC abstract, PMID x)". That is a tool result and is allowed. What is forbidden is a figure no tool returned.
+  7. Close with a short reading list, every entry carrying a PMID, DOI or NCT id.
 - Never state a trial result, response rate, hazard ratio, approval or approval date that did not come back from a tool in this conversation. If you believe one exists but no tool returned it, say it is unverified and name what you searched. A confident unsourced number is the single worst failure this assistant can produce.
 - Absence of evidence is a finding, not a dead end. When a search returns nothing, report the query you ran and that it returned nothing, then widen. Conference abstracts in particular are poorly indexed: Europe PMC carries few AACR or ASCO abstracts, so "not found" there does not mean "does not exist", and you should say so rather than assert nothing has been published.
 - Results from those two are LIVE EXTERNAL sources, never our ranking evidence. Label them (Europe PMC, live) or (ClinicalTrials.gov, live), keep them separate from snapshot evidence, and never let them change a board rank.
@@ -2067,7 +2069,7 @@ Rules: fill every field only from the full text you retrieved. Where the paper d
           type: Array.isArray(x.pubTypeList?.pubType) ? x.pubTypeList.pubType.join(', ') : (x.pubTypeList?.pubType || null),
           is_preprint: String(x.source || '') === 'PPR',
           cited_by: x.citedByCount ?? null,
-          abstract: x.abstractText ? clean(x.abstractText)?.slice(0, 500) : null,
+          abstract: x.abstractText ? clean(x.abstractText)?.slice(0, 1500) : null,
         }));
         return {
           query: full, total_matches: d?.hitCount ?? null, returned: hits.length, results: hits,
