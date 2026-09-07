@@ -1807,16 +1807,16 @@ function setupRoutes() {
   const AGENT_TOOLS = [
     { name: 'list_diseases', description: 'List the diseases loaded in the platform (name, snapshot id, gene count). Call first if unsure which disease is available.', parameters: { type: 'OBJECT', properties: {} } },
     { name: 'rank_targets', description: 'Top targets for a disease by the Open Targets overall association (the candidate-selection order, NOT the board composite) with component scores.', parameters: { type: 'OBJECT', properties: { disease: { type: 'STRING' }, top_n: { type: 'NUMBER' } } } },
-    { name: 'get_gene_evidence', description: 'All stored evidence for ONE gene in the current disease snapshot, one summary line per axis: mutation, expression, proteomics, dependency, safety, tissue, druggability, clinical, literature, network, annotation — plus its board standing.', parameters: { type: 'OBJECT', properties: { gene: { type: 'STRING' }, disease: { type: 'STRING' } }, required: ['gene'] } },
-    { name: 'get_clinical_trials', description: 'Per-trial clinical records for a gene: NCT id, phase, status, year, sponsor, why-stopped.', parameters: { type: 'OBJECT', properties: { gene: { type: 'STRING' }, disease: { type: 'STRING' } }, required: ['gene'] } },
+    { name: 'get_gene_evidence', description: 'All stored evidence for ONE gene in the current disease snapshot, one summary line per axis: mutation, expression, proteomics, dependency, safety, tissue, druggability, clinical, literature, network, annotation — plus its board standing.', parameters: { type: 'OBJECT', properties: { gene: { type: 'STRING' }, disease: { type: 'STRING' } }, required: ['gene', 'disease'] } },
+    { name: 'get_clinical_trials', description: 'Per-trial clinical records for a gene: NCT id, phase, status, year, sponsor, why-stopped.', parameters: { type: 'OBJECT', properties: { gene: { type: 'STRING' }, disease: { type: 'STRING' } }, required: ['gene', 'disease'] } },
     { name: 'find_novel_tractable', description: 'Druggable targets with NO developed drug and NO disease trial yet — the discovery query.', parameters: { type: 'OBJECT', properties: { disease: { type: 'STRING' }, limit: { type: 'NUMBER' } } } },
-    { name: 'compare_genes', description: 'Side-by-side comparison of 2–4 genes in the current disease: board rank and score (leader = 100), every criterion score with its weight, and each stored evidence axis with its source. Use for "compare X vs Y" and "why is X ranked above Y".', parameters: { type: 'OBJECT', properties: { genes: { type: 'ARRAY', items: { type: 'STRING' } }, disease: { type: 'STRING' } }, required: ['genes'] } },
-    { name: 'gene_relationship', description: 'How two genes relate in the current disease: direct STRING interaction and its score, shared interaction partners, both genes\' board standing, and papers that mention both together with the disease (Europe PMC). Use for "how is A related to B".', parameters: { type: 'OBJECT', properties: { gene_a: { type: 'STRING' }, gene_b: { type: 'STRING' }, disease: { type: 'STRING' } }, required: ['gene_a', 'gene_b'] } },
+    { name: 'compare_genes', description: 'Side-by-side comparison of 2–4 genes in the current disease: board rank and score (leader = 100), every criterion score with its weight, and each stored evidence axis with its source. Use for "compare X vs Y" and "why is X ranked above Y".', parameters: { type: 'OBJECT', properties: { genes: { type: 'ARRAY', items: { type: 'STRING' } }, disease: { type: 'STRING' } }, required: ['genes', 'disease'] } },
+    { name: 'gene_relationship', description: 'How two genes relate in the current disease: direct STRING interaction and its score, shared interaction partners, both genes\' board standing, and papers that mention both together with the disease (Europe PMC). Use for "how is A related to B".', parameters: { type: 'OBJECT', properties: { gene_a: { type: 'STRING' }, gene_b: { type: 'STRING' }, disease: { type: 'STRING' } }, required: ['gene_a', 'gene_b', 'disease'] } },
     { name: 'read_paper', description: 'Read the FULL TEXT of one scientific paper and return what it actually tested: the claimed target, whether any genetic perturbation (knockdown/knockout/rescue) was performed, which control compounds were run and at what concentrations, the study type, and author conflicts. Use this whenever a question turns on what a specific paper did or did not show — counts of papers cannot answer that. Identify the paper by DOI, PubMed id, or exact title.', parameters: { type: 'OBJECT', properties: { doi: { type: 'STRING' }, pmid: { type: 'STRING' }, title: { type: 'STRING' }, focus: { type: 'STRING', description: 'Optional: what to look for, e.g. "was a selective control compound tested".' } } } },
     { name: 'search_literature', description: 'Free-text search of Europe PMC — the ONLY way to answer a question that is not about one gene in our store. Use it whenever the question names a DRUG or compound (e.g. "daraxonrasib", "defactinib"), asks whether anything has been published on a combination, or asks "are there other papers or abstracts proposing X". Our stored evidence is indexed by gene, so a drug name finds nothing there; this searches the actual literature, conference abstracts and preprints included. Returns titles, journals, years, PMIDs and DOIs you can cite and then pass to read_paper. Combine terms as you would in a search box, e.g. daraxonrasib AND defactinib AND pancreatic. Quote a phrase to match it exactly ("KRAS and FAK pathways"); unquoted words are matched separately and a long unquoted title returns hundreds of loose matches. Search SEVERAL ways before concluding: the exact pair, each term alone, and the drug class or target names. Coverage of conference abstracts is thin, so treat a nil result as "not indexed here" rather than "does not exist".', parameters: { type: 'OBJECT', properties: { query: { type: 'STRING', description: 'Europe PMC query. Plain terms and AND/OR both work.' }, from_year: { type: 'NUMBER', description: 'Optional earliest publication year.' }, limit: { type: 'NUMBER', description: 'How many results, default 10, max 25.' } }, required: ['query'] } },
     { name: 'search_web', description: 'Search the open web and come back with a summary and the source URLs. This is the LAST resort and the WEAKEST evidence we have, so try get_gene_evidence, search_literature and search_trials first and use this only for what they genuinely do not index: conference abstracts (AACR, ASCO), regulatory news and approvals, company pipelines, and events too recent to be indexed. Example of the gap it fills: the AACR 2026 abstract pairing daraxonrasib with defactinib is absent from Europe PMC entirely but sits on aacrjournals.org. Slower and dearer than the other searches, so ask one focused question rather than several vague ones.', parameters: { type: 'OBJECT', properties: { query: { type: 'STRING', description: 'What to find. Write it as you would type it into a search engine.' } }, required: ['query'] } },
     { name: 'search_trials', description: 'Free-text search of ClinicalTrials.gov. Use it whenever the question names a DRUG rather than a gene, or asks whether a combination is being trialled — get_clinical_trials only takes a gene symbol and is scoped to our snapshot, so it cannot answer "is drug X in trials". Search by intervention (the drug), by condition (the disease), or both. Returns NCT ids, titles, phase, status, sponsor and the actual interventions.', parameters: { type: 'OBJECT', properties: { intervention: { type: 'STRING', description: 'Drug or compound name, e.g. defactinib. Use OR for several.' }, condition: { type: 'STRING', description: 'Disease, e.g. pancreatic cancer.' }, terms: { type: 'STRING', description: 'Any other free text.' }, limit: { type: 'NUMBER', description: 'How many results, default 10, max 25.' } } } },
-    { name: 'deep_dive_gene', description: 'LIVE deep dive for ONE gene — the same detail the app\'s target card shows: cohort-aware expression and protein change, dependency, constraint, tissue, per-trial records, latest papers, network centrality with context, STRING neighbours, single-cell, modality fit. Slower (3–8 s) and NOT part of the ranking. Use only for the one or two genes the question names, after get_gene_evidence.', parameters: { type: 'OBJECT', properties: { gene: { type: 'STRING' }, disease: { type: 'STRING' } }, required: ['gene'] } },
+    { name: 'deep_dive_gene', description: 'LIVE deep dive for ONE gene — the same detail the app\'s target card shows: cohort-aware expression and protein change, dependency, constraint, tissue, per-trial records, latest papers, network centrality with context, STRING neighbours, single-cell, modality fit. Slower (3–8 s) and NOT part of the ranking. Use only for the one or two genes the question names, after get_gene_evidence.', parameters: { type: 'OBJECT', properties: { gene: { type: 'STRING' }, disease: { type: 'STRING' } }, required: ['gene', 'disease'] } },
   ];
   const jparse = (v: any) => { try { return typeof v === 'string' ? JSON.parse(v) : v; } catch { return null; } };
 
@@ -1958,9 +1958,38 @@ Rules: fill every field only from the full text you retrieved. Where the paper d
   // (STRING's preferred name is HGNC for human), so board lookups, evidence lookups and
   // edge matching all use one name. Returns the input unchanged when it is already known.
   const aliasCache = new Map<string, string>();
-  const resolveGeneSymbol = async (sym: string, known?: Map<string, any>): Promise<{ symbol: string; alias_of?: string }> => {
+  // Family and pathway names are NOT gene symbols, and STRING resolves them anyway: asked
+  // for "RAS" it returns LZTR1, a RAS-pathway regulator, with no hint that the match is
+  // loose. LZTR1 is in the snapshot, so the substitution was accepted and a question about
+  // the target of a RAS inhibitor was answered with evidence for the wrong gene. Silently
+  // choosing one member of a family is worse than refusing, so these are rejected with
+  // their members listed and the caller is made to pick.
+  const GENE_FAMILIES: Record<string, string[]> = {
+    RAS: ['KRAS', 'NRAS', 'HRAS'],
+    RAF: ['BRAF', 'RAF1', 'ARAF'],
+    MEK: ['MAP2K1', 'MAP2K2'],
+    ERK: ['MAPK1', 'MAPK3'],
+    AKT: ['AKT1', 'AKT2', 'AKT3'],
+    PI3K: ['PIK3CA', 'PIK3CB', 'PIK3CD', 'PIK3R1'],
+    ERBB: ['EGFR', 'ERBB2', 'ERBB3', 'ERBB4'],
+    HER: ['ERBB2', 'ERBB3', 'ERBB4'],
+    RTK: [],
+    MAPK: ['MAPK1', 'MAPK3'],
+    JAK: ['JAK1', 'JAK2', 'JAK3'],
+    STAT: ['STAT1', 'STAT3', 'STAT5A'],
+    CDK: ['CDK4', 'CDK6', 'CDK2'],
+    PARP: ['PARP1', 'PARP2'],
+    SRC: [],          // SRC is a real gene; listed so the family check never shadows it
+  };
+  const familyOf = (s: string): string[] | null => {
+    const members = GENE_FAMILIES[s];
+    return members && members.length ? members : null;
+  };
+  const resolveGeneSymbol = async (sym: string, known?: Map<string, any>): Promise<{ symbol: string; alias_of?: string; family_members?: string[] }> => {
     const s = String(sym || '').toUpperCase().trim();
     if (!s) return { symbol: s };
+    const fam = familyOf(s);
+    if (fam) return { symbol: s, family_members: fam };
     if (known?.has(s)) return { symbol: s };
     const hit = aliasCache.get(s); if (hit) return hit === s ? { symbol: s } : { symbol: hit, alias_of: s };
     try {
@@ -1973,6 +2002,10 @@ Rules: fill every field only from the full text you retrieved. Where the paper d
     } catch { return { symbol: s }; }
   };
 
+  const famErr = (r: any, given: string) => r.family_members
+    ? { error: `"${given}" is a gene family or pathway, not a single gene, so there is no one set of evidence for it. Ask again for a specific member: ${r.family_members.join(', ')}. If a drug targets several, ask about each and say so in your answer.`, family_members: r.family_members }
+    : null;
+  
   async function execAgentTool(name: string, args: any, ctx: { disease?: string; snapshotId?: number; modality?: string; litWindow?: string }): Promise<any> {
     const svc = await readSvc();
     const snap = await agentSnapshot(args?.disease, ctx.disease, ctx.snapshotId);
@@ -1986,6 +2019,7 @@ Rules: fill every field only from the full text you retrieved. Where the paper d
       const out: any = { disease: snap.disease_name, snapshot_id: snap.id, modality: ctx.modality || 'small_molecule', genes: {} };
       for (const g0 of genes) {
         const r = await resolveGeneSymbol(g0, b.bySymbol); const g = r.symbol;
+        const fe = famErr(r, g0); if (fe) return fe;
         const ev = await evidenceOf(svc, Number(snap.id), g);
         out.genes[r.alias_of ? `${g} (HGNC symbol for ${r.alias_of})` : g] = { in_snapshot: b.bySymbol.has(g), board: standingOf(b, g), evidence: ev.evidence, evidence_sources: ev.sources };
       }
@@ -1995,6 +2029,7 @@ Rules: fill every field only from the full text you retrieved. Where the paper d
     if (name === 'gene_relationship') {
       const b = await agentBoard(Number(snap.id), ctx.modality, ctx.litWindow);
       const ra = await resolveGeneSymbol(args?.gene_a, b.bySymbol), rb = await resolveGeneSymbol(args?.gene_b, b.bySymbol);
+      { const fe = famErr(ra, args?.gene_a) || famErr(rb, args?.gene_b); if (fe) return fe; }
       const a = ra.symbol, bb = rb.symbol;
       if (!a || !bb) return { error: 'gene_a and gene_b are required' };
       const { epmcHits, epmcTopPapers } = await import('./evidenceProviders.js');
@@ -2248,6 +2283,7 @@ Rules: fill every field only from the full text you retrieved. Where the paper d
     if (name === 'deep_dive_gene') {
       const b = await agentBoard(Number(snap.id), ctx.modality, ctx.litWindow);
       const rg = await resolveGeneSymbol(args?.gene, b.bySymbol); const g = rg.symbol;
+      { const fe = famErr(rg, args?.gene); if (fe) return fe; }
       if (!g) return { error: 'gene is required' };
       const dn = String(snap.disease_name || ''), did = String(snap.disease_id || '');
       const base = `http://127.0.0.1:${process.env.PORT || 3000}`;
@@ -2298,6 +2334,7 @@ Rules: fill every field only from the full text you retrieved. Where the paper d
       let board: any = null, bySym: Map<string, any> | undefined;
       try { const b = await agentBoard(Number(snap.id), ctx.modality, ctx.litWindow); bySym = b.bySymbol; } catch { /* board optional */ }
       const rg = await resolveGeneSymbol(args?.gene, bySym); const gene = rg.symbol;
+      { const fe = famErr(rg, args?.gene); if (fe) return fe; }
       const ev = await evidenceOf(svc, Number(snap.id), gene);
       try { if (bySym) board = standingOf({ board: (await agentBoard(Number(snap.id), ctx.modality, ctx.litWindow)).board, bySymbol: bySym, total: bySym.size }, gene); } catch { /* board optional */ }
       if (!ev.found && !board) return { gene, disease: snap.disease_name, snapshot_id: snap.id, evidence: null, note: 'no stored evidence for this gene in this snapshot' };
