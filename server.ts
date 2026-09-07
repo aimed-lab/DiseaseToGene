@@ -550,6 +550,8 @@ export const EVIDENCE_RULES = `EVIDENCE RULES (non-negotiable):
   7. Close with a short reading list, every entry carrying a PMID, DOI or NCT id.
 - Never state a trial result, response rate, hazard ratio, approval or approval date that did not come back from a tool in this conversation. If you believe one exists but no tool returned it, say it is unverified and name what you searched. A confident unsourced number is the single worst failure this assistant can produce.
 - Absence of evidence is a finding, not a dead end. When a search returns nothing, report the query you ran and that it returned nothing, then widen. Conference abstracts in particular are poorly indexed: Europe PMC carries few AACR or ASCO abstracts, so "not found" there does not mean "does not exist", and you should say so rather than assert nothing has been published.
+- EVIDENCE TIERS, strongest first: (1) our stored snapshot evidence, which is what the board actually ranks on; (2) Europe PMC and ClinicalTrials.gov, live but carrying stable identifiers; (3) the open web via search_web, which carries only a URL. Work down the tiers, never up: do not reach for the web for something the first two cover, and say which tier each claim rests on. Only tier 1 may affect a rank or a score.
+- search_web earns its place on what the other two genuinely do not index: conference abstracts, regulatory decisions, company pipelines, and anything too recent to be indexed. A nil result from Europe PMC on a conference abstract is a reason to try the web, not a reason to conclude nothing exists.
 - Results from those two are LIVE EXTERNAL sources, never our ranking evidence. Label them (Europe PMC, live) or (ClinicalTrials.gov, live), keep them separate from snapshot evidence, and never let them change a board rank.
 - Stay in the current disease context unless the user names another disease. When they DO name a different one, pass it as the "disease" argument on every tool call — otherwise you will answer from the disease that happens to be on screen. Always state which disease and snapshot your numbers came from.`;
 
@@ -1812,6 +1814,7 @@ function setupRoutes() {
     { name: 'gene_relationship', description: 'How two genes relate in the current disease: direct STRING interaction and its score, shared interaction partners, both genes\' board standing, and papers that mention both together with the disease (Europe PMC). Use for "how is A related to B".', parameters: { type: 'OBJECT', properties: { gene_a: { type: 'STRING' }, gene_b: { type: 'STRING' }, disease: { type: 'STRING' } }, required: ['gene_a', 'gene_b'] } },
     { name: 'read_paper', description: 'Read the FULL TEXT of one scientific paper and return what it actually tested: the claimed target, whether any genetic perturbation (knockdown/knockout/rescue) was performed, which control compounds were run and at what concentrations, the study type, and author conflicts. Use this whenever a question turns on what a specific paper did or did not show — counts of papers cannot answer that. Identify the paper by DOI, PubMed id, or exact title.', parameters: { type: 'OBJECT', properties: { doi: { type: 'STRING' }, pmid: { type: 'STRING' }, title: { type: 'STRING' }, focus: { type: 'STRING', description: 'Optional: what to look for, e.g. "was a selective control compound tested".' } } } },
     { name: 'search_literature', description: 'Free-text search of Europe PMC — the ONLY way to answer a question that is not about one gene in our store. Use it whenever the question names a DRUG or compound (e.g. "daraxonrasib", "defactinib"), asks whether anything has been published on a combination, or asks "are there other papers or abstracts proposing X". Our stored evidence is indexed by gene, so a drug name finds nothing there; this searches the actual literature, conference abstracts and preprints included. Returns titles, journals, years, PMIDs and DOIs you can cite and then pass to read_paper. Combine terms as you would in a search box, e.g. daraxonrasib AND defactinib AND pancreatic. Quote a phrase to match it exactly ("KRAS and FAK pathways"); unquoted words are matched separately and a long unquoted title returns hundreds of loose matches. Search SEVERAL ways before concluding: the exact pair, each term alone, and the drug class or target names. Coverage of conference abstracts is thin, so treat a nil result as "not indexed here" rather than "does not exist".', parameters: { type: 'OBJECT', properties: { query: { type: 'STRING', description: 'Europe PMC query. Plain terms and AND/OR both work.' }, from_year: { type: 'NUMBER', description: 'Optional earliest publication year.' }, limit: { type: 'NUMBER', description: 'How many results, default 10, max 25.' } }, required: ['query'] } },
+    { name: 'search_web', description: 'Search the open web and come back with a summary and the source URLs. This is the LAST resort and the WEAKEST evidence we have, so try get_gene_evidence, search_literature and search_trials first and use this only for what they genuinely do not index: conference abstracts (AACR, ASCO), regulatory news and approvals, company pipelines, and events too recent to be indexed. Example of the gap it fills: the AACR 2026 abstract pairing daraxonrasib with defactinib is absent from Europe PMC entirely but sits on aacrjournals.org. Slower and dearer than the other searches, so ask one focused question rather than several vague ones.', parameters: { type: 'OBJECT', properties: { query: { type: 'STRING', description: 'What to find. Write it as you would type it into a search engine.' } }, required: ['query'] } },
     { name: 'search_trials', description: 'Free-text search of ClinicalTrials.gov. Use it whenever the question names a DRUG rather than a gene, or asks whether a combination is being trialled — get_clinical_trials only takes a gene symbol and is scoped to our snapshot, so it cannot answer "is drug X in trials". Search by intervention (the drug), by condition (the disease), or both. Returns NCT ids, titles, phase, status, sponsor and the actual interventions.', parameters: { type: 'OBJECT', properties: { intervention: { type: 'STRING', description: 'Drug or compound name, e.g. defactinib. Use OR for several.' }, condition: { type: 'STRING', description: 'Disease, e.g. pancreatic cancer.' }, terms: { type: 'STRING', description: 'Any other free text.' }, limit: { type: 'NUMBER', description: 'How many results, default 10, max 25.' } } } },
     { name: 'deep_dive_gene', description: 'LIVE deep dive for ONE gene — the same detail the app\'s target card shows: cohort-aware expression and protein change, dependency, constraint, tissue, per-trial records, latest papers, network centrality with context, STRING neighbours, single-cell, modality fit. Slower (3–8 s) and NOT part of the ranking. Use only for the one or two genes the question names, after get_gene_evidence.', parameters: { type: 'OBJECT', properties: { gene: { type: 'STRING' }, disease: { type: 'STRING' } }, required: ['gene'] } },
   ];
@@ -2043,6 +2046,77 @@ Rules: fill every field only from the full text you retrieved. Where the paper d
     // and defactinib?") previously had nowhere to go: the model either guessed or reported
     // nothing found, while a plain web chatbot answered it easily. These give it the same
     // reach, with real identifiers so a claim can be checked and read_paper can follow up.
+    // Web search runs through OpenAI's hosted tool rather than a separate search vendor,
+    // for the same reason read_paper runs through PLEASER: one implementation here means
+    // every upstream gets the capability, so Gemini and PLEASER are not handed a lesser
+    // version of the app than OpenAI. It needs OPENAI_API_KEY even when another model is
+    // answering. Roughly 13k tokens a call, hence the "last resort" framing in the tool
+    // description rather than a hard limit.
+    if (name === 'search_web') {
+      const query = String(args?.query || '').trim();
+      if (!query) return { error: 'give a query' };
+      if (!openaiEnabled()) return { error: 'web search is unavailable: OPENAI_API_KEY is not configured on this server' };
+      // A small model does this job as well as the answering model and costs a quarter as
+      // much. Measured on the same query: gpt-4.1-mini found the target page in 3.0s for
+      // 8,330 tokens, gpt-4o-mini in 4.0s for 8,336, gpt-4o for 17,607, and gpt-5.6-luna
+      // for ~30,000. The task is "find pages and report what they say", not reasoning, so
+      // the larger model buys nothing here. It matters beyond cost: rate limits are per
+      // model, so searching on a different model stops it competing with the answering
+      // model's own token budget — running both on luna exhausted the 60k allowance and
+      // failed the search outright.
+      const model = process.env.OPENAI_SEARCH_MODEL || 'gpt-4.1-mini';
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 120_000);
+      try {
+        // One web search costs roughly 30k tokens against a 60k-per-minute allowance, so a
+        // second search in the same answer trips the limit far more easily than an ordinary
+        // chat turn does. Measured, not guessed: a bare test run hit "Used 32263, Requested
+        // 29630" on the second call. Wait out the window rather than handing the user a
+        // failure they can do nothing about, the same way openaiChat does.
+        let r!: Response, d: any;
+        for (let attempt = 0; ; attempt++) {
+          r = await fetch('https://api.openai.com/v1/responses', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
+            signal: ctrl.signal,
+            body: JSON.stringify({
+              model, tools: [{ type: 'web_search' }], tool_choice: 'auto',
+              input: `Search the web and report what you find on: ${query}\n\nReport only what the pages actually say. Give titles, dates, venues and identifiers (DOI, PMID, NCT, abstract number) wherever a page shows them. If you find nothing, say so plainly instead of reasoning from memory. Do not give an opinion on the science; report the findings.`,
+            }),
+          });
+          d = await r.json().catch(() => ({}));
+          if (r.status !== 429 || attempt >= 2) break;
+          // The body names the wait in seconds ("try again in 1.893s") more precisely than
+          // the header does, so prefer it when present.
+          const said = Number(String(d?.error?.message || '').match(/try again in ([\d.]+)s/i)?.[1]);
+          const waitMs = Math.min(25_000, Math.ceil(((said || Number(r.headers.get('retry-after')) || (attempt + 1) * 8) + 0.5) * 1000));
+          await new Promise(res => setTimeout(res, waitMs));
+        }
+        if (!r.ok || d?.error) {
+          const msg = String(d?.error?.message || r.status);
+          return { error: r.status === 429
+            ? `web search hit the per-minute token limit and did not recover. A single web search costs about 30k of the 60k-per-minute allowance, so avoid running several in one answer. Detail: ${msg.slice(0, 160)}`
+            : `web search failed: ${msg.slice(0, 200)}` };
+        }
+        const msgs = (d.output || []).filter((o: any) => o.type === 'message');
+        const text = msgs.flatMap((m: any) => m.content || []).map((c: any) => c.text || '').join('\n').trim();
+        const seen = new Set<string>();
+        const sources: any[] = [];
+        for (const c of msgs.flatMap((m: any) => m.content || [])) {
+          for (const a of (c.annotations || [])) {
+            if (a?.type === 'url_citation' && a.url && !seen.has(a.url)) { seen.add(a.url); sources.push({ title: a.title || null, url: a.url }); }
+          }
+        }
+        const searches = (d.output || []).filter((o: any) => o.type === 'web_search_call').length;
+        return { query, searches_run: searches, summary: text || '(no findings returned)', sources,
+          source: 'open web, live search',
+          how_to_read: 'The WEAKEST evidence tier available here. A web page is not peer reviewed unless the page itself is a peer-reviewed article, so state what kind of source each claim rests on. Give the reader the URL for anything you take from this. Where Europe PMC or ClinicalTrials.gov also cover a fact, cite those instead, because they carry stable identifiers. Never let a web result change a board rank, a criterion or a score. If this contradicts our stored evidence, say both and say which is which rather than picking.' };
+      } catch (e: any) {
+        const aborted = String(e?.name || '') === 'AbortError';
+        return { error: aborted ? 'web search timed out after 120s' : `web search unreachable: ${String(e?.message || e).slice(0, 140)}` };
+      } finally { clearTimeout(timer); }
+    }
+
     if (name === 'search_literature') {
       const q = String(args?.query || '').trim();
       if (!q) return { error: 'give a query' };
