@@ -1084,6 +1084,48 @@ function setupRoutes() {
       }
     }
 
+    // ── OpenAI ────────────────────────────────────────────────────────────────
+    // Added after OpenAI became a third upstream: _diag reported Gemini and PLEASER only,
+    // so "ChatGPT is missing from the dropdown" was the one failure this endpoint could
+    // not explain. The dropdown lists OpenAI when OPENAI_API_KEY is visible to the running
+    // function, so report exactly that, plus which model the label will name — a key set
+    // without OPENAI_MODEL silently serves gpt-4o-mini rather than the configured model.
+    // The key is never echoed.
+    const okey = process.env.OPENAI_API_KEY || '';
+    info.openai = {
+      key_set: !!okey,
+      key_length: okey.length || null,
+      model: OPENAI_MODEL,
+      model_env_set: !!process.env.OPENAI_MODEL,
+      model_is_default: !process.env.OPENAI_MODEL,
+      listed_in_dropdown: openaiEnabled(),
+    };
+    if (okey) {
+      try {
+        const t0 = Date.now();
+        const r = await fetch('https://api.openai.com/v1/chat/completions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${okey}` },
+          body: JSON.stringify({ model: OPENAI_MODEL, messages: [{ role: 'user', content: 'ping' }], max_completion_tokens: 64 }),
+        });
+        const raw = await r.text();
+        let parsed: any = null; try { parsed = JSON.parse(raw); } catch { /* non-JSON body */ }
+        // A reasoning model spends the output budget thinking, so a tiny cap comes back as
+        // "output limit was reached" — an answer that never formed, NOT a rejected key. The
+        // request was authenticated and routed to the model, which is the whole question
+        // here, so treat it as a pass rather than reporting a working key as broken.
+        const hitOutputCap = /max_tokens|output limit/i.test(String(parsed?.error?.message || ''));
+        info.openai.liveTest = (r.ok && !parsed?.error) || hitOutputCap
+          ? { ok: true, ms: Date.now() - t0, status: r.status,
+              ...(hitOutputCap ? { note: 'key and model accepted; the reply hit the diagnostic output cap' } : {}) }
+          : { ok: false, status: r.status, code: parsed?.error?.code ?? null,
+              type: parsed?.error?.type ?? null,
+              error: String(parsed?.error?.message || raw).slice(0, 300) };
+      } catch (e: any) {
+        info.openai.liveTest = { ok: false, error: String(e?.message || e).slice(0, 300) };
+      }
+    }
+
     // ── PLEASER / Hermes ──────────────────────────────────────────────────────
     // The composer's model picker renders only when MORE THAN ONE model is available
     // (index.tsx: `aiModels.length > 1`), which is deliberate — an unreachable PLEASER
@@ -1108,7 +1150,7 @@ function setupRoutes() {
       info.pleaser.liveTest = { ok: false, error: String(e?.message || e).slice(0, 300) };
     }
     // What the composer will actually render, so the answer needs no cross-referencing.
-    const modelCount = (info.gemini?.key_set ? 1 : 0) + (info.pleaser.liveTest?.models ?? 0);
+    const modelCount = (info.gemini?.key_set ? 1 : 0) + (info.openai?.key_set ? 1 : 0) + (info.pleaser.liveTest?.models ?? 0);
     info.modelPicker = { modelCount, visible: modelCount > 1, rule: 'index.tsx renders the picker only when modelCount > 1' };
 
     // Which of the expected variables this running function can actually SEE. Names only —
@@ -1118,7 +1160,7 @@ function setupRoutes() {
     // the keys that matched distinguishes all of them at a glance, and a key that is absent
     // here was never delivered to this process regardless of what the dashboard shows.
     info.envKeysSeen = Object.keys(process.env)
-      .filter(k => /^(PLEASER|GEMINI|ORDS|USE_|SUPABASE)/i.test(k))
+      .filter(k => /^(PLEASER|GEMINI|OPENAI|ORDS|USE_|SUPABASE)/i.test(k))
       .sort();
 
     res.json(info);
