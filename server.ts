@@ -1944,6 +1944,57 @@ function setupRoutes() {
   // about 0.7 seconds for anything in PubMed Central, which is most of the biomedical
   // literature. So retrieval is now a plain HTTP fetch, and the only model call is the one
   // that turns text into our structured record. Total a few seconds, not minutes.
+  // Every retrieval tool used to require OPENAI_API_KEY. When that account ran out of
+  // quota the whole reach layer died at once — search_web, the paper extraction and its
+  // web fallback — even while the user was answering on GLM and even though Europe PMC had
+  // already handed over the full text. One exhausted key should not take out capability
+  // that another configured provider can supply, so each of them now falls back to Gemini.
+  const geminiEnabled = (): boolean => !!process.env.GEMINI_API_KEY;
+
+  async function geminiJson(prompt: string, timeoutMs = 90_000): Promise<any> {
+    if (!geminiEnabled()) return { error: 'GEMINI_API_KEY is not configured on this server' };
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), timeoutMs);
+    try {
+      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${process.env.GEMINI_API_KEY}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: ctl.signal,
+        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { responseMimeType: 'application/json' } }),
+      });
+      const d: any = await r.json().catch(() => ({}));
+      if (!r.ok || d?.error) return { error: `Gemini: ${String(d?.error?.message || r.status).slice(0, 160)}` };
+      const txt = (d.candidates?.[0]?.content?.parts || []).map((x: any) => x.text || '').join('');
+      const m = String(txt).match(/\{[\s\S]*\}/);
+      if (!m) return { error: 'Gemini returned no structured result' };
+      try { return JSON.parse(m[0]); } catch { return { error: 'unparseable Gemini result', raw: m[0].slice(0, 300) }; }
+    } catch (e: any) {
+      return { error: String(e?.name) === 'AbortError' ? 'Gemini timed out' : `Gemini unreachable: ${String(e?.message || e).slice(0, 140)}` };
+    } finally { clearTimeout(timer); }
+  }
+
+  // Gemini grounds answers with Google Search, which is the same capability the hosted
+  // OpenAI web_search tool provides. Sources arrive in groundingMetadata rather than as
+  // inline citations.
+  async function geminiSearch(query: string, instruction: string, timeoutMs = 90_000): Promise<any> {
+    if (!geminiEnabled()) return { error: 'GEMINI_API_KEY is not configured on this server' };
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), timeoutMs);
+    try {
+      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${process.env.GEMINI_API_KEY}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: ctl.signal,
+        body: JSON.stringify({ contents: [{ parts: [{ text: `${instruction}\n\n${query}` }] }], tools: [{ google_search: {} }] }),
+      });
+      const d: any = await r.json().catch(() => ({}));
+      if (!r.ok || d?.error) return { error: `Gemini: ${String(d?.error?.message || r.status).slice(0, 160)}` };
+      const cand = d.candidates?.[0];
+      const text = (cand?.content?.parts || []).map((x: any) => x.text || '').join('\n').trim();
+      const chunks = cand?.groundingMetadata?.groundingChunks || [];
+      const sources = chunks.map((c: any) => ({ title: c.web?.title || null, url: c.web?.uri || null })).filter((x: any) => x.url);
+      return { text, sources };
+    } catch (e: any) {
+      return { error: String(e?.name) === 'AbortError' ? 'Gemini timed out' : `Gemini unreachable: ${String(e?.message || e).slice(0, 140)}` };
+    } finally { clearTimeout(timer); }
+  }
+
   const FULLTEXT_CAP = 60_000;   // ~15k tokens; enough for methods and results, not the whole reference list
   async function fetchFullText(pmcid: string): Promise<string | null> {
     try {
@@ -1967,7 +2018,6 @@ function setupRoutes() {
   // One model call, cheap model, JSON out. Not the answering model: this is extraction,
   // not reasoning, and per-model rate limits mean it must not eat the co-pilot's budget.
   async function extractFromText(text: string, meta: any, focus?: string): Promise<any> {
-    if (!openaiEnabled()) return { error: 'OPENAI_API_KEY is not configured on this server' };
     const model = process.env.OPENAI_EXTRACT_MODEL || process.env.OPENAI_SEARCH_MODEL || 'gpt-4.1-mini';
     const prompt = `Below is the full text of a scientific paper${meta?.title ? `, "${meta.title}"` : ''}.
 ${focus ? `Pay particular attention to: ${focus}\n` : ''}
@@ -1990,14 +2040,43 @@ ${text}`;
     } catch (e: any) { return { error: `extraction unreachable: ${String(e?.message || e).slice(0, 140)}` }; }
   }
 
+  // Retrieval already succeeded by the time this runs, so failing here would throw away a
+  // paper we hold in hand. Try the other provider before giving up.
+  async function extractPaper(text: string, meta: any, focus?: string): Promise<any> {
+    if (openaiEnabled()) {
+      const viaOpenAi = await extractFromText(text, meta, focus);
+      if (viaOpenAi && !viaOpenAi.error) return viaOpenAi;
+      if (!geminiEnabled()) return viaOpenAi;
+    }
+    const prompt = `Below is the full text of a scientific paper${meta?.title ? `, "${meta.title}"` : ''}.
+${focus ? `Pay particular attention to: ${focus}\n` : ''}
+Reply with ONE JSON object and nothing else, in exactly this shape:
+${PAPER_SCHEMA}
+Rules: fill every field only from the text below. Where the paper does not report something, write exactly "none reported" rather than guessing. Never answer from memory.
+
+FULL TEXT:
+${text}`;
+    return geminiJson(prompt);
+  }
+
   // Fallback for anything PubMed Central does not hold: preprints outside PMC, conference
   // abstracts, publisher landing pages. Uses the same hosted web search as search_web, so
   // it reads the actual page rather than answering from memory.
   async function readPaperViaWeb(meta: any, focus?: string): Promise<any> {
-    if (!openaiEnabled()) return { error: 'OPENAI_API_KEY is not configured on this server' };
     const ref = [meta?.title && `"${meta.title}"`, meta?.doi && `DOI ${meta.doi}`, meta?.pmid && `PMID ${meta.pmid}`].filter(Boolean).join(', ');
     if (!ref) return { error: 'no usable identifier for the paper' };
     const model = process.env.OPENAI_SEARCH_MODEL || 'gpt-4.1-mini';
+    if (!openaiEnabled()) {
+      const g = await geminiSearch(ref, `Find and read this paper on the web, then reply with ONE JSON object and nothing else in exactly this shape:\n${PAPER_SCHEMA.slice(0, -1)},"source_url":"the page you actually read this from","page_kind":"peer-reviewed article | conference abstract | preprint | publisher landing page | news"}\nFill every field only from what the pages actually say; write exactly "none reported" where a page does not report something.${focus ? ` Pay particular attention to: ${focus}.` : ''}`);
+      if (g.error) return g;
+      const gm = String(g.text || '').match(/\{[\s\S]*\}/);
+      if (!gm) return { error: 'the reader returned no structured result' };
+      try {
+        const parsed = JSON.parse(gm[0]);
+        if (!parsed.source_url && g.sources?.[0]?.url) parsed.source_url = g.sources[0].url;
+        return parsed;
+      } catch { return { error: 'unparseable result', raw: gm[0].slice(0, 300) }; }
+    }
     try {
       const r = await fetch('https://api.openai.com/v1/responses', {
         method: 'POST',
@@ -2325,7 +2404,7 @@ Rules: fill every field only from what the pages actually say. Where the page do
       let extract: any = null, route = '';
       const full = meta?.pmcid ? await fetchFullText(meta.pmcid) : null;
       if (full) {
-        extract = await extractFromText(full, meta, focus);
+        extract = await extractPaper(full, meta, focus);
         route = `Europe PMC full text (${meta.pmcid}, ${full.length.toLocaleString()} characters read)`;
       }
       if (!extract || extract.error) {
@@ -2419,7 +2498,16 @@ Rules: fill every field only from what the pages actually say. Where the page do
       const lim = Math.max(1, Math.min(50, Number(args?.limit) || 25));
       return { disease: snap.disease_name, found: hits.length, targets: hits.slice(0, lim) };
     }
-    return { error: `unknown tool ${name}` };
+    // Gemini called "get_gene", which does not exist, burned a step on the error and had
+    // to guess again. A bare "unknown tool" tells the model nothing it can act on, so name
+    // the closest real tool and list the rest — recovery then costs one step, not several.
+    const known = AGENT_TOOLS.map((t: any) => t.name as string);
+    const n = String(name || '').toLowerCase();
+    const near = known.filter(k => k.includes(n) || n.includes(k) || k.split('_')[0] === n.split('_')[0]);
+    return { error: `unknown tool "${name}"`,
+      did_you_mean: near.length ? near : undefined,
+      available_tools: known,
+      note: 'Call one of available_tools exactly as spelled. Do not invent tool names.' };
   }
   app.post("/api/ai/agent", async (req, res) => {
     const { question, disease, snapshotId } = req.body || {};
