@@ -2006,17 +2006,30 @@ ${text}`;
           model, tools: [{ type: 'web_search' }], tool_choice: 'auto',
           input: `Find and read this paper on the web: ${ref}.
 ${focus ? `Pay particular attention to: ${focus}\n` : ''}Then reply with ONE JSON object and nothing else, in exactly this shape:
-${PAPER_SCHEMA}
-Rules: fill every field only from what the pages actually say. Where the page does not report something, write exactly "none reported". Never answer from memory. If you cannot retrieve the paper, reply {"error":"full text unavailable"}.`,
+${PAPER_SCHEMA.slice(0, -1)},"source_url":"the page you actually read this from","page_kind":"peer-reviewed article | conference abstract | preprint | publisher landing page | news"}
+Rules: fill every field only from what the pages actually say. Where the page does not report something, write exactly "none reported". Never answer from memory. source_url is required and must be a page you actually opened. page_kind matters: a conference abstract has had far lighter review than a journal article, so name it honestly rather than calling everything peer-reviewed. If you cannot retrieve the paper, reply {"error":"full text unavailable"}.`,
         }),
       });
       const d: any = await r.json().catch(() => ({}));
       if (!r.ok || d?.error) return { error: `web read failed: ${String(d?.error?.message || r.status).slice(0, 160)}` };
       const text = (d.output || []).filter((o: any) => o.type === 'message')
         .flatMap((m: any) => m.content || []).map((c: any) => c.text || '').join('\n');
+      const cited = (d.output || []).filter((o: any) => o.type === 'message')
+        .flatMap((mm: any) => mm.content || []).flatMap((c: any) => c.annotations || [])
+        .filter((a: any) => a?.type === 'url_citation').map((a: any) => a.url);
       const m = String(text).match(/\{[\s\S]*\}/);
       if (!m) return { error: 'the reader returned no structured result' };
-      try { return JSON.parse(m[0]); } catch { return { error: 'unparseable result', raw: m[0].slice(0, 300) }; }
+      try {
+        const parsed = JSON.parse(m[0]);
+        // url_citation annotations attach to prose spans, and this reply is a bare JSON
+        // object, so in practice none come back — measured: 0 citations on a working read.
+        // source_url in the schema is what actually preserves provenance. An extract nobody
+        // can trace to a page is worth less than one they can, so say so rather than let it
+        // pass as equivalent.
+        if (!parsed.source_url && cited.length) parsed.source_url = cited[0];
+        if (!parsed.source_url && !parsed.error) parsed.provenance_warning = 'the reader did not name the page it read; treat this extract as unverified and say so';
+        return parsed;
+      } catch { return { error: 'unparseable result', raw: m[0].slice(0, 300) }; }
     } catch (e: any) { return { error: `web read unreachable: ${String(e?.message || e).slice(0, 140)}` }; }
   }
   // Users say "FAK", the store says PTK2. Resolve an alias to the symbol the snapshot uses
