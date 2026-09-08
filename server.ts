@@ -1814,7 +1814,7 @@ function setupRoutes() {
     { name: 'find_novel_tractable', description: 'Druggable targets with NO developed drug and NO disease trial yet — the discovery query.', parameters: { type: 'OBJECT', properties: { disease: { type: 'STRING' }, limit: { type: 'NUMBER' } } } },
     { name: 'compare_genes', description: 'Side-by-side comparison of 2–4 genes in the current disease: board rank and score (leader = 100), every criterion score with its weight, and each stored evidence axis with its source. Use for "compare X vs Y" and "why is X ranked above Y".', parameters: { type: 'OBJECT', properties: { genes: { type: 'ARRAY', items: { type: 'STRING' } }, disease: { type: 'STRING' } }, required: ['genes', 'disease'] } },
     { name: 'gene_relationship', description: 'How two genes relate in the current disease: direct STRING interaction and its score, shared interaction partners, both genes\' board standing, and papers that mention both together with the disease (Europe PMC). Use for "how is A related to B".', parameters: { type: 'OBJECT', properties: { gene_a: { type: 'STRING' }, gene_b: { type: 'STRING' }, disease: { type: 'STRING' } }, required: ['gene_a', 'gene_b', 'disease'] } },
-    { name: 'read_paper', description: 'Read the FULL TEXT of one scientific paper and return what it actually tested: the claimed target, whether any genetic perturbation (knockdown/knockout/rescue) was performed, which control compounds were run and at what concentrations, the study type, and author conflicts. Use this whenever a question turns on what a specific paper did or did not show — counts of papers cannot answer that. Identify the paper by DOI, PubMed id, or exact title.', parameters: { type: 'OBJECT', properties: { doi: { type: 'STRING' }, pmid: { type: 'STRING' }, title: { type: 'STRING' }, focus: { type: 'STRING', description: 'Optional: what to look for, e.g. "was a selective control compound tested".' } } } },
+    { name: 'read_paper', description: 'Read the FULL TEXT of one scientific paper and return what it actually tested: the claimed target, whether any genetic perturbation (knockdown/knockout/rescue) was performed, which control compounds were run and at what concentrations, the study type, and author conflicts. Use this whenever a question turns on what a specific paper did or did not show — counts of papers cannot answer that. Identify the paper by DOI, PubMed id, or exact title. Fast: full text comes from Europe PMC in about a second where the paper is in PubMed Central, otherwise the published page is read from the web. Say which route the answer came from when it matters, since full text is stronger evidence than a page read.', parameters: { type: 'OBJECT', properties: { doi: { type: 'STRING' }, pmid: { type: 'STRING' }, title: { type: 'STRING' }, focus: { type: 'STRING', description: 'Optional: what to look for, e.g. "was a selective control compound tested".' } } } },
     { name: 'search_literature', description: 'Free-text search of Europe PMC — the ONLY way to answer a question that is not about one gene in our store. Use it whenever the question names a DRUG or compound (e.g. "daraxonrasib", "defactinib"), asks whether anything has been published on a combination, or asks "are there other papers or abstracts proposing X". Our stored evidence is indexed by gene, so a drug name finds nothing there; this searches the actual literature, conference abstracts and preprints included. Returns titles, journals, years, PMIDs and DOIs you can cite and then pass to read_paper. Combine terms as you would in a search box, e.g. daraxonrasib AND defactinib AND pancreatic. Quote a phrase to match it exactly ("KRAS and FAK pathways"); unquoted words are matched separately and a long unquoted title returns hundreds of loose matches. Search SEVERAL ways before concluding: the exact pair, each term alone, and the drug class or target names. Coverage of conference abstracts is thin, so treat a nil result as "not indexed here" rather than "does not exist".', parameters: { type: 'OBJECT', properties: { query: { type: 'STRING', description: 'Europe PMC query. Plain terms and AND/OR both work.' }, from_year: { type: 'NUMBER', description: 'Optional earliest publication year.' }, limit: { type: 'NUMBER', description: 'How many results, default 10, max 25.' } }, required: ['query'] } },
     { name: 'search_web', description: 'Search the open web and come back with a summary and the source URLs. This is the LAST resort and the WEAKEST evidence we have, so try get_gene_evidence, search_literature and search_trials first and use this only for what they genuinely do not index: conference abstracts (AACR, ASCO), regulatory news and approvals, company pipelines, and events too recent to be indexed. Example of the gap it fills: the AACR 2026 abstract pairing daraxonrasib with defactinib is absent from Europe PMC entirely but sits on aacrjournals.org. Slower and dearer than the other searches, so ask one focused question rather than several vague ones.', parameters: { type: 'OBJECT', properties: { query: { type: 'STRING', description: 'What to find. Write it as you would type it into a search engine.' } }, required: ['query'] } },
     { name: 'search_trials', description: 'Free-text search of ClinicalTrials.gov. Use it whenever the question names a DRUG rather than a gene, or asks whether a combination is being trialled — get_clinical_trials only takes a gene symbol and is scoped to our snapshot, so it cannot answer "is drug X in trials". Search by intervention (the drug), by condition (the disease), or both. Returns NCT ids, titles, phase, status, sponsor and the actual interventions.', parameters: { type: 'OBJECT', properties: { intervention: { type: 'STRING', description: 'Drug or compound name, e.g. defactinib. Use OR for several.' }, condition: { type: 'STRING', description: 'Disease, e.g. pancreatic cancer.' }, terms: { type: 'STRING', description: 'Any other free text.' }, limit: { type: 'NUMBER', description: 'How many results, default 10, max 25.' } } } },
@@ -1903,7 +1903,6 @@ function setupRoutes() {
   // Three rules make it affordable. The extraction runs on PLEASER's own cheap model, not
   // on whichever model is answering. Only a small structured record comes back, never the
   // paper. And the record is cached, so a paper is read once rather than once per question.
-  const paperReads = new Map<string, Promise<any>>();   // one read per paper in flight, shared by every caller
   // Papers do not change, so a finished extract is kept for the life of the process. This is
   // not merely an optimisation: the Supabase api-cache table is absent on this deployment, so
   // readApiCache/writeApiCache silently no-op and without this every ask would re-read the
@@ -1930,31 +1929,95 @@ function setupRoutes() {
       if (!hit) return null;
       return { title: hit.title, journal: hit.journalInfo?.journal?.title || hit.bookOrReportDetails?.publisher || hit.source,
         year: hit.pubYear, doi: hit.doi, pmid: hit.pmid || hit.id, is_preprint: hit.source === 'PPR',
+        // pmcid is what unlocks the full text: Europe PMC serves the whole article as XML
+        // at /{pmcid}/fullTextXML in well under a second. Without it we fall back to the web.
+        pmcid: hit.pmcid || null,
         open_access: hit.isOpenAccess === 'Y', abstract: String(hit.abstractText || '').slice(0, 2000) };
     } catch { return null; }
   }
-  async function readPaperViaPleaser(meta: any, focus?: string): Promise<any> {
-    if (!hermes.hermesEnabled()) return { error: 'PLEASER is not configured on this server' };
+  // Reading a paper used to run through PLEASER: a language model driving the paperclip
+  // tool, taking minutes and sometimes exceeding PLEASER's own gateway cap. That is what
+  // made the tool unusable on a serverless host, since the function is frozen the moment
+  // it replies and the read died mid-flight.
+  //
+  // It turned out to be unnecessary. Europe PMC serves the complete article as XML in
+  // about 0.7 seconds for anything in PubMed Central, which is most of the biomedical
+  // literature. So retrieval is now a plain HTTP fetch, and the only model call is the one
+  // that turns text into our structured record. Total a few seconds, not minutes.
+  const FULLTEXT_CAP = 60_000;   // ~15k tokens; enough for methods and results, not the whole reference list
+  async function fetchFullText(pmcid: string): Promise<string | null> {
+    try {
+      const r = await fetch(`https://www.ebi.ac.uk/europepmc/webservices/rest/${encodeURIComponent(pmcid)}/fullTextXML`);
+      if (!r.ok) return null;
+      const xml = await r.text();
+      // Drop the reference list and back matter before stripping tags: they are a third of
+      // the document and contain nothing the extract asks about.
+      const body = xml
+        .replace(/<ref-list[\s\S]*?<\/ref-list>/gi, '')
+        .replace(/<back[\s\S]*?<\/back>/gi, '')
+        .replace(/<\?[\s\S]*?\?>/g, '')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
+        .replace(/\s+/g, ' ')
+        .trim();
+      return body.length > 200 ? body.slice(0, FULLTEXT_CAP) : null;
+    } catch { return null; }
+  }
+
+  // One model call, cheap model, JSON out. Not the answering model: this is extraction,
+  // not reasoning, and per-model rate limits mean it must not eat the co-pilot's budget.
+  async function extractFromText(text: string, meta: any, focus?: string): Promise<any> {
+    if (!openaiEnabled()) return { error: 'OPENAI_API_KEY is not configured on this server' };
+    const model = process.env.OPENAI_EXTRACT_MODEL || process.env.OPENAI_SEARCH_MODEL || 'gpt-4.1-mini';
+    const prompt = `Below is the full text of a scientific paper${meta?.title ? `, "${meta.title}"` : ''}.
+${focus ? `Pay particular attention to: ${focus}\n` : ''}
+Reply with ONE JSON object and nothing else, in exactly this shape:
+${PAPER_SCHEMA}
+Rules: fill every field only from the text below. Where the paper does not report something, write exactly "none reported" rather than guessing. Never answer from memory.
+
+FULL TEXT:
+${text}`;
+    try {
+      const r = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
+        body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], response_format: { type: 'json_object' } }),
+      });
+      const d: any = await r.json().catch(() => ({}));
+      if (!r.ok || d?.error) return { error: `extraction failed: ${String(d?.error?.message || r.status).slice(0, 160)}` };
+      const raw = d.choices?.[0]?.message?.content || '';
+      try { return JSON.parse(raw); } catch { return { error: 'unparseable extraction', raw: String(raw).slice(0, 300) }; }
+    } catch (e: any) { return { error: `extraction unreachable: ${String(e?.message || e).slice(0, 140)}` }; }
+  }
+
+  // Fallback for anything PubMed Central does not hold: preprints outside PMC, conference
+  // abstracts, publisher landing pages. Uses the same hosted web search as search_web, so
+  // it reads the actual page rather than answering from memory.
+  async function readPaperViaWeb(meta: any, focus?: string): Promise<any> {
+    if (!openaiEnabled()) return { error: 'OPENAI_API_KEY is not configured on this server' };
     const ref = [meta?.title && `"${meta.title}"`, meta?.doi && `DOI ${meta.doi}`, meta?.pmid && `PMID ${meta.pmid}`].filter(Boolean).join(', ');
     if (!ref) return { error: 'no usable identifier for the paper' };
-    const prompt = `Use the paperclip tool to locate and read the FULL TEXT of this paper: ${ref}.
-${focus ? `Pay particular attention to: ${focus}
-` : ''}Then reply with ONE JSON object and nothing else — no prose, no code fence — in exactly this shape:
-${PAPER_SCHEMA}
-Rules: fill every field only from the full text you retrieved. Where the paper does not report something, write exactly "none reported" rather than guessing. Never answer from memory. If paperclip cannot retrieve the full text, reply with {"error":"full text unavailable"}.`;
-    let chatId = '';
+    const model = process.env.OPENAI_SEARCH_MODEL || 'gpt-4.1-mini';
     try {
-      chatId = await hermes.createChat('D2T read_paper');
-      // Reading a full paper legitimately runs past a chat turn's 240s default.
-      const raw = await hermes.sendMessage(chatId, prompt, process.env.PLEASER_PAPER_MODEL || 'glm-air', 600_000);
-      const m = String(raw || '').match(/\{[\s\S]*\}/);
-      if (!m) return { error: 'the reader returned no structured result', raw: String(raw || '').slice(0, 400) };
-      try { return JSON.parse(m[0]); } catch { return { error: 'unparseable result', raw: m[0].slice(0, 400) }; }
-    } catch (e: any) {
-      return { error: `paper reader unreachable: ${String(e?.message || e).slice(0, 140)}` };
-    } finally {
-      if (chatId) { try { await hermes.deleteChat(chatId); } catch { /* best effort */ } }
-    }
+      const r = await fetch('https://api.openai.com/v1/responses', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
+        body: JSON.stringify({
+          model, tools: [{ type: 'web_search' }], tool_choice: 'auto',
+          input: `Find and read this paper on the web: ${ref}.
+${focus ? `Pay particular attention to: ${focus}\n` : ''}Then reply with ONE JSON object and nothing else, in exactly this shape:
+${PAPER_SCHEMA}
+Rules: fill every field only from what the pages actually say. Where the page does not report something, write exactly "none reported". Never answer from memory. If you cannot retrieve the paper, reply {"error":"full text unavailable"}.`,
+        }),
+      });
+      const d: any = await r.json().catch(() => ({}));
+      if (!r.ok || d?.error) return { error: `web read failed: ${String(d?.error?.message || r.status).slice(0, 160)}` };
+      const text = (d.output || []).filter((o: any) => o.type === 'message')
+        .flatMap((m: any) => m.content || []).map((c: any) => c.text || '').join('\n');
+      const m = String(text).match(/\{[\s\S]*\}/);
+      if (!m) return { error: 'the reader returned no structured result' };
+      try { return JSON.parse(m[0]); } catch { return { error: 'unparseable result', raw: m[0].slice(0, 300) }; }
+    } catch (e: any) { return { error: `web read unreachable: ${String(e?.message || e).slice(0, 140)}` }; }
   }
   // Users say "FAK", the store says PTK2. Resolve an alias to the symbol the snapshot uses
   // (STRING's preferred name is HGNC for human), so board lookups, evidence lookups and
@@ -2228,59 +2291,42 @@ Rules: fill every field only from the full text you retrieved. Where the paper d
     }
 
     if (name === 'read_paper') {
-      // Reading a full paper through paperclip takes minutes and sometimes exceeds
-      // PLEASER's own ~300s gateway cap, so this must not block an answer. We wait a short
-      // while, and if the read is still running we say so and let the model answer from
-      // measured evidence — the read continues in the background and caches, so the next
-      // ask is instant. A paper is read once, not once per question.
+      // Fully live and fast enough for any host. Europe PMC hands over the full text in
+      // under a second where the paper is in PubMed Central; otherwise hosted web search
+      // reads the public page. Neither needs work to survive past the reply, which is what
+      // the old PLEASER route required and what serverless will not allow.
       const doi = String(args?.doi || '').trim(), pmid = String(args?.pmid || '').trim(), title = String(args?.title || '').trim();
       if (!doi && !pmid && !title) return { error: 'give a doi, a pmid, or an exact title' };
       const meta = await paperMeta(doi, pmid, title);
-      const ident = meta ? { title: meta.title, doi: meta.doi, pmid: meta.pmid } : { doi, pmid, title };
+      const focus = args?.focus ? String(args.focus) : undefined;
       const paper = meta
         ? { title: meta.title, journal: meta.journal, year: meta.year, doi: meta.doi, pmid: meta.pmid,
             status: meta.is_preprint ? 'PREPRINT — not peer reviewed' : 'peer-reviewed', open_access: meta.open_access }
         : { doi, pmid, title, note: 'not found in Europe PMC' };
-      const key = cacheKey('paper_extract', `${ident.doi || ''}|${ident.pmid || ''}|${ident.title || ''}|${String(args?.focus || '')}`);
+      const key = cacheKey('paper_extract_v2', `${meta?.pmcid || ''}|${meta?.doi || doi}|${meta?.pmid || pmid}|${title}|${focus || ''}`);
 
       if (paperExtracts.has(key)) return paperExtracts.get(key);
       const cached = await readApiCache(key);
       if (cached?.body) { paperExtracts.set(key, cached.body); return cached.body; }
 
-      // On a serverless host there is no point starting a read. The isolate is frozen the
-      // moment this response is sent, so the job is killed mid-flight, nothing is ever
-      // written, and the in-process maps are gone by the next request — which lands on a
-      // different isolate anyway. The old code still started one, so every ask returned
-      // "still reading, check back shortly" and no ask ever succeeded. Saying plainly that
-      // the full text is unavailable here, and handing over the abstract, is worth more to
-      // the model than an invitation to retry forever.
-      if (process.env.VERCEL) {
-        return { paper,
-          status: 'full text unavailable in this deployment',
-          note: 'Reading a paper takes minutes and this host cannot keep work running after a reply, so no full-text extract can be produced here. Do not offer to check back later. Say the paper text was not read, answer from the measured evidence in our own store, and treat any abstract below as the abstract only — never as the paper.',
-          ...(meta?.abstract ? { abstract_only: meta.abstract } : {}) };
+      let extract: any = null, route = '';
+      const full = meta?.pmcid ? await fetchFullText(meta.pmcid) : null;
+      if (full) {
+        extract = await extractFromText(full, meta, focus);
+        route = `Europe PMC full text (${meta.pmcid}, ${full.length.toLocaleString()} characters read)`;
+      }
+      if (!extract || extract.error) {
+        const viaWeb = await readPaperViaWeb(meta || { doi, pmid, title }, focus);
+        if (!viaWeb.error) { extract = viaWeb; route = 'hosted web search of the published page'; }
+        else if (!extract) { extract = viaWeb; route = 'web search'; }
       }
 
-      if (!paperReads.has(key)) {
-        const job = readPaperViaPleaser(ident, args?.focus)
-          .then(async (extract: any) => {
-            const body: any = { paper, full_text_extract: extract,
-              source: 'paperclip via PLEASER (full text) · Europe PMC (metadata)',
-              how_to_read: 'These fields come from the paper itself. "none reported" means the paper does not contain it — an absence you may cite, such as no knockout having been performed. Keep it separate from the measured evidence in our own store.' };
-            if (extract && !extract.error) { paperExtracts.set(key, body); await writeApiCache(key, { status: 200, body, contentType: 'application/json' }); }
-            else if (meta?.abstract) body.abstract_fallback = meta.abstract;
-            return body;
-          })
-          .catch((e: any) => ({ paper, full_text_extract: { error: String(e?.message || e).slice(0, 160) } }));
-        paperReads.set(key, job);
-        job.finally(() => setTimeout(() => paperReads.delete(key), 10 * 60_000));
-      }
-
-      const done = await Promise.race([paperReads.get(key)!, new Promise(r => setTimeout(() => r(null), 40_000))]);
-      if (done) return done;
-      return { paper, status: 'reading',
-        note: 'The full text is being read now; a first read takes a few minutes. Answer from the measured evidence for now, say plainly that the paper text is still loading, and offer to check again shortly — the result is cached and the next ask returns immediately.',
-        ...(meta?.abstract ? { abstract_meanwhile: meta.abstract } : {}) };
+      const body: any = { paper, full_text_extract: extract, retrieved_via: route,
+        source: 'Europe PMC full text, or the published page via web search',
+        how_to_read: 'These fields come from the paper itself. "none reported" means the paper does not contain it — an absence you may cite, such as no knockout having been performed. Keep it separate from the measured evidence in our own store. Say which route it came from when it matters: full text is stronger than a page read.' };
+      if (extract && !extract.error) { paperExtracts.set(key, body); await writeApiCache(key, { status: 200, body, contentType: 'application/json' }); }
+      else if (meta?.abstract) body.abstract_fallback = meta.abstract;
+      return body;
     }
     if (name === 'deep_dive_gene') {
       const b = await agentBoard(Number(snap.id), ctx.modality, ctx.litWindow);
