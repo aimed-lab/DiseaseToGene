@@ -46,12 +46,12 @@ export const CRITERIA: CriterionDef[] = [
       "Buniello A, et al. Nucleic Acids Res 2025;53(D1):D1467-D1475. doi:10.1093/nar/gkae1128",
     ]
   },
-  { key: 'safety',       label: 'Safety',        definition: 'Tolerance to perturbation — loss-of-function constraint, curated safety liabilities, and whether the gene is pan-essential (a lower score = more risk).', source: 'gnomAD LOEUF · Open Targets safety · common-essential flag',
+  { key: 'safety',       label: 'Safety',        definition: 'Tolerance to perturbation, NOT a clinical safety prediction. Three distinct things read together: germline loss-of-function constraint (gnomAD LOEUF, a proxy — human constraint is not evidence a drug is tolerated), curated safety liabilities (direct evidence), and pan-essentiality (a separate risk). Read the three terms below rather than the combined number.', source: 'gnomAD LOEUF · Open Targets safety · common-essential flag',
     citations: [
       "Chen S, et al. A genomic mutational constraint map using variation in 76,156 human genomes. Nature 2024;625:92-100. gnomAD v4, the release we query.",
     ]
   },
-  { key: 'clinical',     label: 'Clinical',      definition: 'Clinical precedent and momentum in this disease — trial phase reached and how many trials.', source: 'Open Targets trials · ClinicalTrials.gov',
+  { key: 'clinical',     label: 'Clinical',      definition: 'Clinical precedent in this disease — phase reached and trial breadth, discounted where trials were halted for toxicity or lack of efficacy. A halted programme is not the same evidence as a running one.', source: 'Open Targets trials · ClinicalTrials.gov',
     citations: [
       "Buniello A, et al. Nucleic Acids Res 2025;53(D1):D1467-D1475. doi:10.1093/nar/gkae1128 - ClinicalTrials.gov (U.S. National Library of Medicine), cited with the access date.",
     ]
@@ -189,6 +189,24 @@ export function literatureScore(g: any, opts?: BoardOptions): number | null {
   return n != null ? clamp01(Math.log10(1 + n) / LIT_LOG_CAP) : null;
 }
 
+// How much to discount clinical maturity for trials that stopped badly. Returns 1 when
+// nothing stopped or nothing is known, so snapshots harvested before stop reasons were
+// captured are unaffected rather than silently penalised.
+//
+// Two separate effects, because they answer different questions. A single toxicity or
+// efficacy failure is strong evidence against the target however many other trials ran,
+// so it applies a fixed penalty per failure up to a floor. Broad attrition — most trials
+// stopping for any non-success reason — is weaker evidence but still real, so it scales
+// with the fraction.
+export function clinicalDiscount(g: any): number {
+  const against = g?.n_stopped_against;
+  const frac = g?.stopped_fraction;
+  if (against == null && frac == null) return 1;              // not harvested: no opinion
+  const hard = against != null ? 1 - Math.min(against, 3) * 0.2 : 1;   // 20% each, floor 0.4
+  const soft = frac != null ? 1 - Math.min(Math.max(frac, 0), 1) * 0.3 : 1;
+  return Math.max(0.25, hard * soft);
+}
+
 export function criterionScores(g: any, opts?: BoardOptions): Record<CriterionKey, number | null> {
   // Discount low-confidence expression (near-zero normal tissue → inflated |log2FC|, e.g. lncRNAs).
   const exprMag = g.expr_log2fc != null ? clamp01(Math.abs(g.expr_log2fc) / 4) * (g.expr_low_conf ? 0.25 : 1) : null;
@@ -198,6 +216,15 @@ export function criterionScores(g: any, opts?: BoardOptions): Record<CriterionKe
   const essPenalty = g.is_common_essential ? 0.5 : 1;                          // pan-essential = riskier
   const phase = g.max_disease_phase != null ? clamp01(g.max_disease_phase / 4) : null;
   const trials = g.n_disease_trials != null ? clamp01(Math.min(g.n_disease_trials, 10) / 10) : null;
+  // Clinical maturity used to be purely monotonic: further and more trials always scored
+  // higher, so a target whose trials were HALTED FOR TOXICITY scored the same as one
+  // still running, and a target with ten failed Phase 3s scored maximum. For a tool whose
+  // whole purpose is prioritisation that is not a statistical nicety, it is a wrong
+  // answer. Attrition now discounts the maturity signal, weighted by what the trials
+  // stopped FOR: stops for safety or lack of efficacy count against the target, business
+  // and logistics stops do not, and a trial stopped because its endpoint was met is not
+  // attrition at all (classified upstream in boardRows).
+  const attrition = clinicalDiscount(g);
 
   return {
     genetics:     blend([[g.genetic_score, 0.6], [g.mutation_freq, 0.4]]),
@@ -205,7 +232,7 @@ export function criterionScores(g: any, opts?: BoardOptions): Record<CriterionKe
     dependency:   g.chronos != null ? clamp01(-g.chronos) : null,             // Chronos −1 ≈ strong dependency
     tractability: g.druggability_score != null ? clamp01(g.druggability_score) : null,
     safety:       loeufTol != null ? clamp01(loeufTol * essPenalty * liabPenalty) : (g.is_common_essential != null ? clamp01(0.5 * essPenalty * liabPenalty) : null),
-    clinical:     blend([[phase, 0.6], [trials, 0.4]]),
+    clinical:     (() => { const base = blend([[phase, 0.6], [trials, 0.4]]); return base == null ? null : clamp01(base * attrition); })(),
     literature:   literatureScore(g, opts),
     // Disease-specific WINNER, scored as its within-run PERCENTILE (0–100 → 0–1). The raw
     // max-normalised value is compressed (median ≈ 0.03 because TP53 sets the max), which
@@ -302,7 +329,12 @@ export function criterionBreakdown(key: CriterionKey, g: any, opts?: BoardOption
           { label: 'Max disease trial phase', value: g.max_disease_phase != null ? `Phase ${g.max_disease_phase}` : null, sub: phase, role: 'term', weightPct: 60, kind: 'fact', note: 'Furthest clinical phase reached by any drug for this target in this disease.' },
           { label: 'Disease trials', value: g.n_disease_trials != null ? String(g.n_disease_trials) : null, sub: trials, role: 'term', weightPct: 40, kind: 'fact', note: 'Number of trials for this target in this disease (ClinicalTrials.gov via OT).' },
           { label: 'Trials by phase', value: byPhase, role: 'context', kind: 'fact', note: 'Distribution of trials across phases.' },
-          { label: 'Stopped trials', value: g.n_stopped_trials != null ? String(g.n_stopped_trials) : null, role: 'context', kind: 'fact', note: 'Trials halted — a caution signal (context only, not scored).' },
+          { label: 'Stopped trials', value: g.n_stopped_trials != null ? String(g.n_stopped_trials) : null, role: 'context', kind: 'fact', note: 'Trials halted for any reason other than meeting their endpoint.' },
+          { label: 'Stopped for safety or efficacy', value: g.n_stopped_against != null ? String(g.n_stopped_against) : null, role: 'context', kind: 'fact', note: 'Trials halted for toxicity or lack of efficacy — evidence against the target, distinct from a business or logistics stop.' },
+          { label: 'Attrition discount', value: `×${clinicalDiscount(g).toFixed(2)}`, role: 'context', kind: 'fact', note: 'Applied to the maturity score above. 20% per safety or efficacy failure to a floor, plus a smaller penalty scaling with the share of trials that stopped. ×1.00 means nothing stopped, or stop reasons were not harvested for this snapshot.' },
+          ...(Array.isArray(g.stop_reasons_seen) && g.stop_reasons_seen.length
+            ? [{ label: 'Stop reasons', value: g.stop_reasons_seen.join(', '), role: 'context' as const, kind: 'fact' as const, note: 'Open Targets trialStopReasonCategories recorded for this target\u2019s halted trials.' }]
+            : []),
         ],
       };
     }
@@ -342,7 +374,12 @@ export function criterionBreakdown(key: CriterionKey, g: any, opts?: BoardOption
 export interface ScoredGene {
   symbol: string; boardRank: number; sourceRank: number | null;
   criteria: Record<CriterionKey, number | null>;
-  overall: number;          // 0–1 weighted sum over present criteria (missing = 0)
+  // RELATIVE PRIORITISATION score, not a probability and not an absolute strength of
+  // evidence. It is a weighted mean over the criteria PRESENT for this target (a missing
+  // core criterion counts against it, a missing context criterion is neutral), then scaled
+  // so the leading eligible target reads 100. Two targets are comparable within one
+  // snapshot; a score is not comparable across diseases or across runs.
+  overall: number;
   display: number;          // 0–100, leader = 100
   coverage: number;         // # of the weighted criteria with data (breadth)
   gated: boolean; gateNote?: string;

@@ -43,7 +43,7 @@ var CRITERIA = [
   {
     key: "safety",
     label: "Safety",
-    definition: "Tolerance to perturbation \u2014 loss-of-function constraint, curated safety liabilities, and whether the gene is pan-essential (a lower score = more risk).",
+    definition: "Tolerance to perturbation, NOT a clinical safety prediction. Three distinct things read together: germline loss-of-function constraint (gnomAD LOEUF, a proxy \u2014 human constraint is not evidence a drug is tolerated), curated safety liabilities (direct evidence), and pan-essentiality (a separate risk). Read the three terms below rather than the combined number.",
     source: "gnomAD LOEUF \xB7 Open Targets safety \xB7 common-essential flag",
     citations: [
       "Chen S, et al. A genomic mutational constraint map using variation in 76,156 human genomes. Nature 2024;625:92-100. gnomAD v4, the release we query."
@@ -52,7 +52,7 @@ var CRITERIA = [
   {
     key: "clinical",
     label: "Clinical",
-    definition: "Clinical precedent and momentum in this disease \u2014 trial phase reached and how many trials.",
+    definition: "Clinical precedent in this disease \u2014 phase reached and trial breadth, discounted where trials were halted for toxicity or lack of efficacy. A halted programme is not the same evidence as a running one.",
     source: "Open Targets trials \xB7 ClinicalTrials.gov",
     citations: [
       "Buniello A, et al. Nucleic Acids Res 2025;53(D1):D1467-D1475. doi:10.1093/nar/gkae1128 - ClinicalTrials.gov (U.S. National Library of Medicine), cited with the access date."
@@ -168,6 +168,14 @@ function literatureScore(g, opts) {
   const n = literatureCount(g, opts);
   return n != null ? clamp01(Math.log10(1 + n) / LIT_LOG_CAP) : null;
 }
+function clinicalDiscount(g) {
+  const against = g?.n_stopped_against;
+  const frac = g?.stopped_fraction;
+  if (against == null && frac == null) return 1;
+  const hard = against != null ? 1 - Math.min(against, 3) * 0.2 : 1;
+  const soft = frac != null ? 1 - Math.min(Math.max(frac, 0), 1) * 0.3 : 1;
+  return Math.max(0.25, hard * soft);
+}
 function criterionScores(g, opts) {
   const exprMag = g.expr_log2fc != null ? clamp01(Math.abs(g.expr_log2fc) / 4) * (g.expr_low_conf ? 0.25 : 1) : null;
   const protMag = protMagOf(g);
@@ -176,6 +184,7 @@ function criterionScores(g, opts) {
   const essPenalty = g.is_common_essential ? 0.5 : 1;
   const phase = g.max_disease_phase != null ? clamp01(g.max_disease_phase / 4) : null;
   const trials = g.n_disease_trials != null ? clamp01(Math.min(g.n_disease_trials, 10) / 10) : null;
+  const attrition = clinicalDiscount(g);
   return {
     genetics: blend([[g.genetic_score, 0.6], [g.mutation_freq, 0.4]]),
     expression: blend([[exprMag, 0.5], [protMag, 0.5]]),
@@ -183,7 +192,10 @@ function criterionScores(g, opts) {
     // Chronos −1 ≈ strong dependency
     tractability: g.druggability_score != null ? clamp01(g.druggability_score) : null,
     safety: loeufTol != null ? clamp01(loeufTol * essPenalty * liabPenalty) : g.is_common_essential != null ? clamp01(0.5 * essPenalty * liabPenalty) : null,
-    clinical: blend([[phase, 0.6], [trials, 0.4]]),
+    clinical: (() => {
+      const base = blend([[phase, 0.6], [trials, 0.4]]);
+      return base == null ? null : clamp01(base * attrition);
+    })(),
     literature: literatureScore(g, opts),
     // Disease-specific WINNER, scored as its within-run PERCENTILE (0–100 → 0–1). The raw
     // max-normalised value is compressed (median ≈ 0.03 because TP53 sets the max), which
@@ -266,7 +278,10 @@ function criterionBreakdown(key, g, opts) {
           { label: "Max disease trial phase", value: g.max_disease_phase != null ? `Phase ${g.max_disease_phase}` : null, sub: phase, role: "term", weightPct: 60, kind: "fact", note: "Furthest clinical phase reached by any drug for this target in this disease." },
           { label: "Disease trials", value: g.n_disease_trials != null ? String(g.n_disease_trials) : null, sub: trials, role: "term", weightPct: 40, kind: "fact", note: "Number of trials for this target in this disease (ClinicalTrials.gov via OT)." },
           { label: "Trials by phase", value: byPhase, role: "context", kind: "fact", note: "Distribution of trials across phases." },
-          { label: "Stopped trials", value: g.n_stopped_trials != null ? String(g.n_stopped_trials) : null, role: "context", kind: "fact", note: "Trials halted \u2014 a caution signal (context only, not scored)." }
+          { label: "Stopped trials", value: g.n_stopped_trials != null ? String(g.n_stopped_trials) : null, role: "context", kind: "fact", note: "Trials halted for any reason other than meeting their endpoint." },
+          { label: "Stopped for safety or efficacy", value: g.n_stopped_against != null ? String(g.n_stopped_against) : null, role: "context", kind: "fact", note: "Trials halted for toxicity or lack of efficacy \u2014 evidence against the target, distinct from a business or logistics stop." },
+          { label: "Attrition discount", value: `\xD7${clinicalDiscount(g).toFixed(2)}`, role: "context", kind: "fact", note: "Applied to the maturity score above. 20% per safety or efficacy failure to a floor, plus a smaller penalty scaling with the share of trials that stopped. \xD71.00 means nothing stopped, or stop reasons were not harvested for this snapshot." },
+          ...Array.isArray(g.stop_reasons_seen) && g.stop_reasons_seen.length ? [{ label: "Stop reasons", value: g.stop_reasons_seen.join(", "), role: "context", kind: "fact", note: "Open Targets trialStopReasonCategories recorded for this target\u2019s halted trials." }] : []
         ]
       };
     }
@@ -395,6 +410,34 @@ var parse = (v) => {
     return null;
   }
 };
+var STOP_AGAINST = /safety|side.?effect|negative|efficac|insufficient_data|toxic/i;
+var STOP_SUCCESS = /endpoint_met|success/i;
+function clinicalAttrition(clin) {
+  if (!clin || !Array.isArray(clin.trials)) {
+    return { n_stopped_trials: null, n_stopped_against: null, stopped_fraction: null, stop_reasons_seen: null };
+  }
+  const trials = clin.trials;
+  const n = trials.length;
+  let stopped = 0, against = 0;
+  const seen = /* @__PURE__ */ new Set();
+  for (const t of trials) {
+    const reasons = Array.isArray(t?.stop_reasons) ? t.stop_reasons : [];
+    const why = String(t?.why_stopped || "");
+    const text = reasons.join(" ") + " " + why;
+    const isStopped = !!t?.why_stopped || reasons.length > 0 || /terminated|withdrawn|suspended/i.test(String(t?.status || ""));
+    if (!isStopped) continue;
+    if (STOP_SUCCESS.test(text)) continue;
+    stopped++;
+    reasons.forEach((r) => seen.add(r));
+    if (STOP_AGAINST.test(text)) against++;
+  }
+  return {
+    n_stopped_trials: stopped,
+    n_stopped_against: against,
+    stopped_fraction: n > 0 ? stopped / n : 0,
+    stop_reasons_seen: seen.size ? [...seen].slice(0, 6) : []
+  };
+}
 function deriveBoardRows(scores, evidence) {
   const evByGene = {};
   const srcByGene = {};
@@ -429,6 +472,16 @@ function deriveBoardRows(scores, evidence) {
       n_disease_trials: clinLegacy ? null : clin?.n_disease_trials ?? null,
       trials_by_phase: clinLegacy ? null : clin?.trials_by_phase ?? null,
       max_disease_phase: clinLegacy ? null : clin?.max_disease_trial_phase ?? null,
+      // ── trial ATTRITION, classified by why the trial stopped ──────────────────
+      // The harvester already stores per-trial stop reasons from Open Targets'
+      // trialStopReasonCategories, and until now the board ignored them entirely: a
+      // target whose Phase 3 was halted for toxicity scored exactly the same as one
+      // whose Phase 3 is still running. Three buckets, because they mean opposite
+      // things. A stop for safety or lack of efficacy is evidence AGAINST the target.
+      // A business or logistics stop says nothing about the biology. A trial that
+      // stopped because its endpoint was MET is a success and must never be counted
+      // as attrition — the reason this is classified rather than a bare count.
+      ...clinicalAttrition(clinLegacy ? null : clin),
       n_publications: lit?.paper_count ?? null,
       lit_recent_count: lit?.recent_count ?? null,
       // papers in the harvest's 3-year window

@@ -11,6 +11,37 @@ const parse = (v: unknown): any => { try { return typeof v === 'string' ? JSON.p
 export interface BoardScoreRow { gene_symbol: string; rank?: number | null; [k: string]: unknown; }
 export interface BoardEvidenceRow { gene_symbol: string; evidence_type: string; value_json?: unknown; source?: string | null; [k: string]: unknown; }
 
+// Open Targets' trialStopReasonCategories, bucketed by what each reason implies about
+// the TARGET rather than about the trial's operations.
+const STOP_AGAINST = /safety|side.?effect|negative|efficac|insufficient_data|toxic/i;
+const STOP_SUCCESS = /endpoint_met|success/i;
+export function clinicalAttrition(clin: any) {
+  if (!clin || !Array.isArray(clin.trials)) {
+    return { n_stopped_trials: null as number | null, n_stopped_against: null as number | null, stopped_fraction: null as number | null, stop_reasons_seen: null as string[] | null };
+  }
+  const trials = clin.trials as any[];
+  const n = trials.length;
+  let stopped = 0, against = 0;
+  const seen = new Set<string>();
+  for (const t of trials) {
+    const reasons: string[] = Array.isArray(t?.stop_reasons) ? t.stop_reasons : [];
+    const why = String(t?.why_stopped || '');
+    const text = reasons.join(' ') + ' ' + why;
+    const isStopped = !!t?.why_stopped || reasons.length > 0 || /terminated|withdrawn|suspended/i.test(String(t?.status || ''));
+    if (!isStopped) continue;
+    if (STOP_SUCCESS.test(text)) continue;          // stopped because it worked
+    stopped++;
+    reasons.forEach(r => seen.add(r));
+    if (STOP_AGAINST.test(text)) against++;
+  }
+  return {
+    n_stopped_trials: stopped,
+    n_stopped_against: against,
+    stopped_fraction: n > 0 ? stopped / n : 0,
+    stop_reasons_seen: seen.size ? [...seen].slice(0, 6) : [],
+  };
+}
+
 export function deriveBoardRows(scores: BoardScoreRow[], evidence: BoardEvidenceRow[]): any[] {
   const evByGene: Record<string, Record<string, any>> = {};
   const srcByGene: Record<string, Record<string, string>> = {};
@@ -41,6 +72,16 @@ export function deriveBoardRows(scores: BoardScoreRow[], evidence: BoardEvidence
         n_disease_trials: clinLegacy ? null : (clin?.n_disease_trials ?? null),
         trials_by_phase: clinLegacy ? null : (clin?.trials_by_phase ?? null),
         max_disease_phase: clinLegacy ? null : (clin?.max_disease_trial_phase ?? null),
+        // ── trial ATTRITION, classified by why the trial stopped ──────────────────
+        // The harvester already stores per-trial stop reasons from Open Targets'
+        // trialStopReasonCategories, and until now the board ignored them entirely: a
+        // target whose Phase 3 was halted for toxicity scored exactly the same as one
+        // whose Phase 3 is still running. Three buckets, because they mean opposite
+        // things. A stop for safety or lack of efficacy is evidence AGAINST the target.
+        // A business or logistics stop says nothing about the biology. A trial that
+        // stopped because its endpoint was MET is a success and must never be counted
+        // as attrition — the reason this is classified rather than a bare count.
+        ...clinicalAttrition(clinLegacy ? null : clin),
         n_publications: lit?.paper_count ?? null,
         lit_recent_count: lit?.recent_count ?? null,    // papers in the harvest's 3-year window
         lit_low_conf: lit?.low_confidence ?? false,     // < 5 papers: velocity is quantised noise
