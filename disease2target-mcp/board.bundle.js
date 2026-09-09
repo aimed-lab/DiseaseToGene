@@ -34,7 +34,7 @@ var CRITERIA = [
   {
     key: "tractability",
     label: "Tractability",
-    definition: "How druggable the protein is \u2014 whether a therapeutic of the chosen modality can engage it.",
+    definition: "Whether the protein can be engaged by the chosen modality. The Open Targets tractability prediction, discounted where the only approved drugs linked to the target are promiscuous \u2014 a compound hitting many proteins is precedent for the compound, not for this target.",
     source: "Open Targets tractability",
     citations: [
       "Buniello A, et al. Nucleic Acids Res 2025;53(D1):D1467-D1475. doi:10.1093/nar/gkae1128"
@@ -176,6 +176,14 @@ function clinicalDiscount(g) {
   const soft = frac != null ? 1 - Math.min(Math.max(frac, 0), 1) * 0.3 : 1;
   return Math.max(0.25, hard * soft);
 }
+function tractabilityDiscount(g) {
+  const promisc = g?.n_drugs_promiscuous, sel = g?.n_drugs_selective;
+  if (promisc == null || sel == null) return 1;
+  if (promisc === 0) return 1;
+  if (g?.has_selective_approved) return 1;
+  if (sel > 0) return 0.8;
+  return 0.55;
+}
 function criterionScores(g, opts) {
   const exprMag = g.expr_log2fc != null ? clamp01(Math.abs(g.expr_log2fc) / 4) * (g.expr_low_conf ? 0.25 : 1) : null;
   const protMag = protMagOf(g);
@@ -190,7 +198,12 @@ function criterionScores(g, opts) {
     expression: blend([[exprMag, 0.5], [protMag, 0.5]]),
     dependency: g.chronos != null ? clamp01(-g.chronos) : null,
     // Chronos −1 ≈ strong dependency
-    tractability: g.druggability_score != null ? clamp01(g.druggability_score) : null,
+    tractability: (() => {
+      if (g.druggability_score == null) return null;
+      const raw = clamp01(g.druggability_score);
+      const floor = g.tractable_modalities > 0 ? 0.3 : 0;
+      return clamp01(Math.max(raw * tractabilityDiscount(g), Math.min(raw, floor)));
+    })(),
     safety: loeufTol != null ? clamp01(loeufTol * essPenalty * liabPenalty) : g.is_common_essential != null ? clamp01(0.5 * essPenalty * liabPenalty) : null,
     clinical: (() => {
       const base = blend([[phase, 0.6], [trials, 0.4]]);
@@ -244,6 +257,10 @@ function criterionBreakdown(key, g, opts) {
         metrics: [
           { label: "OT tractability score", value: num(g.druggability_score), sub: g.druggability_score != null ? clamp01(g.druggability_score) : null, role: "term", weightPct: 100, kind: "prediction", note: "Open Targets \u2014 predicted druggability of the protein for the chosen modality." },
           { label: "Tractable modalities", value: g.tractable_modalities != null ? String(g.tractable_modalities) : null, role: "context", kind: "prediction", note: "How many modality buckets Open Targets predicts can engage this target." },
+          { label: "Selective drugs", value: g.n_drugs_selective != null ? String(g.n_drugs_selective) : null, role: "context", kind: "fact", note: `Developed drugs linked to at most ${3} targets across this snapshot \u2014 evidence about THIS target.` },
+          { label: "Promiscuous drugs", value: g.n_drugs_promiscuous != null ? String(g.n_drugs_promiscuous) : null, role: "context", kind: "fact", note: "Drugs linked to many targets in this snapshot. Precedent for the compound, not for this target." },
+          { label: "Selectivity discount", value: `\xD7${tractabilityDiscount(g).toFixed(2)}`, role: "context", kind: "fact", note: "Applied to the tractability score. \xD71.00 means a selective approved drug exists, or selectivity could not be assessed on this snapshot." },
+          ...Array.isArray(g.promiscuous_drugs) && g.promiscuous_drugs.length ? [{ label: "Which drugs", value: g.promiscuous_drugs.join(", "), role: "context", kind: "fact", note: "The promiscuous compounds, with how many targets each is linked to here." }] : [],
           { label: "Proven modalities", value: provenStr, role: "context", kind: "fact", note: "Modalities with a real drug already developed against this target." },
           { label: "Compounds in ChEMBL", value: g.n_drugs != null ? String(g.n_drugs) : null, role: "context", kind: "fact", note: "Total known compounds targeting the gene (existence, not efficacy)." }
         ]
@@ -438,7 +455,56 @@ function clinicalAttrition(clin) {
     stop_reasons_seen: seen.size ? [...seen].slice(0, 6) : []
   };
 }
+var PROMISCUITY_LIMIT = 3;
+function drugBreadth(evidence) {
+  const count = /* @__PURE__ */ new Map();
+  for (const e of evidence) {
+    if (String(e.evidence_type) !== "druggability") continue;
+    const j = parse(e.value_json);
+    const gene = String(e.gene_symbol || "").toUpperCase();
+    for (const d of j?.drugs ?? []) {
+      const n = String(d?.name || "").trim().toUpperCase();
+      if (!n) continue;
+      if (!count.has(n)) count.set(n, /* @__PURE__ */ new Set());
+      count.get(n).add(gene);
+    }
+  }
+  const out = /* @__PURE__ */ new Map();
+  for (const [drug, genes] of count) out.set(drug, genes.size);
+  return out;
+}
+function selectivity(drug, breadth) {
+  if (!drug || !Array.isArray(drug.drugs)) {
+    return {
+      n_drugs_selective: null,
+      n_drugs_promiscuous: null,
+      promiscuous_drugs: null,
+      has_selective_approved: null
+    };
+  }
+  let sel = 0, promisc = 0, selApproved = 0;
+  const names = [];
+  for (const d of drug.drugs) {
+    const n = String(d?.name || "").trim().toUpperCase();
+    if (!n) continue;
+    const spread = breadth.get(n) ?? 1;
+    if (spread > PROMISCUITY_LIMIT) {
+      promisc++;
+      if (names.length < 5) names.push(`${d.name} (${spread} targets)`);
+    } else {
+      sel++;
+      if (d?.approved) selApproved++;
+    }
+  }
+  return {
+    n_drugs_selective: sel,
+    n_drugs_promiscuous: promisc,
+    promiscuous_drugs: names,
+    has_selective_approved: selApproved > 0
+  };
+}
 function deriveBoardRows(scores, evidence) {
+  const breadth = drugBreadth(evidence);
   const evByGene = {};
   const srcByGene = {};
   for (const e of evidence) {
@@ -469,6 +535,7 @@ function deriveBoardRows(scores, evidence) {
       // OPEN_TARGETS | AGORA | MANUAL … (null on snapshots read before the column existed)
       n_drugs: drugLegacy ? null : drug?.total_compounds ?? null,
       tractable_modalities: drug?.tractable_modalities ?? null,
+      ...selectivity(drug, breadth),
       n_disease_trials: clinLegacy ? null : clin?.n_disease_trials ?? null,
       trials_by_phase: clinLegacy ? null : clin?.trials_by_phase ?? null,
       max_disease_phase: clinLegacy ? null : clin?.max_disease_trial_phase ?? null,

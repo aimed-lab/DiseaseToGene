@@ -42,7 +42,60 @@ export function clinicalAttrition(clin: any) {
   };
 }
 
+// ── Drug SELECTIVITY, measured across the snapshot ──────────────────────────
+// Tractability scored 1.0 ("clinically validated") whenever ANY developed drug linked to
+// the target had reached approval. That let a promiscuous compound certify a target it was
+// never developed for: PDE10A scored 100 on the strength of dipyridamole and
+// pentoxifylline, which inhibit several phosphodiesterases and were developed for neither.
+//
+// Nothing stored says whether a drug is selective. But the snapshot does, implicitly: a
+// compound linked to many different targets in the same run is, by construction, not
+// evidence of selective tractability for any one of them. So promiscuity is counted here
+// rather than harvested, from data already held.
+//
+// The threshold is deliberately generous. A genuinely targeted drug often hits two or
+// three related proteins, so only compounds spanning MORE than that are discounted, and
+// the count is surfaced per gene so the judgement is inspectable rather than hidden.
+const PROMISCUITY_LIMIT = 3;
+
+export function drugBreadth(evidence: any[]): Map<string, number> {
+  const count = new Map<string, Set<string>>();
+  for (const e of evidence as any[]) {
+    if (String(e.evidence_type) !== 'druggability') continue;
+    const j = parse(e.value_json);
+    const gene = String(e.gene_symbol || '').toUpperCase();
+    for (const d of (j?.drugs ?? [])) {
+      const n = String(d?.name || '').trim().toUpperCase();
+      if (!n) continue;
+      if (!count.has(n)) count.set(n, new Set());
+      count.get(n)!.add(gene);
+    }
+  }
+  const out = new Map<string, number>();
+  for (const [drug, genes] of count) out.set(drug, genes.size);
+  return out;
+}
+
+function selectivity(drug: any, breadth: Map<string, number>) {
+  if (!drug || !Array.isArray(drug.drugs)) {
+    return { n_drugs_selective: null as number | null, n_drugs_promiscuous: null as number | null,
+             promiscuous_drugs: null as string[] | null, has_selective_approved: null as boolean | null };
+  }
+  let sel = 0, promisc = 0, selApproved = 0;
+  const names: string[] = [];
+  for (const d of drug.drugs) {
+    const n = String(d?.name || '').trim().toUpperCase();
+    if (!n) continue;
+    const spread = breadth.get(n) ?? 1;
+    if (spread > PROMISCUITY_LIMIT) { promisc++; if (names.length < 5) names.push(`${d.name} (${spread} targets)`); }
+    else { sel++; if (d?.approved) selApproved++; }
+  }
+  return { n_drugs_selective: sel, n_drugs_promiscuous: promisc, promiscuous_drugs: names,
+           has_selective_approved: selApproved > 0 };
+}
+
 export function deriveBoardRows(scores: BoardScoreRow[], evidence: BoardEvidenceRow[]): any[] {
+  const breadth = drugBreadth(evidence as any[]);   // one pass over the snapshot, before any row is built
   const evByGene: Record<string, Record<string, any>> = {};
   const srcByGene: Record<string, Record<string, string>> = {};
   for (const e of evidence as any[]) {
@@ -69,6 +122,7 @@ export function deriveBoardRows(scores: BoardScoreRow[], evidence: BoardEvidence
         candidate_source: r.candidate_source ?? null,   // OPEN_TARGETS | AGORA | MANUAL … (null on snapshots read before the column existed)
         n_drugs: drugLegacy ? null : (drug?.total_compounds ?? null),
         tractable_modalities: drug?.tractable_modalities ?? null,
+        ...selectivity(drug, breadth),
         n_disease_trials: clinLegacy ? null : (clin?.n_disease_trials ?? null),
         trials_by_phase: clinLegacy ? null : (clin?.trials_by_phase ?? null),
         max_disease_phase: clinLegacy ? null : (clin?.max_disease_trial_phase ?? null),

@@ -52,5 +52,40 @@ check('a halted-for-toxicity programme now scores BELOW a running one',
   haltedPhase3 < runningPhase3, `halted=${haltedPhase3} running=${runningPhase3}`);
 console.log(`      running x${runningPhase3.toFixed(2)} vs halted-for-toxicity x${haltedPhase3.toFixed(2)}`);
 
+
+// ── drug selectivity ────────────────────────────────────────────────────────
+// Tractability read 1.0 whenever ANY linked drug had reached approval, so a promiscuous
+// compound could certify a target it was never developed for. PDE10A scored 100 on
+// dipyridamole and pentoxifylline, which inhibit several phosphodiesterases each.
+import { tractabilityDiscount } from './rankingBoard.ts';
+import { drugBreadth } from './boardRows.ts';
+
+const ev = (gene: string, drugs: any[]) => ({ gene_symbol: gene, evidence_type: 'druggability', value_json: JSON.stringify({ drugs }) });
+const D = (name: string, approved = true) => ({ name, approved, modality: 'SM', family: null, stage: 'Approved' });
+
+// dipyridamole spans five targets here; sotorasib spans one.
+const snapshot = [
+  ev('PDE10A', [D('Dipyridamole'), D('Pentoxifylline')]),
+  ev('PDE3A', [D('Dipyridamole'), D('Pentoxifylline')]),
+  ev('PDE5A', [D('Dipyridamole')]),
+  ev('PDE4B', [D('Pentoxifylline')]),
+  ev('ADORA2A', [D('Dipyridamole')]),
+  ev('SLC29A1', [D('Dipyridamole')]),
+  ev('KRAS', [D('Sotorasib')]),
+];
+const breadth = drugBreadth(snapshot as any);
+check('a promiscuous drug is seen across many targets', breadth.get('DIPYRIDAMOLE') === 5, `got ${breadth.get('DIPYRIDAMOLE')}`);
+check('a selective drug is seen on one', breadth.get('SOTORASIB') === 1);
+
+check('a target whose only approved drugs are promiscuous is discounted',
+  near(tractabilityDiscount({ n_drugs_promiscuous: 2, n_drugs_selective: 0, has_selective_approved: false }), 0.55));
+check('a target with a selective approved drug is NOT discounted',
+  tractabilityDiscount({ n_drugs_promiscuous: 2, n_drugs_selective: 1, has_selective_approved: true }) === 1);
+check('selective but unapproved drugs are discounted only mildly',
+  near(tractabilityDiscount({ n_drugs_promiscuous: 1, n_drugs_selective: 2, has_selective_approved: false }), 0.8));
+check('no promiscuous drugs means no discount',
+  tractabilityDiscount({ n_drugs_promiscuous: 0, n_drugs_selective: 3, has_selective_approved: true }) === 1);
+check('a legacy snapshot without selectivity data is untouched', tractabilityDiscount({}) === 1);
+
 console.log(failures ? `\n${failures} FAILED` : '\nall checks passed');
 process.exit(failures ? 1 : 0);

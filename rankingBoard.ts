@@ -41,7 +41,7 @@ export const CRITERIA: CriterionDef[] = [
       "Dempster JM, et al. Chronos: a cell population dynamics model of CRISPR experiments that improves inference of gene fitness effects. Genome Biol 2021;22:343. PMID 34930405. The algorithm behind the score, not just the portal that serves it.",
     ]
   },
-  { key: 'tractability', label: 'Tractability',  definition: 'How druggable the protein is — whether a therapeutic of the chosen modality can engage it.', source: 'Open Targets tractability',
+  { key: 'tractability', label: 'Tractability',  definition: 'Whether the protein can be engaged by the chosen modality. The Open Targets tractability prediction, discounted where the only approved drugs linked to the target are promiscuous — a compound hitting many proteins is precedent for the compound, not for this target.', source: 'Open Targets tractability',
     citations: [
       "Buniello A, et al. Nucleic Acids Res 2025;53(D1):D1467-D1475. doi:10.1093/nar/gkae1128",
     ]
@@ -207,6 +207,24 @@ export function clinicalDiscount(g: any): number {
   return Math.max(0.25, hard * soft);
 }
 
+// Tractability leans on Open Targets' precomputed score, which reads 1.0 whenever any
+// developed drug linked to the target reached approval. Where the ONLY approved drugs are
+// promiscuous — linked to many targets across this snapshot — that 1.0 is precedent for
+// the compound, not for this target, and the score should fall back towards what we can
+// actually claim: the target is predicted tractable, not clinically validated.
+//
+// The floor matters. Absence of a selective drug is not evidence the protein cannot be
+// drugged, so this never discounts below the tractability PREDICTION, and it returns 1
+// whenever selectivity could not be assessed.
+export function tractabilityDiscount(g: any): number {
+  const promisc = g?.n_drugs_promiscuous, sel = g?.n_drugs_selective;
+  if (promisc == null || sel == null) return 1;          // legacy snapshot: no opinion
+  if (promisc === 0) return 1;                            // nothing promiscuous to discount
+  if (g?.has_selective_approved) return 1;                // a selective approved drug exists: precedent is real
+  if (sel > 0) return 0.8;                                // selective drugs exist but none approved
+  return 0.55;                                            // the ONLY drugs here are promiscuous
+}
+
 export function criterionScores(g: any, opts?: BoardOptions): Record<CriterionKey, number | null> {
   // Discount low-confidence expression (near-zero normal tissue → inflated |log2FC|, e.g. lncRNAs).
   const exprMag = g.expr_log2fc != null ? clamp01(Math.abs(g.expr_log2fc) / 4) * (g.expr_low_conf ? 0.25 : 1) : null;
@@ -230,7 +248,14 @@ export function criterionScores(g: any, opts?: BoardOptions): Record<CriterionKe
     genetics:     blend([[g.genetic_score, 0.6], [g.mutation_freq, 0.4]]),
     expression:   blend([[exprMag, 0.5], [protMag, 0.5]]),
     dependency:   g.chronos != null ? clamp01(-g.chronos) : null,             // Chronos −1 ≈ strong dependency
-    tractability: g.druggability_score != null ? clamp01(g.druggability_score) : null,
+    tractability: (() => {
+      if (g.druggability_score == null) return null;
+      const raw = clamp01(g.druggability_score);
+      // Never fall below what tractability alone supports: a predicted-tractable target
+      // with no selective drug is still a tractable target.
+      const floor = g.tractable_modalities > 0 ? 0.3 : 0;
+      return clamp01(Math.max(raw * tractabilityDiscount(g), Math.min(raw, floor)));
+    })(),
     safety:       loeufTol != null ? clamp01(loeufTol * essPenalty * liabPenalty) : (g.is_common_essential != null ? clamp01(0.5 * essPenalty * liabPenalty) : null),
     clinical:     (() => { const base = blend([[phase, 0.6], [trials, 0.4]]); return base == null ? null : clamp01(base * attrition); })(),
     literature:   literatureScore(g, opts),
@@ -298,6 +323,12 @@ export function criterionBreakdown(key: CriterionKey, g: any, opts?: BoardOption
         metrics: [
           { label: 'OT tractability score', value: num(g.druggability_score), sub: g.druggability_score != null ? clamp01(g.druggability_score) : null, role: 'term', weightPct: 100, kind: 'prediction', note: 'Open Targets — predicted druggability of the protein for the chosen modality.' },
           { label: 'Tractable modalities', value: g.tractable_modalities != null ? String(g.tractable_modalities) : null, role: 'context', kind: 'prediction', note: 'How many modality buckets Open Targets predicts can engage this target.' },
+          { label: 'Selective drugs', value: g.n_drugs_selective != null ? String(g.n_drugs_selective) : null, role: 'context', kind: 'fact', note: `Developed drugs linked to at most ${3} targets across this snapshot — evidence about THIS target.` },
+          { label: 'Promiscuous drugs', value: g.n_drugs_promiscuous != null ? String(g.n_drugs_promiscuous) : null, role: 'context', kind: 'fact', note: 'Drugs linked to many targets in this snapshot. Precedent for the compound, not for this target.' },
+          { label: 'Selectivity discount', value: `\u00d7${tractabilityDiscount(g).toFixed(2)}`, role: 'context', kind: 'fact', note: 'Applied to the tractability score. \u00d71.00 means a selective approved drug exists, or selectivity could not be assessed on this snapshot.' },
+          ...(Array.isArray(g.promiscuous_drugs) && g.promiscuous_drugs.length
+            ? [{ label: 'Which drugs', value: g.promiscuous_drugs.join(', '), role: 'context' as const, kind: 'fact' as const, note: 'The promiscuous compounds, with how many targets each is linked to here.' }]
+            : []),
           { label: 'Proven modalities', value: provenStr, role: 'context', kind: 'fact', note: 'Modalities with a real drug already developed against this target.' },
           { label: 'Compounds in ChEMBL', value: g.n_drugs != null ? String(g.n_drugs) : null, role: 'context', kind: 'fact', note: 'Total known compounds targeting the gene (existence, not efficacy).' },
         ],
