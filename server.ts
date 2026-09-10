@@ -659,7 +659,13 @@ function setupRoutes() {
     for (const m of await hermesModels()) {
       models.push({ id: `hermes:${m.id}`, label: `${m.label} · PLEASER`, upstream: 'hermes', tools: HERMES_TOOL_MODELS.includes(m.id), available: true });
     }
-    res.json({ models, default: GEMINI_CHOICE.id });
+    // Default to whoever is NOT paying personally. OpenAI is the lab's account and PLEASER
+    // is lab-hosted; Gemini is the maintainer's own key, so it is offered but never the
+    // default. Before this the picker opened on Gemini and the client hardcoded it too, so
+    // every user who never touched the dropdown spent a personal key.
+    const glm = models.find((m: any) => m.upstream === 'hermes' && m.tools);
+    const preferred = openaiEnabled() ? OPENAI_CHOICE.id : (glm ? glm.id : GEMINI_CHOICE.id);
+    res.json({ models, default: preferred });
   });
 
   // End a Hermes co-pilot session and delete its chat from the shared PLEASER
@@ -1955,7 +1961,36 @@ function setupRoutes() {
   // web fallback — even while the user was answering on GLM and even though Europe PMC had
   // already handed over the full text. One exhausted key should not take out capability
   // that another configured provider can supply, so each of them now falls back to Gemini.
+  // WHO PAYS. These are not interchangeable and the difference is money:
+  //   OpenAI  — the research lab's account. Free at the point of use for us.
+  //   PLEASER — GLM, hosted by the lab. Free.
+  //   Gemini  — the maintainer's PERSONAL key.
+  //
+  // An earlier version of this fell back to Gemini automatically whenever OpenAI was out
+  // of quota. That worked, and quietly spent someone's own money to do it. Automatic
+  // fallback now goes to the free upstream, and Gemini is used only when explicitly
+  // permitted. Picking Gemini in the model dropdown is still fine: that is a choice.
   const geminiEnabled = (): boolean => !!process.env.GEMINI_API_KEY;
+  const geminiFallbackAllowed = (): boolean =>
+    geminiEnabled() && /^(1|true|yes)$/i.test(String(process.env.ALLOW_GEMINI_FALLBACK || ''));
+
+  // Free extraction path: one throwaway PLEASER chat, ask for JSON, parse, delete.
+  // Slower than a direct API call (three round trips) and costs nothing.
+  async function glmJson(prompt: string): Promise<any> {
+    if (!hermes.hermesEnabled()) return { error: 'PLEASER is not configured on this server' };
+    let chatId = '';
+    try {
+      chatId = await hermes.createChat('D2T extract');
+      const raw = await hermes.sendMessage(chatId, prompt, process.env.PLEASER_EXTRACT_MODEL || 'glm-air', 180_000);
+      const m = String(raw || '').match(/\{[\s\S]*\}/);
+      if (!m) return { error: 'PLEASER returned no structured result' };
+      try { return JSON.parse(m[0]); } catch { return { error: 'unparseable PLEASER result', raw: m[0].slice(0, 300) }; }
+    } catch (e: any) {
+      return { error: `PLEASER unreachable: ${String(e?.message || e).slice(0, 140)}` };
+    } finally {
+      if (chatId) { try { await hermes.deleteChat(chatId); } catch { /* best effort */ } }
+    }
+  }
 
   async function geminiJson(prompt: string, timeoutMs = 90_000): Promise<any> {
     if (!geminiEnabled()) return { error: 'GEMINI_API_KEY is not configured on this server' };
@@ -2049,10 +2084,11 @@ ${text}`;
   // Retrieval already succeeded by the time this runs, so failing here would throw away a
   // paper we hold in hand. Try the other provider before giving up.
   async function extractPaper(text: string, meta: any, focus?: string): Promise<any> {
+    let firstError: any = null;
     if (openaiEnabled()) {
       const viaOpenAi = await extractFromText(text, meta, focus);
       if (viaOpenAi && !viaOpenAi.error) return viaOpenAi;
-      if (!geminiEnabled()) return viaOpenAi;
+      firstError = viaOpenAi;
     }
     const prompt = `Below is the full text of a scientific paper${meta?.title ? `, "${meta.title}"` : ''}.
 ${focus ? `Pay particular attention to: ${focus}\n` : ''}
@@ -2062,7 +2098,14 @@ Rules: fill every field only from the text below. Where the paper does not repor
 
 FULL TEXT:
 ${text}`;
-    return geminiJson(prompt);
+    // Free upstream next, so an exhausted lab key costs nothing to work around.
+    if (hermes.hermesEnabled()) {
+      const viaGlm = await glmJson(prompt);
+      if (viaGlm && !viaGlm.error) return viaGlm;
+      firstError = firstError || viaGlm;
+    }
+    if (geminiFallbackAllowed()) return geminiJson(prompt);
+    return firstError || { error: 'no extraction upstream available. OpenAI and PLEASER both failed; Gemini is a personal key and is not used automatically (set ALLOW_GEMINI_FALLBACK=1 to permit it).' };
   }
 
   // Fallback for anything PubMed Central does not hold: preprints outside PMC, conference
@@ -2073,6 +2116,9 @@ ${text}`;
     if (!ref) return { error: 'no usable identifier for the paper' };
     const model = process.env.OPENAI_SEARCH_MODEL || 'gpt-4.1-mini';
     if (!openaiEnabled()) {
+      if (!geminiFallbackAllowed()) {
+        return { error: 'cannot read this paper from the web: it is not in PubMed Central, and the OpenAI key that performs web reads is unavailable. Gemini could do it but runs on a personal key and is not used automatically. Say the full text could not be retrieved rather than guessing at its contents.' };
+      }
       const g = await geminiSearch(ref, `Find and read this paper on the web, then reply with ONE JSON object and nothing else in exactly this shape:\n${PAPER_SCHEMA.slice(0, -1)},"source_url":"the page you actually read this from","page_kind":"peer-reviewed article | conference abstract | preprint | publisher landing page | news"}\nFill every field only from what the pages actually say; write exactly "none reported" where a page does not report something.${focus ? ` Pay particular attention to: ${focus}.` : ''}`);
       if (g.error) return g;
       const gm = String(g.text || '').match(/\{[\s\S]*\}/);
@@ -2253,7 +2299,18 @@ Rules: fill every field only from what the pages actually say. Where the page do
     if (name === 'search_web') {
       const query = String(args?.query || '').trim();
       if (!query) return { error: 'give a query' };
-      if (!openaiEnabled()) return { error: 'web search is unavailable: OPENAI_API_KEY is not configured on this server' };
+      if (!openaiEnabled()) {
+        // Only OpenAI's hosted tool and Gemini's grounding can search the web here, and
+        // Gemini is a personal key. Fail clearly rather than spending it or pretending.
+        if (!geminiFallbackAllowed()) {
+          return { error: 'web search is unavailable: the OpenAI key that performs it is not configured or is out of quota. Gemini could search but runs on a personal key and is not used automatically (ALLOW_GEMINI_FALLBACK=1 permits it). Tell the user web search is unavailable right now, answer from the tiers you can reach, and do not fill the gap from memory.' };
+        }
+        const g = await geminiSearch(query, 'Search the web and report what you find. Report only what the pages actually say, with titles, dates and identifiers where shown. If you find nothing, say so plainly.');
+        if (g.error) return g;
+        return { query, searches_run: 1, summary: g.text || '(no findings returned)', sources: g.sources || [],
+          source: 'open web, live search via Gemini grounding',
+          how_to_read: 'The WEAKEST evidence tier available here. Give the reader the URL for anything taken from this, and never let a web result change a board rank.' };
+      }
       // A small model does this job as well as the answering model and costs a quarter as
       // much. Measured on the same query: gpt-4.1-mini found the target page in 3.0s for
       // 8,330 tokens, gpt-4o-mini in 4.0s for 8,336, gpt-4o for 17,607, and gpt-5.6-luna

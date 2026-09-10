@@ -3743,7 +3743,11 @@ const App = () => {
         if (!r.ok) return;
         const j = await r.json();
         if (Array.isArray(j.models)) setAiModels(j.models);
-      } catch { /* picker just stays on Gemini */ }
+        // Honour the server's default. It picks an upstream the lab pays for, which the
+        // client cannot know. Ignoring it is how the co-pilot ended up opening on a
+        // personal Gemini key for every user who never touched the dropdown.
+        if (j.default && Array.isArray(j.models) && j.models.some((m: any) => m.id === j.default)) setAiModel(j.default);
+      } catch { /* keep whatever the picker is on */ }
     })();
   }, [isAuthenticated]);
 
