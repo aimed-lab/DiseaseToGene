@@ -967,7 +967,10 @@ function setupRoutes() {
       ok: true,
       uptimeSeconds: Math.round(process.uptime()),
       readPath: ordsReadEnabled() ? 'ords' : (oracleStoreEnabled() ? 'oracle' : 'none'),
-      writesEnabled: oracleStoreEnabled(),
+      // Always false: the HTTP API has no write endpoints any more. Kept as a field so
+      // anything already reading it gets a truthful answer rather than a missing key.
+      // Data is written by scripts/d2t.ts, which talks to Oracle directly.
+      writesEnabled: false,
     });
   });
 
@@ -983,19 +986,16 @@ function setupRoutes() {
     }
   });
 
-  // Save a ranking snapshot (header + per-gene scores + audit) to Oracle
-  app.post("/api/snapshots", requireUser, express.json({ limit: "12mb" }), async (req, res) => {
-    if (!oracleStoreEnabled()) return res.status(503).json({ ok: false, error: "Oracle store disabled" });
-    try {
-      const svc = await oracleSvc();
-      const r = await svc.saveSnapshot({ ...req.body, created_by: (req as any).appUser?.id ?? null });
-      res.json({ ok: true, ...r });
-    } catch (e: any) {
-      res.status(502).json({ ok: false, error: e.message });
-    }
-  });
 
   // List snapshots (metadata only)
+  // ── Write endpoints removed ─────────────────────────────────────────────────
+  // POST /api/snapshots, DELETE /api/snapshots/:id, POST /api/evidence and
+  // POST /api/harvest wrote into Oracle from the browser. The deployed app cannot reach
+  // Oracle at all, so they answered 503 there, and locally they duplicated what
+  // scripts/d2t.ts already does directly through oracleService. The web app is read-only.
+  //
+  // GET /api/snapshots stays: reading is the whole point.
+
   app.get("/api/snapshots", requireUser, async (req, res) => {
     if (!readStoreEnabled()) return res.status(503).json({ error: "Oracle store disabled" });
     try {
@@ -1019,17 +1019,6 @@ function setupRoutes() {
     }
   });
 
-  // Delete a snapshot
-  app.delete("/api/snapshots/:id", requireUser, async (req, res) => {
-    if (!oracleStoreEnabled()) return res.status(503).json({ error: "Oracle store disabled" });
-    try {
-      const svc = await oracleSvc();
-      await svc.deleteSnapshot(Number(req.params.id), (req as any).appUser?.id);
-      res.json({ ok: true });
-    } catch (e: any) {
-      res.status(502).json({ error: e.message });
-    }
-  });
 
   // Per-gene scores for a snapshot (Rankings dashboard)
   app.get("/api/snapshots/:id/scores", requireUser, async (req, res) => {
@@ -1426,17 +1415,6 @@ function setupRoutes() {
     } catch (e: any) { res.status(502).json({ error: e.message }); }
   });
 
-  // Save paper-derived evidence cards to Oracle (EVIDENCE table)
-  app.post("/api/evidence", requireUser, express.json({ limit: "12mb" }), async (req, res) => {
-    if (!oracleStoreEnabled()) return res.status(503).json({ ok: false, error: "Oracle store disabled" });
-    try {
-      const svc = await oracleSvc();
-      const r = await svc.saveEvidenceCards(req.body?.cards || [], (req as any).appUser?.id);
-      res.json({ ok: true, ...r });
-    } catch (e: any) {
-      res.status(502).json({ ok: false, error: e.message });
-    }
-  });
 
   // Gene symbols that have stored evidence (for the EVIDENCE badge)
   app.get("/api/evidence/genes", requireUser, async (req, res) => {
@@ -1460,18 +1438,6 @@ function setupRoutes() {
     }
   });
 
-  // Harvest → snapshot + per-gene scores + per-source evidence
-  app.post("/api/harvest", requireUser, express.json({ limit: "25mb" }), async (req, res) => {
-    if (!oracleStoreEnabled()) return res.status(503).json({ ok: false, error: "Oracle store disabled" });
-    try {
-      const svc = await oracleSvc();
-      const r = await svc.saveHarvest({ ...req.body, created_by: (req as any).appUser?.id ?? null });
-      res.json({ ok: true, ...r });
-    } catch (e: any) {
-      console.error("[/api/harvest] FAILED:", e);
-      res.status(502).json({ ok: false, error: e.message });
-    }
-  });
 
   // ── External API Proxy ───────────────────────────────────────────────────────
 

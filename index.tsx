@@ -126,7 +126,7 @@ import { boardSnapshotBlock, getActiveBoardSnapshot, screenContext } from './boa
 import { getLastModalityResult } from './modalityStore';
 import { getCbioMutations } from './cbioportalService';
 import { getChEMBLDruggability } from './chemblService';
-import { supabase, authenticatedFetch, clearSupabaseSessionStorage, getInitialSession, sendPasswordReset, updatePassword, fetchGlobalWeights, saveGlobalWeights, fetchUserProfile, updateUserProfile, saveRankingSnapshot, fetchSnapshots, fetchSnapshot, deleteSnapshot, savePaper, fetchEvidenceGeneSymbols, saveHarvest, type HarvestRow, type RankingSnapshotMeta } from './supabase';
+import { supabase, authenticatedFetch, clearSupabaseSessionStorage, getInitialSession, sendPasswordReset, updatePassword, fetchGlobalWeights, saveGlobalWeights, fetchUserProfile, updateUserProfile, fetchSnapshots, fetchSnapshot, fetchEvidenceGeneSymbols, type HarvestRow, type RankingSnapshotMeta } from './supabase';
 import {
   Target,
   DrugInfo,
@@ -3517,75 +3517,9 @@ const App = () => {
   // ── Harvest: fetch each loaded gene's full evidence and store it in Oracle ──
   // (one snapshot + per-gene ranking_scores + per-source evidence). Reuses the
   // same fetch functions the gene drill-down uses; posts the batch to /api/harvest.
-  const [harvesting, setHarvesting] = useState(false);
-  const [harvestProgress, setHarvestProgress] = useState<{ done: number; total: number } | null>(null);
   const [loadTotal, setLoadTotal] = useState('');
   const [addGeneInput, setAddGeneInput] = useState('');
   const [addGeneBusy, setAddGeneBusy] = useState(false);
-  const handleHarvest = useCallback(async () => {
-    const disease = researchState.activeDisease;
-    const genes = researchState.targets;
-    if (!disease || genes.length === 0 || harvesting) return;
-    setHarvesting(true);
-    setHarvestProgress({ done: 0, total: genes.length });
-    const today = new Date().toISOString().slice(0, 10);
-    const rows: HarvestRow[] = [];
-    for (let i = 0; i < genes.length; i++) {
-      const t = genes[i];
-      try {
-        const [dd, chembl, mut] = await Promise.all([
-          t.drillDown ? Promise.resolve(t.drillDown) : api.getDrillDownData(t.symbol, disease.name).catch(() => undefined),
-          getChEMBLDruggability(t.symbol).catch(() => null),
-          getCbioMutations(t.symbol, disease.name).catch(() => null),
-        ]);
-        const drillDown: DrillDownData | undefined = dd as DrillDownData | undefined;
-        rows.push({
-          gene_symbol: t.symbol,
-          rank: i + 1,
-          get_scores: {
-            overallScore: t.overallScore, getScore: t.getScore, geneticScore: t.geneticScore,
-            expressionScore: t.expressionScore, combinedExpression: t.combinedExpression,
-            targetScore: t.targetScore, literatureScore: t.literatureScore,
-            tauTissue: t.tauTissue, tauSingleCell: t.tauSingleCell, finalScore: t.finalScore,
-            pubTatorScore: t.pubTatorScore, pubTatorVelocity: t.pubTatorVelocity,
-            bimodalityMax: t.bimodalityScores?._max_score, bimodalityTissue: t.bimodalityScores?._max_tissue,
-          },
-          clinical: drillDown ? {
-            trial_count: drillDown.trial_count, max_phase: drillDown.max_phase,
-            active_trial_present: drillDown.active_trial_present,
-            interventional_count: drillDown.interventional_count,
-            phase_breakdown: drillDown.phase_breakdown, top_drugs: drillDown.top_drugs,
-            top_conditions: drillDown.top_conditions, clinical_summary: drillDown.clinical_summary,
-          } : null,
-          literature: drillDown ? {
-            paper_count: drillDown.paper_count, recent_paper_count: drillDown.recent_paper_count,
-            epmc_velocity: drillDown.epmc_velocity, epmc_top_paper: drillDown.epmc_top_paper,
-            total_signals: drillDown.total_signals, recent_signals: drillDown.recent_signals,
-            signal_velocity: drillDown.signal_velocity, top_papers: drillDown.top_papers,
-            latest_publication_date: drillDown.latest_publication_date,
-          } : null,
-          chembl: chembl,
-          mutations: mut && !mut.error ? mut : null,
-          retrieved: today,
-        });
-      } catch { /* skip gene on hard failure, keep going */ }
-      setHarvestProgress({ done: i + 1, total: genes.length });
-      await new Promise(r => setTimeout(r, 120)); // polite gap between genes
-    }
-    const res = await saveHarvest({
-      disease_id: disease.id,
-      disease_name: disease.name,
-      weights: researchState.weights,
-      provenance: { sources: ['Open Targets', 'ClinicalTrials.gov', 'PubMed/EuropePMC/PubTator', 'ChEMBL', 'cBioPortal'], retrieved: today, harvested_by: 'client-harvest' },
-      rows,
-    });
-    setHarvesting(false);
-    setHarvestProgress(null);
-    setMessages(prev => [...prev, { role: 'assistant', content: res.ok
-      ? `Harvest complete — stored ${res.scores ?? rows.length} gene(s) and ${res.evidence ?? 0} evidence record(s) in Oracle for ${disease.name} (snapshot Tier ${res.version}).`
-      : `Harvest failed: ${res.error}`,
-      timestamp: new Date() }]);
-  }, [researchState.activeDisease, researchState.targets, researchState.weights, harvesting]);
 
   // Fast multi-page gene loader — pulls N pages of Open Targets genes (scores only,
   // no per-gene clinical enrichment) so you can build a larger universe quickly for
@@ -3827,55 +3761,6 @@ const App = () => {
   const [snapshotsLoading, setSnapshotsLoading] = useState(false);
 
   // Save the current disease ranking as a versioned, traceable snapshot
-  const handleSaveSnapshot = async () => {
-    const disease = researchState.activeDisease;
-    if (!disease || !researchState.targets.length) {
-      setSnapshotToast({ ok: false, msg: 'Load a disease and its targets first.' });
-      setTimeout(() => setSnapshotToast(null), 3500);
-      return;
-    }
-    setSnapshotSaving(true);
-    try {
-      const targets = researchState.targets.map(t => ({
-        symbol: t.symbol, name: t.name,
-        overallScore: t.overallScore, geneticScore: t.geneticScore,
-        expressionScore: t.expressionScore, combinedExpression: t.combinedExpression,
-        targetScore: t.targetScore, getScore: t.getScore, literatureScore: t.literatureScore,
-        tauTissue: t.tauTissue, tauSingleCell: t.tauSingleCell,
-        bimodalityMax: t.bimodalityScores?._max_score, bimodalityTissue: t.bimodalityScores?._max_tissue,
-        pubTatorScore: t.pubTatorScore,
-        drillDown: t.drillDown ? {
-          trial_count: t.drillDown.trial_count, max_phase: t.drillDown.max_phase,
-          active_trial_present: t.drillDown.active_trial_present,
-          paper_count: t.drillDown.paper_count, recent_paper_count: t.drillDown.recent_paper_count,
-          total_signals: t.drillDown.total_signals, recent_signals: t.drillDown.recent_signals,
-        } : null,
-        pathways: t.pathways?.slice(0, 5).map(p => p.label),
-      }));
-      const provenance = {
-        app: 'DiseaseToTarget',
-        generated_by: currentUser?.username || 'unknown',
-        retrieved_at: new Date().toISOString(),
-        sources: ['Open Targets', 'ChEMBL', 'PubMed', 'Europe PMC', 'PubTator', 'ClinicalTrials.gov', 'Human Protein Atlas'],
-        get_formula: 'GET = G×0.50 + E×0.25 + T×0.25',
-      };
-      const res = await saveRankingSnapshot({
-        disease_id: disease.id, disease_name: disease.name,
-        weights: researchState.weights, gene_count: targets.length,
-        provenance, targets,
-      });
-      if (res.ok) {
-        setSnapshotToast({ ok: true, msg: `Saved snapshot Tier ${res.version} — ${targets.length} targets for ${disease.name}.` });
-      } else {
-        setSnapshotToast({ ok: false, msg: res.error || 'Save failed.' });
-      }
-    } catch (e: any) {
-      setSnapshotToast({ ok: false, msg: e?.message || 'Save failed.' });
-    } finally {
-      setSnapshotSaving(false);
-      setTimeout(() => setSnapshotToast(null), 4500);
-    }
-  };
 
   const openHistory = async () => {
     setHistoryOpen(true);
@@ -3919,9 +3804,6 @@ const App = () => {
     }
   };
 
-  const handleDeleteSnapshot = async (id: string) => {
-    try { await deleteSnapshot(id); setSnapshots(prev => prev.filter(s => s.id !== id)); } catch { /* ignore */ }
-  };
   const [focusSubPage, setFocusSubPage] = useState<'main' | 'literature' | 'clinical'>('main');
 
   useEffect(() => {
@@ -4122,32 +4004,14 @@ CRITICAL RULES:
             key_finding:      c.key_finding ?? null,
             source_quote:     c.source_quote ?? null,
           }));
-          const saveRes = await savePaper({
-            title:          parsed.title || file.name,
-            authors:        parsed.authors ?? null,
-            journal:        parsed.journal ?? null,
-            year:           parsed.year ?? null,
-            doi:            parsed.doi ?? null,
-            url:            null,
-            study_type:     parsed.study_type ?? null,
-            sample_size:    parsed.sample_size ?? null,
-            key_finding:    parsed.key_finding ?? null,
-            conclusion:     parsed.conclusion ?? null,
-            raw_extraction: parsed,
-          }, cards);
-          if (saveRes.ok) { savedCount += 1; savedCards += saveRes.cardCount ?? 0; }
-          else saveError = saveRes.error || saveError;
         } catch (e: any) {
           saveError = e?.message || saveError;
         }
       }
       setResearchState(prev => ({ ...prev, paperResults: [...newResults, ...prev.paperResults] }));
       setViewMode('paper');
-      const saveNote = savedCount > 0
-        ? ` Saved ${savedCount} paper(s) and ${savedCards} evidence card(s) to the content store.`
-        : saveError
-          ? ` (Not stored: ${saveError} — has the papers/evidence_cards SQL been run in Supabase?)`
-          : '';
+      // Nothing is written to the store any more; the extraction is shown, not saved.
+      const saveNote = '';
       setMessages(prev => [...prev, { role: 'assistant', content: `Successfully analyzed ${files.length} paper(s). Switched to PAPER view to show extracted intelligence.${saveNote}`, timestamp: new Date() }]);
     } catch (err: any) {
       setMessages(prev => [...prev, { role: 'assistant', content: `Error analyzing papers: ${err.message}`, timestamp: new Date() }]);
@@ -6209,18 +6073,6 @@ ${modalityResultBlock(getLastModalityResult()) || '      (No modality analysis h
                           <div className="flex flex-wrap items-center gap-2">
                             <h3 className={`text-[12px] font-black uppercase tracking-widest ${theme === 'dark' ? 'text-slate-100' : 'text-slate-950'}`}>Target prioritization matrix</h3>
                             <span className="rounded-full bg-blue-600/10 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-blue-600 dark:text-blue-400">{displayTargets.length} targets</span>
-                            {researchState.activeDisease && researchState.targets.length > 0 && (
-                              <button
-                                onClick={handleHarvest}
-                                disabled={harvesting}
-                                title="Fetch & store the full evidence profile (scores, clinical, literature, ChEMBL, mutations) for all loaded genes into the content store"
-                                className="rounded-full px-2.5 py-0.5 text-[9px] font-black uppercase tracking-widest flex items-center gap-1.5 transition-all bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-60"
-                              >
-                                {harvesting
-                                  ? <><Loader2 className="w-3 h-3 animate-spin" />Harvesting {harvestProgress?.done ?? 0}/{harvestProgress?.total ?? 0}</>
-                                  : <><Database className="w-3 h-3" />Harvest to DB ({researchState.targets.length})</>}
-                              </button>
-                            )}
                           </div>
                           {(researchState.filters.length > 0 || activeCancerType) && (
                             <div className="flex flex-wrap items-center gap-2">
@@ -6288,10 +6140,6 @@ ${modalityResultBlock(getLastModalityResult()) || '      (No modality analysis h
                                   <div className="p-1.5 rounded-md bg-orange-50 dark:bg-orange-900/20"><FileDown className="w-3.5 h-3.5 text-orange-500" /></div>
                                   <span>All Metrics CSV...</span>
                                 </button>
-                                <button onClick={() => { handleSaveSnapshot(); setIsExportDropdownOpen(false); }} disabled={snapshotSaving} className="w-full px-4 py-3 text-left text-[11px] font-semibold hover:bg-neutral-50 dark:hover:bg-neutral-800 flex items-center gap-3 border-b border-neutral-100 dark:border-neutral-800 transition-colors text-neutral-700 dark:text-neutral-300 disabled:opacity-50">
-                                  <div className="p-1.5 rounded-md bg-purple-50 dark:bg-purple-900/20">{snapshotSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin text-purple-500" /> : <Database className="w-3.5 h-3.5 text-purple-500" />}</div>
-                                  <span>Save Snapshot</span>
-                                </button>
                                 <button onClick={() => { openHistory(); setIsExportDropdownOpen(false); }} className="w-full px-4 py-3 text-left text-[11px] font-semibold hover:bg-neutral-50 dark:hover:bg-neutral-800 flex items-center gap-3 transition-colors text-neutral-700 dark:text-neutral-300">
                                   <div className="p-1.5 rounded-md bg-slate-100 dark:bg-slate-800"><BookOpen className="w-3.5 h-3.5 text-slate-500" /></div>
                                   <span>Ranking History</span>
@@ -6342,7 +6190,6 @@ ${modalityResultBlock(getLastModalityResult()) || '      (No modality analysis h
                                       </div>
                                       <div className="flex items-center gap-1.5 flex-shrink-0">
                                         <button onClick={() => handleLoadSnapshot(s.id)} className="px-3 py-1.5 rounded-lg text-[10px] font-bold bg-blue-600 text-white hover:bg-blue-700 transition-colors">Load</button>
-                                        <button onClick={() => handleDeleteSnapshot(s.id)} title="Delete" className={`p-1.5 rounded-lg ${theme === 'dark' ? 'hover:bg-slate-800 text-slate-500' : 'hover:bg-slate-200 text-slate-400'}`}><Trash2 className="w-3.5 h-3.5" /></button>
                                       </div>
                                     </div>
                                   ))}

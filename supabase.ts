@@ -213,18 +213,6 @@ export interface NewRankingSnapshot {
 // Signatures unchanged so callers (index.tsx) don't change. ids are coerced to
 // strings (Oracle uses numeric ids).
 
-export async function saveRankingSnapshot(s: NewRankingSnapshot): Promise<{ ok: boolean; version?: number; error?: string }> {
-  try {
-    const res = await authenticatedFetch('/api/snapshots', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(s),
-    });
-    const data = await res.json().catch(() => ({} as any));
-    if (!res.ok || data.ok === false) return { ok: false, error: data.error || `Request failed (HTTP ${res.status})` };
-    return { ok: true, version: data.version };
-  } catch (e: any) {
-    return { ok: false, error: e.message };
-  }
-}
 
 export async function fetchSnapshots(diseaseId?: string): Promise<RankingSnapshotMeta[]> {
   try {
@@ -249,11 +237,6 @@ export async function fetchSnapshot(id: string): Promise<RankingSnapshot | null>
   }
 }
 
-export async function deleteSnapshot(id: string): Promise<void> {
-  try {
-    await authenticatedFetch(`/api/snapshots/${encodeURIComponent(id)}`, { method: 'DELETE' });
-  } catch { /* ignore */ }
-}
 
 // Per-gene scores for a snapshot (Rankings dashboard). Reads Oracle.
 export async function fetchSnapshotScores(id: string): Promise<Record<string, unknown>[]> {
@@ -317,38 +300,6 @@ export interface EvidenceCardRow extends NewEvidenceCard {
   created_at: string;
 }
 
-// Save paper-derived evidence → Oracle EVIDENCE (evidence_type='paper').
-// Each card's full object is kept in value_json so the Stored Evidence panel can
-// reconstruct it. (Signature unchanged so callers don't change.)
-export async function savePaper(
-  paper: NewPaper,
-  cards: NewEvidenceCard[],
-): Promise<{ ok: boolean; cardCount?: number; error?: string }> {
-  const valid = cards.filter(c => c.gene_symbol);
-  if (valid.length === 0) return { ok: true, cardCount: 0 };
-  const sourceUrl = paper.doi ? `https://doi.org/${paper.doi}` : (paper.url || null);
-  const evidence = valid.map(c => ({
-    disease_id: c.disease || 'unknown',
-    gene_symbol: c.gene_symbol,
-    evidence_type: 'paper',
-    source: paper.title || c.drug || 'paper',
-    source_url: sourceUrl,
-    value_text: c.source_quote || c.key_finding || null,
-    value_json: { ...c, paper_title: paper.title, paper_doi: paper.doi, paper_journal: paper.journal, paper_year: paper.year },
-    generated_by: 'paper extraction (Gemini)',
-    audit_status: 'AI-extracted',
-  }));
-  try {
-    const res = await authenticatedFetch('/api/evidence', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cards: evidence }),
-    });
-    const data = await res.json().catch(() => ({} as any));
-    if (!res.ok || data.ok === false) return { ok: false, error: data.error || `Request failed (HTTP ${res.status})` };
-    return { ok: true, cardCount: data.count ?? evidence.length };
-  } catch (e: any) {
-    return { ok: false, error: e.message };
-  }
-}
 
 // Gene symbols that have stored evidence (for the EVIDENCE badge). Reads Oracle.
 export async function fetchEvidenceGeneSymbols(disease?: string): Promise<Set<string>> {
@@ -396,17 +347,8 @@ export interface HarvestRow {
   retrieved?:  string | null;
 }
 
-export async function saveHarvest(input: {
-  disease_id: string; disease_name: string; weights?: unknown; provenance?: unknown; rows: HarvestRow[];
-}): Promise<{ ok: boolean; version?: number; scores?: number; evidence?: number; error?: string }> {
-  try {
-    const res = await authenticatedFetch('/api/harvest', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input),
-    });
-    const data = await res.json().catch(() => ({} as any));
-    if (!res.ok || data.ok === false) return { ok: false, error: data.error || `Request failed (HTTP ${res.status})` };
-    return { ok: true, version: data.version, scores: data.scores, evidence: data.evidence };
-  } catch (e: any) {
-    return { ok: false, error: e.message };
-  }
-}
+
+// ── Writes removed ───────────────────────────────────────────────────────────
+// saveRankingSnapshot, deleteSnapshot, savePaper and saveHarvest lived here. The web
+// app is read-only now: everything that writes to Oracle runs from scripts/d2t.ts,
+// which reaches oracleService directly and never used these HTTP paths.
