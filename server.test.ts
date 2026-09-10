@@ -8,7 +8,7 @@
 // the test fails against a dev server that is merely already running.
 process.env.VERCEL = '1';
 
-const { pickSnapshot } = await import('./server.ts');
+const { pickSnapshot, truncatedBeforeAnswer } = await import('./server.ts');
 
 let failures = 0;
 function check(name: string, got: unknown, want: unknown) {
@@ -60,6 +60,37 @@ check('blank and whitespace-only names are ignored', pick('   ', '  ', 87), 87);
 check('an empty store yields nothing', pickSnapshot([], 'pancreatic', 'glioblastoma', 123), undefined);
 check('a missing store yields nothing', pickSnapshot(undefined as any), undefined);
 check('an id that is not held falls back to newest', pick(undefined, undefined, 999), 123);
+
+// ── A reasoning model's empty answer is not an answer ──
+// dsv4-nk (ASAX) writes chain-of-thought to `reasoning_content`, and that is charged
+// against max_tokens BEFORE any reply is composed. Measured: at max_tokens 64 it returned
+// finish_reason "length" with content "" over HTTP 200 and no error field. Returned
+// verbatim that renders as a blank co-pilot reply with nothing in the logs to explain it,
+// so oaiChat retries with four times the budget and then fails loudly.
+//
+// The distinction being pinned here is the one that would break the tool loop if it were
+// wrong: a turn carrying tool_calls and no prose is NORMAL — the loop wants exactly that —
+// and must never be retried as though it had been truncated.
+const tb = truncatedBeforeAnswer;
+check('length + empty content is a budget problem',
+  tb({ finish_reason: 'length', message: { content: '' } }), true);
+check('length + whitespace-only content is a budget problem',
+  tb({ finish_reason: 'length', message: { content: '    ' } }), true);
+check('length + missing content is a budget problem',
+  tb({ finish_reason: 'length', message: {} }), true);
+
+check('stop + empty content is a real answer, not truncation',
+  tb({ finish_reason: 'stop', message: { content: '' } }), false);
+check('length + partial content is truncation we keep, not a retry',
+  tb({ finish_reason: 'length', message: { content: 'PHGDH is' } }), false);
+
+check('length + tool_calls and no prose is a normal tool turn',
+  tb({ finish_reason: 'length', message: { content: '', tool_calls: [{ id: 'c1' }] } }), false);
+check('tool_calls finish_reason is never a budget problem',
+  tb({ finish_reason: 'tool_calls', message: { content: '', tool_calls: [{ id: 'c1' }] } }), false);
+
+check('a missing choice is not treated as truncation', tb(undefined), false);
+check('an empty choice is not treated as truncation', tb({}), false);
 
 console.log(failures ? `\n${failures} FAILED` : '\nall checks passed');
 process.exit(failures ? 1 : 0);

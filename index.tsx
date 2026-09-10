@@ -3666,7 +3666,13 @@ const App = () => {
   // glossary as a term INDEX plus a lookup tool instead of ~24,000 inlined characters.
   // PLEASER replays the whole transcript each turn; the OpenAI key allows 10k tokens a
   // minute on some models, and the inlined blocks alone pushed one question to 10,617.
-  const compactReference = upstreamIsHermes || activeModel?.upstream === 'openai';
+  // ASAX belongs here for a different reason: it is a reasoning model on shared GPUs, so
+  // a bigger prompt costs thinking time on every turn. It must also be listed because the
+  // SERVER already assumes it — the ASAX branch shares OpenAI's loop, which always attaches
+  // lookup_reference. Leaving it out sends the glossary inline AND the tool to fetch it.
+  const compactReference = upstreamIsHermes
+    || activeModel?.upstream === 'openai'
+    || activeModel?.upstream === 'asax';
 
   useEffect(() => {
     if (!isAuthenticated) return;

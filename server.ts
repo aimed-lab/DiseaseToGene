@@ -269,6 +269,43 @@ const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
 const openaiEnabled = (): boolean => !!process.env.OPENAI_API_KEY;
 const OPENAI_CHOICE = { id: 'openai', label: `OpenAI ${OPENAI_MODEL}`, upstream: 'openai' as const, tools: true };
 
+// ── ASAX upstream ─────────────────────────────────────────────────────────────
+// dsv4-nk, running on the Alabama Supercomputer's GPUs and published over Tailscale
+// Funnel, so it is reachable from Vercel without joining a tailnet. Lab-hosted:
+// FREE at the point of use, like PLEASER and unlike Gemini.
+//
+// It is OpenAI-compatible down to tool_calls and tool_call_id — measured, not assumed
+// (correct arguments, valid ids, and it cited an NCT id handed back in a tool result
+// rather than inventing one). So it runs the SAME loop as OpenAI instead of a parallel
+// one, which is the whole reason it is worth adding rather than merely possible.
+//
+// It is a REASONING model, and that is the trap. Chain-of-thought goes to a
+// non-standard `reasoning_content` field and is charged against max_tokens BEFORE
+// any answer is written. Measured on "is PHGDH a credible target in glioblastoma?":
+//   max_tokens   64 → finish_reason "length", content ""                (254 chars reasoning)
+//   max_tokens  256 → finish_reason "length", content truncated mid-sentence
+//   max_tokens  512 → finish_reason "stop",   content complete          (1,093 chars reasoning)
+// An empty answer arrives as HTTP 200 with no error field, so a budget that is merely
+// too small is indistinguishable from a model with nothing to say. Hence the generous
+// default below and the guard in oaiChat: silence must not be mistaken for an answer.
+const ASAX_MODEL = process.env.ASAX_MODEL || 'dsv4-nk';
+const ASAX_BASE_URL = (process.env.ASAX_BASE_URL || '').replace(/\/+$/, '');
+const ASAX_MAX_TOKENS = Number(process.env.ASAX_MAX_TOKENS) || 2048;
+const asaxEnabled = (): boolean => !!(ASAX_BASE_URL && process.env.ASAX_API_KEY);
+const ASAX_CHOICE = { id: 'asax', label: `ASAX ${ASAX_MODEL}`, upstream: 'asax' as const, tools: true };
+
+/** An OpenAI-compatible chat upstream. `key` is read at call time, not at import,
+ *  so a redeploy that changes the env does not need a code change to be picked up. */
+type OaiCfg = { id: string; label: string; url: string; key: () => string; model: string; maxTokens?: number };
+const OPENAI_CFG: OaiCfg = {
+  id: 'openai', label: 'OpenAI', url: 'https://api.openai.com/v1',
+  key: () => process.env.OPENAI_API_KEY || '', model: OPENAI_MODEL,
+};
+const asaxCfg = (): OaiCfg => ({
+  id: 'asax', label: `ASAX ${ASAX_MODEL}`, url: ASAX_BASE_URL,
+  key: () => process.env.ASAX_API_KEY || '', model: ASAX_MODEL, maxTokens: ASAX_MAX_TOKENS,
+});
+
 // Gemini declares tool parameters with UPPERCASE types (OBJECT / STRING / ARRAY);
 // OpenAI wants lowercase JSON Schema. One converter so the SAME tool definitions
 // serve both upstreams and cannot drift apart.
@@ -286,31 +323,92 @@ const toOpenAiTools = (tools: any[]) => tools.map((t: any) => ({
 }));
 export const safeArgs = (s: any): any => { try { return typeof s === 'string' ? JSON.parse(s || '{}') : (s || {}); } catch { return {}; } };
 
-/** One OpenAI chat-completions round trip, with the two retries this account actually needs.
+/** A reasoning model can spend its whole token budget thinking and still return HTTP 200
+ *  with an empty answer — the thinking goes to `reasoning_content`, which is charged but
+ *  is not the reply. That is NOT the same as a model choosing to say nothing, and the
+ *  difference matters: one is a budget we control, the other is a real answer.
  *
- *  429: the key allows 50 requests a minute, and ONE co-pilot answer is several requests (a
- *  tool loop spends one per step), so a burst can trip the window. We wait out Retry-After
- *  and try again rather than surfacing a limit the user cannot act on.
+ *  Only `length` with no content AND no tool calls is a budget problem. A turn that
+ *  emits tool_calls and no prose is normal and must not be retried — the loop wants
+ *  exactly that. Exported so the distinction is pinned by a test rather than by reading. */
+export const truncatedBeforeAnswer = (choice: any): boolean =>
+  choice?.finish_reason === 'length'
+  && !String(choice?.message?.content || '').trim()
+  && !(choice?.message?.tool_calls?.length);
+
+/** One chat-completions round trip against any OpenAI-compatible upstream, with the
+ *  retries these accounts actually need.
+ *
+ *  429: the OpenAI key allows 50 requests a minute, and ONE co-pilot answer is several
+ *  requests (a tool loop spends one per step), so a burst can trip the window. We wait out
+ *  Retry-After and try again rather than surfacing a limit the user cannot act on.
  *
  *  400 on reasoning_effort: the gpt-5.6 family rejects function tools on this endpoint unless
  *  reasoning_effort is 'none' ("Function tools with reasoning_effort are not supported …").
  *  Detected from the error text rather than a hardcoded model list, so a future model that
- *  behaves the same way is handled without a code change. */
-async function openaiChat(messages: any[], tools?: any[]): Promise<any> {
-  const base: Record<string, unknown> = { model: OPENAI_MODEL, messages };
+ *  behaves the same way is handled without a code change.
+ *
+ *  Empty answer under a token cap: only upstreams that set `maxTokens` (ASAX) can hit this.
+ *  Retry once with four times the budget, then fail LOUDLY. Returning the empty string
+ *  would render as a blank co-pilot reply with nothing in the logs to explain it. */
+async function oaiChat(cfg: OaiCfg, messages: any[], tools?: any[]): Promise<any> {
+  const base: Record<string, unknown> = { model: cfg.model, messages };
   if (tools?.length) { base.tools = toOpenAiTools(tools); base.tool_choice = 'auto'; }
+  if (cfg.maxTokens) base.max_tokens = cfg.maxTokens;
   let body = base;
+  let raisedBudget = false;
+  let gatewayTries = 0;
 
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const r = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
-      body: JSON.stringify(body),
-    });
+  for (let attempt = 0; attempt < 6; attempt++) {
+    // Node's fetch reports EVERY transport failure as the bare string "fetch failed" — DNS
+    // gone, TLS refused, connection reset, all identical — and that string reaches the user
+    // with no upstream named, which is how a dead GPU node reads as a broken app. It is the
+    // expected shape of "the job ended" here: the Tailscale Funnel relay stays up and still
+    // accepts TCP, but with no node behind it there is nothing to terminate TLS.
+    let r: Response;
+    try {
+      r = await fetch(`${cfg.url}/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.key()}` },
+        body: JSON.stringify(body),
+      });
+    } catch (e: any) {
+      if (gatewayTries < 2) { gatewayTries++; await new Promise(res => setTimeout(res, gatewayTries * 2_000)); continue; }
+      const cause = String(e?.cause?.code || e?.cause?.message || e?.message || e).slice(0, 120);
+      throw new Error(`${cfg.label} is unreachable (${cause}). ${cfg.id === 'asax'
+        ? 'The GPU job or its Tailscale Funnel is down — the endpoint is not answering at all.'
+        : 'The upstream refused the connection.'} Pick another model in the dropdown to keep working.`);
+    }
     const d: any = await r.json().catch(() => ({}));
-    if (r.ok && !d.error) return d.choices?.[0]?.message || {};
+    if (r.ok && !d.error) {
+      const choice = d.choices?.[0];
+      if (cfg.maxTokens && truncatedBeforeAnswer(choice)) {
+        if (!raisedBudget) { raisedBudget = true; body = { ...body, max_tokens: cfg.maxTokens * 4 }; continue; }
+        throw new Error(`${cfg.label} used all ${cfg.maxTokens * 4} tokens reasoning without writing an answer. Ask a narrower question, or raise ASAX_MAX_TOKENS.`);
+      }
+      return choice?.message || {};
+    }
 
     const msg = String(d.error?.message || r.statusText || '');
+
+    // A cluster GPU node evicts idle weights from VRAM, and the job itself gets restarted.
+    // Both states are routine rather than exceptional, and each has its own signature:
+    //   503 {"message":"Loading model"} — process up, weights still loading
+    //   502 Bad Gateway                 — process not listening; the funnel has nothing to forward to
+    // They clear on their own, so retry briefly — but do NOT sit out a full model load.
+    // This runs inside a serverless request that will be killed long before the weights
+    // land, and a request that dies silently is worse than one that says what happened.
+    if ((r.status === 502 || r.status === 503 || r.status === 504)) {
+      if (gatewayTries < 2) {
+        gatewayTries++;
+        await new Promise(res => setTimeout(res, gatewayTries * 2_000));
+        continue;
+      }
+      throw new Error(/loading/i.test(msg)
+        ? `${cfg.label} is still loading the model into GPU memory — this takes a minute or two after the node has been idle. Ask again shortly, or pick another model in the dropdown.`
+        : `${cfg.label} is not answering (${r.status}); the GPU job is likely restarting. Ask again shortly, or pick another model in the dropdown.`);
+    }
+
     if (r.status === 429 && attempt < 2) {
       const waitMs = Math.min(20_000, (Number(r.headers.get('retry-after')) || (attempt + 1) * 6) * 1000);
       await new Promise(res => setTimeout(res, waitMs));
@@ -320,10 +418,12 @@ async function openaiChat(messages: any[], tools?: any[]): Promise<any> {
       body = { ...base, reasoning_effort: 'none' };
       continue;
     }
-    throw new Error(`OpenAI ${d.error?.code || r.status}: ${msg}`);
+    throw new Error(`${cfg.label} ${d.error?.code || r.status}: ${msg}`);
   }
-  throw new Error('OpenAI: rate limited — the key allows 50 requests a minute. Wait a moment, or switch the model picker to Gemini.');
+  throw new Error(`${cfg.label}: rate limited. Wait a moment, or pick another model in the dropdown.`);
 }
+
+const openaiChat = (messages: any[], tools?: any[]): Promise<any> => oaiChat(OPENAI_CFG, messages, tools);
 
 // Which Hermes models can be trusted with prompt-described tools. This is a
 // per-MODEL property, not a per-upstream one, and it was measured rather than
@@ -656,15 +756,22 @@ function setupRoutes() {
   app.get("/api/ai/models", async (_req, res) => {
     const models: any[] = [{ ...GEMINI_CHOICE, available: Boolean(process.env.GEMINI_API_KEY) }];
     if (openaiEnabled()) models.push({ ...OPENAI_CHOICE, available: true });
+    if (asaxEnabled()) models.push({ ...ASAX_CHOICE, available: true });
     for (const m of await hermesModels()) {
       models.push({ id: `hermes:${m.id}`, label: `${m.label} · PLEASER`, upstream: 'hermes', tools: HERMES_TOOL_MODELS.includes(m.id), available: true });
     }
-    // Default to whoever is NOT paying personally. OpenAI is the lab's account and PLEASER
-    // is lab-hosted; Gemini is the maintainer's own key, so it is offered but never the
-    // default. Before this the picker opened on Gemini and the client hardcoded it too, so
-    // every user who never touched the dropdown spent a personal key.
+    // Default to whoever is NOT paying personally. OpenAI is the lab's account, ASAX runs on
+    // the lab's own GPUs and PLEASER is lab-hosted; Gemini is the maintainer's own key, so it
+    // is offered but never the default. Before this the picker opened on Gemini and the client
+    // hardcoded it too, so every user who never touched the dropdown spent a personal key.
+    //
+    // ASAX sits behind OpenAI rather than in front of it despite being free: measured at ~7.5s
+    // to first complete answer against OpenAI's ~3s, because it reasons before it writes. Free
+    // is the tie-breaker among upstreams nobody pays for, not a reason to make everyone wait.
     const glm = models.find((m: any) => m.upstream === 'hermes' && m.tools);
-    const preferred = openaiEnabled() ? OPENAI_CHOICE.id : (glm ? glm.id : GEMINI_CHOICE.id);
+    const preferred = openaiEnabled() ? OPENAI_CHOICE.id
+      : asaxEnabled() ? ASAX_CHOICE.id
+      : (glm ? glm.id : GEMINI_CHOICE.id);
     res.json({ models, default: preferred });
   });
 
@@ -689,16 +796,25 @@ function setupRoutes() {
     if (prompt.length > 50_000) {
       return res.status(413).json({ error: "prompt exceeds the 50,000 character limit" });
     }
-    // Gemini is the default here; OpenAI stands in only when Gemini is absent.
-    if (!process.env.GEMINI_API_KEY && !openaiEnabled()) {
-      return res.status(503).json({ error: "No AI upstream configured (set GEMINI_API_KEY or OPENAI_API_KEY)" });
+    // WHO PAYS, again. This endpoint preferred Gemini — the maintainer's PERSONAL key —
+    // whenever it was configured, and reached for the lab's OpenAI account only as a
+    // stand-in. That is the same leak the model picker had, left behind in the one place
+    // the picker fix did not reach: every caller of /api/ai/generate spent a personal key
+    // by default. The order now matches the picker: lab account, then the lab's own GPUs,
+    // and Gemini only when it is the sole upstream configured.
+    if (!process.env.GEMINI_API_KEY && !openaiEnabled() && !asaxEnabled()) {
+      return res.status(503).json({ error: "No AI upstream configured (set OPENAI_API_KEY, ASAX_BASE_URL + ASAX_API_KEY, or GEMINI_API_KEY)" });
     }
     try {
-      if (process.env.GEMINI_API_KEY) {
-        return res.json({ text: await geminiGenerate([{ parts: [{ text: prompt.trim() }] }]) });
+      if (openaiEnabled()) {
+        const msg = await openaiChat([{ role: 'user', content: prompt.trim() }]);
+        return res.json({ text: String(msg.content || '').trim() });
       }
-      const msg = await openaiChat([{ role: 'user', content: prompt.trim() }]);
-      return res.json({ text: String(msg.content || '').trim() });
+      if (asaxEnabled()) {
+        const msg = await oaiChat(asaxCfg(), [{ role: 'user', content: prompt.trim() }]);
+        return res.json({ text: String(msg.content || '').trim() });
+      }
+      return res.json({ text: await geminiGenerate([{ parts: [{ text: prompt.trim() }] }]) });
     } catch (err: any) {
       res.status(502).json({ error: err.message });
     }
@@ -833,8 +949,13 @@ function setupRoutes() {
     // ── OpenAI upstream ───────────────────────────────────────────────────────
     // Same shape as the Gemini branch below: DATA tools run here in a loop, browser
     // ACTION tools are returned for the client's executor.
-    if (model === 'openai') {
-      if (!openaiEnabled()) return res.status(503).json({ error: 'OPENAI_API_KEY is not configured on this server' });
+    // ASAX shares this branch rather than getting its own: it speaks the same wire
+    // protocol, so a second copy of the loop would only be a second place for the
+    // tool contract to drift.
+    if (model === 'openai' || model === 'asax') {
+      const cfg = model === 'asax' ? asaxCfg() : OPENAI_CFG;
+      if (model === 'openai' && !openaiEnabled()) return res.status(503).json({ error: 'OPENAI_API_KEY is not configured on this server' });
+      if (model === 'asax' && !asaxEnabled()) return res.status(503).json({ error: 'ASAX_BASE_URL / ASAX_API_KEY are not configured on this server' });
       const screen: ScreenContext | undefined = req.body?.screen;
       const sysText = [systemInstruction || '', renderScreenBlock(screen), EVIDENCE_RULES].filter(Boolean).join('\n\n');
       const clientNames = new Set<string>((tools || []).map((t: any) => t?.name).filter(Boolean));
@@ -850,13 +971,13 @@ function setupRoutes() {
       const pendingClient: any[] = [];
       try {
         for (let step = 0; step < 4; step++) {
-          const msg = await openaiChat(convo, allTools);
+          const msg = await oaiChat(cfg, convo, allTools);
           const calls: any[] = msg.tool_calls || [];
           const text = String(msg.content || '').trim();
           const dataCalls = calls.filter(c => dataNames.has(c.function?.name));
           pendingClient.push(...calls.filter(c => !dataNames.has(c.function?.name)).map(c => ({ name: c.function.name, args: safeArgs(c.function.arguments) })));
           if (!dataCalls.length) {
-            if (trace.length) console.log(`[copilot·openai] ${trace.map(t => `${t.tool}(${JSON.stringify(t.args)})`).join(' → ')}`);
+            if (trace.length) console.log(`[copilot·${cfg.id}] ${trace.map(t => `${t.tool}(${JSON.stringify(t.args)})`).join(' → ')}`);
             return res.json({ text, functionCalls: pendingClient, trace });
           }
           convo.push(msg);
@@ -875,9 +996,9 @@ function setupRoutes() {
             convo.push({ role: 'tool', tool_call_id: c.id, content: JSON.stringify(result).slice(0, 20_000) });
           }
         }
-        return res.json({ text: 'I could not finish gathering that within the OpenAI step budget. Try a narrower question, or switch to Gemini.', functionCalls: pendingClient, trace });
+        return res.json({ text: `I could not finish gathering that within the ${cfg.label} step budget. Try a narrower question, or switch models in the dropdown.`, functionCalls: pendingClient, trace });
       } catch (e: any) {
-        return res.status(502).json({ error: e?.message || 'OpenAI error', trace });
+        return res.status(502).json({ error: e?.message || `${cfg.label} error`, trace });
       }
     }
 
@@ -1140,6 +1261,48 @@ function setupRoutes() {
               error: String(parsed?.error?.message || raw).slice(0, 300) };
       } catch (e: any) {
         info.openai.liveTest = { ok: false, error: String(e?.message || e).slice(0, 300) };
+      }
+    }
+
+    // ASAX. Four failure modes here and they need telling apart, because three of them
+    // look identical from the dropdown: not configured; the funnel hostname no longer
+    // resolves (it is a fresh registration and HAS been unresolvable — the live node once
+    // held a name with no A record while a dead node held the working one); reachable but
+    // the key rejected; or reachable and serving a DIFFERENT model than ASAX_MODEL, which
+    // would 404 every call. /v1/models answers all four in ~90ms and costs no tokens.
+    const akey = process.env.ASAX_API_KEY || '';
+    info.asax = {
+      base_url: ASAX_BASE_URL || null,
+      key_set: !!akey,
+      key_length: akey.length || null,
+      model: ASAX_MODEL,
+      max_tokens: ASAX_MAX_TOKENS,
+      listed_in_dropdown: asaxEnabled(),
+    };
+    if (asaxEnabled()) {
+      try {
+        const t0 = Date.now();
+        const r = await fetch(`${ASAX_BASE_URL}/models`, { headers: { Authorization: `Bearer ${akey}` } });
+        const raw = await r.text();
+        let parsed: any = null; try { parsed = JSON.parse(raw); } catch { /* non-JSON body */ }
+        const served: string[] = Array.isArray(parsed?.data) ? parsed.data.map((m: any) => m?.id).filter(Boolean) : [];
+        info.asax.liveTest = r.ok
+          ? { ok: served.includes(ASAX_MODEL), ms: Date.now() - t0, status: r.status, served,
+              ...(served.includes(ASAX_MODEL) ? {} : { note: `reachable, but "${ASAX_MODEL}" is not among the models it serves` }) }
+          : { ok: false, status: r.status, error: String(parsed?.error?.message || raw).slice(0, 300),
+              ...(r.status === 401 ? { note: 'reachable; the endpoint rejected ASAX_API_KEY' }
+                : r.status === 503 ? { note: 'reachable and authenticated; the GPU node is loading the model — transient, not a misconfiguration' }
+                : r.status === 502 ? { note: 'the funnel is up but nothing is listening behind it — the GPU job is down or restarting' }
+                : {}) };
+      } catch (e: any) {
+        // "fetch failed" alone cannot tell these apart, and they have different fixes, so
+        // read the cause: a name that does not resolve is a DNS/registration problem, while
+        // a refused or dead connection means the funnel relay has no node behind it.
+        const cause = String(e?.cause?.code || e?.cause?.message || e?.message || e);
+        info.asax.liveTest = { ok: false, error: String(e?.message || e).slice(0, 300), cause: cause.slice(0, 160),
+          note: /ENOTFOUND|EAI_AGAIN/i.test(cause)
+            ? 'the Tailscale Funnel hostname does not resolve — the node has not published DNS'
+            : 'the hostname resolves but the endpoint did not complete a connection — the GPU job or its funnel is down' };
       }
     }
 
@@ -1958,6 +2121,26 @@ function setupRoutes() {
     }
   }
 
+  // Free extraction path #2: ASAX. Cheaper in wall-clock than PLEASER — one round trip
+  // against an OpenAI-compatible endpoint rather than create-chat → send → delete — and it
+  // runs on the lab's own GPUs, so it costs nothing either. The reasoning text lands in
+  // `reasoning_content` and never in `content`, so what comes back is already clean JSON;
+  // the brace match is there for a model that decides to introduce it anyway.
+  //
+  // The budget is raised well above the chat default because this returns a whole
+  // structured record, not a paragraph, and a truncated record is a silently wrong one.
+  async function asaxJson(prompt: string): Promise<any> {
+    if (!asaxEnabled()) return { error: 'ASAX is not configured on this server' };
+    try {
+      const msg = await oaiChat({ ...asaxCfg(), maxTokens: Math.max(ASAX_MAX_TOKENS, 8192) }, [{ role: 'user', content: prompt }]);
+      const m = String(msg?.content || '').match(/\{[\s\S]*\}/);
+      if (!m) return { error: 'ASAX returned no structured result' };
+      try { return JSON.parse(m[0]); } catch { return { error: 'unparseable ASAX result', raw: m[0].slice(0, 300) }; }
+    } catch (e: any) {
+      return { error: `ASAX unreachable: ${String(e?.message || e).slice(0, 140)}` };
+    }
+  }
+
   async function geminiJson(prompt: string, timeoutMs = 90_000): Promise<any> {
     if (!geminiEnabled()) return { error: 'GEMINI_API_KEY is not configured on this server' };
     const ctl = new AbortController();
@@ -2064,14 +2247,20 @@ Rules: fill every field only from the text below. Where the paper does not repor
 
 FULL TEXT:
 ${text}`;
-    // Free upstream next, so an exhausted lab key costs nothing to work around.
+    // Free upstreams next, so an exhausted lab key costs nothing to work around. ASAX
+    // before PLEASER only because it is one round trip instead of three; both are free.
+    if (asaxEnabled()) {
+      const viaAsax = await asaxJson(prompt);
+      if (viaAsax && !viaAsax.error) return viaAsax;
+      firstError = firstError || viaAsax;
+    }
     if (hermes.hermesEnabled()) {
       const viaGlm = await glmJson(prompt);
       if (viaGlm && !viaGlm.error) return viaGlm;
       firstError = firstError || viaGlm;
     }
     if (geminiFallbackAllowed()) return geminiJson(prompt);
-    return firstError || { error: 'no extraction upstream available. OpenAI and PLEASER both failed; Gemini is a personal key and is not used automatically (set ALLOW_GEMINI_FALLBACK=1 to permit it).' };
+    return firstError || { error: 'no extraction upstream available. OpenAI, ASAX and PLEASER all failed; Gemini is a personal key and is not used automatically (set ALLOW_GEMINI_FALLBACK=1 to permit it).' };
   }
 
   // Fallback for anything PubMed Central does not hold: preprints outside PMC, conference
