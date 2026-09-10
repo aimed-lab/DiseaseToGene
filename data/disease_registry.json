@@ -53,8 +53,9 @@
       "cbioportal_study": "gbm_tcga_pan_can_atlas_2018",
       "proteomics": {
         "ref_file": "proteomics_gbm.json",
-        "linkedomics_cohort": "CPTAC-GBM",
-        "source_label": "CPTAC GBM proteome (tumor vs normal-adjacent, mass-spec)"
+        "build_script": "scripts/build_proteomics_gbm.mjs",
+        "source_label": "CPTAC GBM Discovery proteome, TMT11 (PDC000204) — 100 tumour vs 10 solid tissue normal",
+        "log2fc_scale": 3
       }
     },
     {
