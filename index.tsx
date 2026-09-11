@@ -3655,24 +3655,25 @@ const App = () => {
   // declarations — so `tools: false` on a choice means this co-pilot can explain
   // but not drive the app. The UI says that out loud instead of leaving the user
   // to discover that "filter to novel targets" quietly does nothing.
-  interface AiModelChoice { id: string; label: string; upstream: string; tools: boolean; available: boolean; }
+  interface AiModelChoice { id: string; label: string; upstream: string; tools: boolean; available: boolean; compactReference?: boolean; }
   const [aiModels, setAiModels] = useState<AiModelChoice[]>([]);
   const [aiModel, setAiModel] = useState('gemini');
   const chatSessionIdRef = useRef<string>(`d2t-${Math.random().toString(36).slice(2)}-${Date.now()}`);
   const activeModel = aiModels.find(m => m.id === aiModel);
   const modelHasTools = activeModel ? activeModel.tools : true;
   const upstreamIsHermes = activeModel?.upstream === 'hermes';
-  // Upstreams that charge for prompt size every turn, or cap tokens-per-minute, get the
-  // glossary as a term INDEX plus a lookup tool instead of ~24,000 inlined characters.
-  // PLEASER replays the whole transcript each turn; the OpenAI key allows 10k tokens a
-  // minute on some models, and the inlined blocks alone pushed one question to 10,617.
-  // ASAX belongs here for a different reason: it is a reasoning model on shared GPUs, so
-  // a bigger prompt costs thinking time on every turn. It must also be listed because the
-  // SERVER already assumes it — the ASAX branch shares OpenAI's loop, which always attaches
-  // lookup_reference. Leaving it out sends the glossary inline AND the tool to fetch it.
-  const compactReference = upstreamIsHermes
-    || activeModel?.upstream === 'openai'
-    || activeModel?.upstream === 'asax';
+  // Models that pay for prompt size get the glossary as a term INDEX plus a lookup tool,
+  // instead of ~24,000 inlined characters. They pay in different currencies: PLEASER
+  // replays the whole transcript every turn, the OpenAI key caps tokens-per-minute (the
+  // inlined blocks alone pushed one question to 10,617), and ASAX is a reasoning model on
+  // shared GPUs where a bigger prompt costs thinking time on every hop.
+  //
+  // The SERVER decides this now and sends it per model, because the server is what acts
+  // on it: the shared OpenAI/ASAX branch always attaches lookup_reference. When this was a
+  // hardcoded list of upstream names here, adding ASAX to that branch silently sent it the
+  // glossary inline AND the tool to fetch it. Hermes keeps the local fallback because its
+  // entries are enumerated from PLEASER rather than declared as a profile.
+  const compactReference = activeModel?.compactReference ?? upstreamIsHermes;
 
   useEffect(() => {
     if (!isAuthenticated) return;
