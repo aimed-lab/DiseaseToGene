@@ -14,9 +14,15 @@
 //
 // The process dies, the watchdog restarts it, and the app sees a 502 mid-question.
 //
-// MEASURED 2026-09-10, before any fix — sequential, ONE request at a time:
+// RESOLVED 2026-09-11. After the redeploy (4 slots x 32,768 ctx, was 8 x 16,384) the
+// sweep is clean to 14,000 and the headroom check clears 30,000. Keep this script: the
+// ceiling was invisible from the app — it looked like a flaky endpoint — and four separate
+// configuration changes failed to move it before one did.
+//
+// MEASURED 2026-09-10, before the fix — sequential, ONE request at a time:
 //   1,000 / 2,000 / 4,000 / 5,000 tok  → OK
 //   6,000 / 9,000 / 14,000 tok         → 502, watchdog recovered in 35-65s
+// Bisected with the server's own usage.prompt_tokens: 4,061 survived, ~4,100 died.
 //
 // The sequential part is the finding. Nothing here is concurrent, so the crash is
 // a function of prompt SIZE, not of concurrent MoE routing pressure — which is why
