@@ -5516,7 +5516,13 @@ ${modalityResultBlock(getLastModalityResult()) || '      (No modality analysis h
                 <div key={i} className={`flex flex-col ${m.role === 'user' ? 'items-end' : 'items-start'}`}>
                   <div className={`max-w-[88%] inline-block px-4 py-2.5 rounded-lg text-[13px] shadow-sm ${m.role === 'user' ? 'bg-blue-600 text-white' : (theme === 'dark' ? 'bg-[#111827] border border-slate-800 text-slate-100' : 'bg-white text-slate-950 border border-slate-200 shadow-sm')}`}>
                     <div className="markdown-body prose prose-sm prose-neutral dark:prose-invert max-w-none text-slate-950 dark:text-neutral-200">
-                      <Markdown>{m.content}</Markdown>
+                      {/* Links the model writes: /wiki/… (its own provenance pages) route in-app without a
+                          reload; anything else opens in a new tab. */}
+                      <Markdown components={{ a: ({ href, children }) => {
+                        const h = String(href || '');
+                        if (/^\/wiki(\/|$)/.test(h)) return <a href={h} onClick={e => { e.preventDefault(); navigate(h); }} className="underline decoration-dotted">{children}</a>;
+                        return <a href={h} target="_blank" rel="noreferrer">{children}</a>;
+                      } }}>{m.content}</Markdown>
                     </div>
                     {m.role === 'assistant' && !m.toolCall && (() => {
                       const chips = extractGeneChips(m.content);

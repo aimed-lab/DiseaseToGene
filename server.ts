@@ -16,6 +16,7 @@ import { deriveBoardRows } from "./boardRows.js"; // the Ranking Board's row sha
 import { buildBoard, MODALITY_PROFILES } from "./rankingBoard.js"; // the board engine — the co-pilot's "board rank" is the on-screen rank
 import { GLOSSARY } from "./dashboardGlossary.js";        // pure data — safe on the server
 import { MODALITY_GLOSSARY } from "./modalityGlossary.js"; // pure data — safe on the server
+import { wikiUrl } from "./nav.js";                        // URL builders only — pure, no window at module level
 // NOTE: relative imports carry an explicit .js extension (Node-ESM requirement). On Vercel
 // the server ships as unbundled ESM, so extensionless specifiers fail with ERR_MODULE_NOT_FOUND.
 // .js resolves to the .ts source under tsx / esbuild / tsc alike.
@@ -738,7 +739,7 @@ export const EVIDENCE_RULES = `EVIDENCE RULES (non-negotiable):
 - EXPLAINING IS NOT CLAIMING, and the rule above governs only claiming. You may always explain, in your own words and from your own knowledge: what a class of drug does, how a pathway or resistance mechanism works, what a term means, why a study design matters, what would make a hypothesis plausible. Refusing to explain something general because it is not in our store is a failure, not caution, and never say "our store has no evidence for that" to a question that asked for an explanation rather than a fact. What you may never do without a tool behind it is assert a PARTICULAR: a number, rank, count, date, dose, a trial's result, what a named paper found, or what is or is not true of one gene in one disease. Explain freely; attribute every specific.
 - "Compare A and B" / "why is A above B" → call compare_genes. "How is A related to B" → call gene_relationship. One gene's full picture → get_gene_evidence first, then deep_dive_gene only if the stored summary is not enough. deep_dive_gene is LIVE and slower: at most two genes per question, never for lists or ranking questions.
 - Stored snapshot evidence is the ranking's truth; a live deep-dive value is extra context. If the two disagree, say which is which and that the snapshot is what the board ranks on.
-- Label each fact with its source and snapshot inline, e.g. "(Europe PMC, snapshot #103)" or "(STRING, live)". End with a short "Sources" list. Keep FACTS (mutation, expression, proteomics, dependency, safety, trials, papers) separate from PREDICTIONS (Open Targets association, board rank, WINNER centrality, tractability).
+- Label each fact with its source and snapshot inline, e.g. "(Europe PMC, snapshot #103)" or "(STRING, live)". End with a short "Sources" list. When a tool result carries a wiki_url, put it in that list as a Markdown link — e.g. "[Provenance: KRAS, snapshot #102](/wiki/pancreatic-adenocarcinoma/102/gene/KRAS)" — one per gene, exactly the URL the tool returned. It is the app's own provenance page (every stored row with source, date, run and commit), not an external source; never invent one for a gene no tool returned. Keep FACTS (mutation, expression, proteomics, dependency, safety, trials, papers) separate from PREDICTIONS (Open Targets association, board rank, WINNER centrality, tractability).
 - If the store has nothing for a gene in this disease, say exactly that. Do not fill the gap from memory.
 - Our stored evidence is indexed BY GENE. A question naming a drug or compound, or a combination of two, finds nothing there, and "no evidence in our store" is the WRONG answer to it. Use search_literature and search_trials, which search the live literature and the trial registry by any text. Reach for them whenever the question names a drug, asks whether something has been published or trialled, or asks for work "other than" what we hold.
 - WHAT EACH SOURCE CAN AND CANNOT HOLD, so you can judge what a nil result means. Our snapshot holds only what was harvested for the loaded disease, indexed by gene. Europe PMC indexes peer-reviewed papers and preprints; it does NOT index conference abstracts, company pipelines, regulatory decisions or press material. ClinicalTrials.gov indexes trials registered with it; it does NOT index planned or unregistered studies, or trials registered only in another national registry. The open web is what the other two do not index.
@@ -2220,6 +2221,10 @@ function setupRoutes() {
     for (const r of rows) { const j = jparse(r.value_json); evidence[r.evidence_type] = (j && (j.display || j.value_text)) || r.value_text || j; if (r.source) sources[r.evidence_type] = String(r.source); }
     return { found: rows.length > 0, evidence, sources };
   };
+  // The gene's page in the provenance wiki: every stored row with its source, retrieval date,
+  // run and commit. Returned with stored evidence so the answer can link to where it came from.
+  const wikiGeneUrl = (snap: any, gene: string) => wikiUrl.entity(String(snap.disease_name || 'disease'), Number(snap.id), 'gene', gene);
+  const WIKI_HOW = "wiki_url is this gene's provenance page inside the app (source, retrieval date, run and commit for every stored row). Cite it once, as a Markdown link, where you cite the stored evidence.";
   const stringPartners = async (gene: string, limit = 100): Promise<Array<{ symbol: string; score: number }>> => {
     try {
       const r = await fetch(`https://string-db.org/api/json/interaction_partners?identifiers=${encodeURIComponent(gene)}&species=9606&required_score=400&limit=${limit}&caller_identity=diseasetotarget_app`);
@@ -2610,9 +2615,9 @@ Rules: fill every field only from what the pages actually say. Where the page do
         const r = await resolveGeneSymbol(g0, b.bySymbol); const g = r.symbol;
         const fe = famErr(r, g0); if (fe) return fe;
         const ev = await evidenceOf(svc, Number(snap.id), g);
-        out.genes[r.alias_of ? `${g} (HGNC symbol for ${r.alias_of})` : g] = { in_snapshot: b.bySymbol.has(g), board: standingOf(b, g), evidence: ev.evidence, evidence_sources: ev.sources };
+        out.genes[r.alias_of ? `${g} (HGNC symbol for ${r.alias_of})` : g] = { in_snapshot: b.bySymbol.has(g), board: standingOf(b, g), evidence: ev.evidence, evidence_sources: ev.sources, wiki_url: wikiGeneUrl(snap, g) };
       }
-      out.how_to_read = 'board = the composite the Ranking Board shows (prediction). evidence = stored per-axis facts for this snapshot; cite each with its source and the snapshot id.';
+      out.how_to_read = 'board = the composite the Ranking Board shows (prediction). evidence = stored per-axis facts for this snapshot; cite each with its source and the snapshot id. ' + WIKI_HOW;
       return out;
     }
     if (name === 'gene_relationship') {
@@ -2921,7 +2926,7 @@ Rules: fill every field only from what the pages actually say. Where the page do
       const ev = await evidenceOf(svc, Number(snap.id), gene);
       try { if (bySym) board = standingOf({ board: (await agentBoard(Number(snap.id), ctx.modality, ctx.litWindow)).board, bySymbol: bySym, total: bySym.size }, gene); } catch { /* board optional */ }
       if (!ev.found && !board) return { gene, disease: snap.disease_name, snapshot_id: snap.id, evidence: null, note: 'no stored evidence for this gene in this snapshot' };
-      return { gene, disease: snap.disease_name, snapshot_id: snap.id, board, evidence: ev.evidence, evidence_sources: ev.sources };
+      return { gene, disease: snap.disease_name, snapshot_id: snap.id, board, evidence: ev.evidence, evidence_sources: ev.sources, wiki_url: wikiGeneUrl(snap, gene), how_to_read: WIKI_HOW };
     }
     if (name === 'get_clinical_trials') {
       const gene = String(args?.gene || '').toUpperCase();
