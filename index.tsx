@@ -114,7 +114,8 @@ import GlobalSearch, { type GlobalSearchHandle } from './GlobalSearch';
 import WelcomeView from './WelcomeView';
 import { applyDiseaseAccent } from './diseaseAccent';
 import ModalityFitView from './ModalityFitView';
-import { navigate, isMethodologyPath, isModalityPath, isResetPasswordPath, catchRecoveryHash, ROUTES } from './nav';
+import { navigate, isMethodologyPath, isModalityPath, isResetPasswordPath, isWikiPath, parseWikiPath, catchRecoveryHash, ROUTES } from './nav';
+import WikiApp from './wiki-app/WikiApp';
 
 // Root catch (runs once at module load, BEFORE React mounts and before Supabase consumes the
 // URL hash): if a password-recovery link landed on any path with a #...type=recovery hash,
@@ -760,7 +761,7 @@ const RESEARCH_GROUP = [
 // Research menu, Enrichment, Jobs, …) is admin-only — hidden from the nav AND blocked
 // by a guard in App, so a researcher can't reach it via the co-pilot or a restored
 // session. Nothing is deleted; admins keep the full app.
-const RESEARCHER_VIEWS = new Set<string>(['board', 'dashboard', 'list', 'graph', 'modality']);
+const RESEARCHER_VIEWS = new Set<string>(['board', 'dashboard', 'list', 'graph', 'modality', 'wiki']);
 
 const TabNavigation = ({
   viewMode,
@@ -794,12 +795,12 @@ const TabNavigation = ({
   // navigates instead of switching viewMode. It sits in the nav rather than inside the
   // Ranking Board toolbar: it is a feature in its own right, and moving it out also takes
   // one button off an already-crowded board header.
-  const primaryAll = [ {id:'board',i:Trophy,l:'Ranking Board'}, {id:'dashboard',i:LayoutDashboard,l:'Evidence'}, {id:'list',i:List,l:'Targets'}, {id:'funnel',i:Filter,l:'Funnel'}, {id:'rankings',i:Layers,l:'Score Matrix'}, {id:'graph',i:Network,l:'Graph'}, {id:'modality',i:Atom,l:'Modality',route:ROUTES.modality} ];
+  const primaryAll = [ {id:'board',i:Trophy,l:'Ranking Board'}, {id:'dashboard',i:LayoutDashboard,l:'Evidence'}, {id:'list',i:List,l:'Targets'}, {id:'funnel',i:Filter,l:'Funnel'}, {id:'rankings',i:Layers,l:'Score Matrix'}, {id:'graph',i:Network,l:'Graph'}, {id:'modality',i:Atom,l:'Modality',route:ROUTES.modality}, {id:'wiki',i:BookOpen,l:'Wiki',route:'/wiki'} ];
   // Researchers see only their allow-listed tabs; admins see everything.
   const primary  = isAdmin ? primaryAll : primaryAll.filter(t => RESEARCHER_VIEWS.has(t.id));
   const trailing = [ {id:'enrichment',i:BarChart3,l:'Enrichment'} ];   // Jobs removed: harvesting is a command-line operation
   const flatBtn = (t: { id: string; i: any; l: string; route?: string }) => {
-    const active = t.route ? isModalityPath() : viewMode === t.id;
+    const active = t.route ? (t.id === 'wiki' ? isWikiPath() : isModalityPath()) : viewMode === t.id;
     return (
       <button key={t.id} onClick={() => (t.route ? navigate(t.route) : onViewModeChange(t.id as ViewMode))} className={btnCls(active)}
         style={active ? { background: 'var(--disease-accent)', color: '#fff' } : undefined}>
@@ -5654,6 +5655,14 @@ ${modalityResultBlock(getLastModalityResult()) || '      (No modality analysis h
   );
 
   if (!isAuthenticated) return <SignInPage theme={theme} toggleTheme={() => setTheme(t => t === 'dark' ? 'light' : 'dark')} />;
+
+  // /wiki — the provenance wiki: a separate full-page UI, read-only, LOGIN-ONLY. It renders
+  // strictly AFTER the auth gate above (unlike /Methodologies), and every read it makes goes
+  // through /api/wiki/* behind requireUser. See docs/PLAN_Provenance_Wiki_and_Autonomous_Agent.md.
+  if (isWikiPath(routePath)) {
+    const wikiRoute = parseWikiPath(routePath);
+    if (wikiRoute) return <WikiApp theme={theme} route={wikiRoute} onToggleTheme={() => setTheme(t => t === 'dark' ? 'light' : 'dark')} />;
+  }
 
   return (
     <div className={`h-screen flex flex-col transition-colors duration-200 ai-native-bg ${theme === 'dark' ? 'bg-[#070b12] text-slate-200' : 'bg-[#eef3f8] text-slate-950'}`}>

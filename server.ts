@@ -1730,6 +1730,103 @@ function setupRoutes() {
   });
 
 
+  // ── Provenance wiki (/wiki) — read-only, login-only, snapshot-scoped ─────────
+  // Every route here is behind requireUser: the wiki is a view of the store for signed-in
+  // users, nothing on it is public. A snapshot is immutable, so responses are cached in
+  // memory per snapshot id and told to the browser as immutable too. The full evidence
+  // pull (~50k rows over ORDS, ~25s cold) is fetched once and then sliced per axis, so the
+  // run/source pages don't re-pull it. See docs/PLAN_Provenance_Wiki_and_Autonomous_Agent.md §0.5.
+  const WIKI_CACHE_HEADERS = { 'Cache-Control': 'private, max-age=31536000, immutable' };
+  const wikiEvidenceCache = new Map<number, Promise<any[]>>();
+  const wikiGraphCache = new Map<number, Promise<any>>();
+  const wikiSnapshotEvidence = (svc: any, id: number): Promise<any[]> => {
+    let p = wikiEvidenceCache.get(id);
+    if (!p) { p = svc.snapshotEvidence(id).catch((e: any) => { wikiEvidenceCache.delete(id); throw e; }); wikiEvidenceCache.set(id, p!); }
+    return p!;
+  };
+  const wikiSnapshotId = (req: express.Request): number | null => { const n = Number(req.params.id); return Number.isInteger(n) && n > 0 ? n : null; };
+  const wikiJson = (v: any) => { if (v == null) return null; if (typeof v !== 'string') return v; try { return JSON.parse(v); } catch { return null; } };
+
+  app.get("/api/wiki/snapshots", requireUser, async (_req, res) => {
+    if (!readStoreEnabled()) return res.status(503).json({ error: "Oracle store disabled" });
+    try {
+      const svc = await readSvc();
+      const rows = await svc.listSnapshots();
+      res.json(rows.map((r: any) => ({ id: Number(r.id), disease_id: r.disease_id, disease_name: r.disease_name, version: r.version, created_at: r.created_at, created_by: r.created_by, label: r.label, gene_count: r.gene_count })));
+    } catch (e: any) { res.status(502).json({ error: e?.message || 'wiki snapshots failed' }); }
+  });
+
+  // Snapshot header + one line per (evidence_type, source): what the wiki's disease page lists.
+  app.get("/api/wiki/:id/summary", requireUser, async (req, res) => {
+    if (!readStoreEnabled()) return res.status(503).json({ error: "Oracle store disabled" });
+    const id = wikiSnapshotId(req); if (!id) return res.status(400).json({ error: "snapshot id required" });
+    try {
+      const svc = await readSvc();
+      const snap = await svc.getSnapshot(id);
+      if (!snap) return res.status(404).json({ error: `snapshot #${id} not found` });
+      const rows = await wikiSnapshotEvidence(svc, id);
+      const axes = new Map<string, { evidence_type: string; source: string; rows: number; scored: number }>();
+      for (const r of rows) {
+        const k = `${r.evidence_type}\u0000${r.source}`;
+        let a = axes.get(k); if (!a) { a = { evidence_type: String(r.evidence_type), source: String(r.source), rows: 0, scored: 0 }; axes.set(k, a); }
+        a.rows++;
+        const vj = wikiJson(r.value_json); if (vj && typeof vj.axis === 'number') a.scored++;
+      }
+      const { targets: _t, ...meta } = snap;
+      res.set(WIKI_CACHE_HEADERS).json({ snapshot: { ...meta, id }, evidence_rows: rows.length, axes: [...axes.values()].sort((a, b) => a.evidence_type.localeCompare(b.evidence_type)) });
+    } catch (e: any) { res.status(502).json({ error: e?.message || 'wiki summary failed' }); }
+  });
+
+  // One gene in one snapshot: its score row and every evidence row WITH the provenance
+  // columns (the per-gene ORDS handler projects all twelve; the per-snapshot one only five).
+  app.get("/api/wiki/:id/gene/:symbol", requireUser, async (req, res) => {
+    if (!readStoreEnabled()) return res.status(503).json({ error: "Oracle store disabled" });
+    const id = wikiSnapshotId(req); if (!id) return res.status(400).json({ error: "snapshot id required" });
+    const symbol = String(req.params.symbol || '').toUpperCase().trim();
+    if (!symbol) return res.status(400).json({ error: "gene symbol required" });
+    try {
+      const svc = await readSvc();
+      const [all, scores] = await Promise.all([svc.evidenceForGene(symbol), svc.listRankingScores(id)]);
+      const evidence = (all as any[]).filter(r => Number(r.snapshot_id) === id).map(r => ({ ...r, value_json: wikiJson(r.value_json) }));
+      const score = (scores as any[]).find(s => String(s.gene_symbol).toUpperCase() === symbol) || null;
+      if (!evidence.length && !score) return res.status(404).json({ error: `${symbol} is not in snapshot #${id}` });
+      res.set(WIKI_CACHE_HEADERS).json({ snapshot_id: id, symbol, score, evidence, gene_count: (scores as any[]).length });
+    } catch (e: any) { res.status(502).json({ error: e?.message || 'wiki gene failed' }); }
+  });
+
+  // Every row of one axis (run page / source page): sliced from the cached full pull.
+  app.get("/api/wiki/:id/evidence", requireUser, async (req, res) => {
+    if (!readStoreEnabled()) return res.status(503).json({ error: "Oracle store disabled" });
+    const id = wikiSnapshotId(req); if (!id) return res.status(400).json({ error: "snapshot id required" });
+    const type = String(req.query.type || '').trim();
+    const source = String(req.query.source || '').trim();
+    if (!type && !source) return res.status(400).json({ error: "type or source required" });
+    try {
+      const svc = await readSvc();
+      const rows = (await wikiSnapshotEvidence(svc, id))
+        .filter(r => (!type || r.evidence_type === type) && (!source || r.source === source))
+        .map(r => ({ gene_symbol: r.gene_symbol, evidence_type: r.evidence_type, source: r.source, value_text: r.value_text, value_json: wikiJson(r.value_json) }));
+      res.set(WIKI_CACHE_HEADERS).json({ snapshot_id: id, type: type || null, source: source || null, rows });
+    } catch (e: any) { res.status(502).json({ error: e?.message || 'wiki evidence failed' }); }
+  });
+
+  // The snapshot's knowledge graph — the wiki's link structure (gene ↔ drug ↔ trial ↔ pathway …).
+  app.get("/api/wiki/:id/graph", requireUser, async (req, res) => {
+    if (!readStoreEnabled()) return res.status(503).json({ error: "Oracle store disabled" });
+    const id = wikiSnapshotId(req); if (!id) return res.status(400).json({ error: "snapshot id required" });
+    try {
+      const svc = await readSvc();
+      let p = wikiGraphCache.get(id);
+      if (!p) {
+        p = Promise.all([svc.kgGraph(id), svc.kgStats(id)]).then(([g, stats]) => ({ snapshot_id: id, stats, nodes: g.nodes, edges: g.edges }))
+          .catch((e: any) => { wikiGraphCache.delete(id); throw e; });
+        wikiGraphCache.set(id, p);
+      }
+      res.set(WIKI_CACHE_HEADERS).json(await p);
+    } catch (e: any) { res.status(502).json({ error: e?.message || 'wiki graph failed' }); }
+  });
+
+
   // ── External API Proxy ───────────────────────────────────────────────────────
 
   const ALLOWED_PROXY_HOSTS = [

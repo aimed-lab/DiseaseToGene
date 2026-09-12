@@ -29,6 +29,53 @@ Four invariants that make it operational:
 
 ---
 
+## 0.5 Revisions after the 12 Sep discussion (supersede §2 where they differ)
+
+Decided with the *Additional Notes — GitHub Markdown Layer & MVP Boundary* in hand. The one
+rule (§0) and the four invariants stand. What changed:
+
+| decision | was | now |
+|---|---|---|
+| **Access** | open question: one snapshot public | **Login only. Everything.** No public flag, no exception for a slide. `/wiki/*` sits behind the same Supabase session as the rest of the app. |
+| **Disease for the cut** | glioblastoma #123 | **Pancreatic adenocarcinoma #102 (v8).** Verified 12 Sep: all 12 axes present (53,607 rows; proteomics from CPTAC PDAC; network from WINNER+RWR), KG has 4,424 nodes / 15,301 edges. |
+| **Where the wiki lives** | routes inside the dashboard | **A separate full-page UI at `/wiki`.** Its own shell (left tree · page · right "links here" panel), nothing from the dashboard chrome. Obsidian-shaped, read-only. Still `nav.ts`-style path matching — no router library. |
+| **Narrative pages** | Phase 1 remainder, after DOT | **In the cut.** `wiki/docs/*.md` (methodology, provenance, how-to-read) and `wiki/diseases/pancreatic-adenocarcinoma.md`. Bundled at build time (`import.meta.glob`, raw); versioned by app commit, shown as such. |
+| **Lineage backfill for old snapshots** | write `provenance.runs[]` into Oracle by hand | **A Markdown file in the repo: `wiki/lineage/<snapshot>.md`**, YAML front-matter holding the `runs[]` entries, body explaining how each was reconstructed. The app reads `provenance.runs` from Oracle first; when absent it falls back to the file and the badge says **"lineage: reconstructed · wiki/lineage/102.md"** rather than "recorded at harvest". Loaded into Oracle later by one script, when the VPN is up — no rework. |
+| **Lineage going forward** | unchanged | unchanged: enrich writes `runs[]` into Oracle by construction. Markdown is the backfill path, never the permanent home (the notes' "not a second database" rule). |
+| **Backfill scope** | rows get `run_id` in `value_json` | **Rows are not touched.** Backfill maps *axis → run* at snapshot level; a row's run is derived from its `evidence_type`. Only future harvests stamp `run_id` per row. |
+
+Two facts from the 12 Sep verification that shape the pages:
+
+- **`source_url` is empty on every #102 row.** `retrieved_at`, `generated_by` (`job`), `audit_status`
+  (`not_audited`) are populated. So the fact badge's link is a per-source URL *template* (DepMap gene
+  page, gnomAD, cBioPortal study, Xena, GTEx, Europe PMC query, Open Targets target) rendered from
+  `gene_symbol` + `source`, and labelled **"live source — not stored"**. That is the plan's
+  "link out, marked as such", made explicit.
+- **The ORDS `snapshots/:id/evidence` feed projects five columns** (no provenance columns);
+  `evidence/gene/:gene` projects all twelve. Gene pages use the latter. Run/source pages use the
+  former plus the lineage file. No ORDS module change needed for the cut.
+
+Folder rule: reader-facing Markdown lives under **`wiki/` only**. `docs/` stays internal (handoffs,
+plans — it names hosts and keys) and is never globbed into the client bundle. `wiki-vault/` (May)
+is superseded and is not bundled.
+
+### The cut, re-sequenced for pancreatic #102
+
+| day | build | done when |
+|---|---|---|
+| 1 | `wiki/lineage/102.md` from git archaeology (13 runs incl. `annotation`); `wiki/README.md`; folder rule. Lineage loader with Oracle-first / file-fallback and a `lineage_kind` flag. | loader returns 13 runs for #102, `kind: 'reconstructed'` |
+| 2 | `<ProvenanceBadge>` (source · live-link template · retrieved · generated_by · audit · run → kind). Source URL templates table. | renders for every source label in #102 |
+| 3–4 | `/wiki` shell + `/wiki/pancreatic-adenocarcinoma/102` (disease page: narrative from `wiki/diseases/*.md`, axes, sources, runs) + `/gene/:symbol` (every stored row, badge each). Auth: the shell mounts only for a signed-in session; API reads already need one. | KRAS page shows 13 rows, 13 badges |
+| 5–6 | `/run/:id` and `/source/:id` pages from lineage + `snapshotEvidence` (five columns suffice). | proteomics badge → run → every gene it touched |
+| 7–8 | Drug and trial pages from `kgGraph(102)` (cached forever); gene page links both ways. | a drug → its targets here → a trial → back |
+| 9 | Scoped `KnowledgeGraphView` on entity pages; "links here" panel from KG edges. | EGFR page graph shows drugs, trials, pathways |
+| 10 | `wiki/docs/*.md` pages; co-pilot `get_gene_evidence` returns wiki URLs. | ask about KRAS → answer links `/wiki/.../gene/KRAS` |
+| 11–12 | Cache-forever headers keyed by snapshot; QA; rehearsed click path. | a colleague does the path unassisted |
+
+Drop order if time runs out, unchanged: scoped graph → trial pages → source pages.
+
+---
+
 ## 1. What exists today (so the prerequisites are real, not guessed)
 
 | have | where | state |

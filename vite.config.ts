@@ -2,6 +2,14 @@ import path from 'path';
 import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
+import { execSync } from 'child_process';
+
+// The wiki's NARRATIVE layer (wiki/**/*.md) is versioned by app commit, while its DATA layer
+// is versioned by snapshot id; every wiki page shows both. Vercel exposes the SHA as env.
+const gitCommit = (): string => {
+  if (process.env.VERCEL_GIT_COMMIT_SHA) return process.env.VERCEL_GIT_COMMIT_SHA;
+  try { return execSync('git rev-parse HEAD', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim(); } catch { return 'unknown'; }
+};
 
 export default defineConfig(({ mode }) => {
     // loadEnv reads .env files (local dev). On Vercel/CI there is no .env file —
@@ -23,6 +31,7 @@ export default defineConfig(({ mode }) => {
         'process.env.SUPABASE_URL':     JSON.stringify(env.SUPABASE_URL),
         'process.env.SUPABASE_ANON_KEY':JSON.stringify(env.SUPABASE_ANON_KEY),
         // GEMINI_API_KEY is intentionally NOT here. AI calls are server-side only.
+        '__GIT_COMMIT__': JSON.stringify(gitCommit()),
       },
       resolve: {
         alias: {
