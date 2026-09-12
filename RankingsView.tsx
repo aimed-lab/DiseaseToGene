@@ -214,7 +214,7 @@ export const RankingsView: React.FC<Props> = ({ theme = 'light', activeDiseaseNa
           ? 'Each cell: ✓ = real stored evidence from that source, — = none. Click a row for stored evidence; click the gene name for the full live drill-down.'
           : 'GET scores per gene from the stored snapshot (Oracle). Click a row for stored evidence; click the gene name for the full live drill-down.'}
       </div>
-      <GeneDetailDrawer geneSymbol={drawerGene} diseaseName={diseaseName} theme={theme} onClose={() => setDrawerGene(null)} />
+      <GeneDetailDrawer geneSymbol={drawerGene} diseaseName={diseaseName} theme={theme} snapshotId={selectedId ? Number(selectedId) : null} onClose={() => setDrawerGene(null)} />
     </div>
   );
 };

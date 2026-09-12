@@ -1,4 +1,5 @@
 import React from 'react';
+import { navigate, wikiUrl } from './nav';
 import ConstraintPanel from './ConstraintPanel';
 import ExpressionPanel from './ExpressionPanel';
 import ProteomicsPanel from './ProteomicsPanel';
@@ -24,9 +25,12 @@ interface Props {
   diseaseName: string;
   theme?: 'dark' | 'light';
   onClose: () => void;
+  /** The stored snapshot the caller is showing, if any — enables the "Provenance" link to
+   *  that gene's wiki page. The wiki is per-snapshot, so without one there is no link. */
+  snapshotId?: number | null;
 }
 
-export const GeneDetailDrawer: React.FC<Props> = ({ geneSymbol, diseaseName, theme = 'light', onClose }) => {
+export const GeneDetailDrawer: React.FC<Props> = ({ geneSymbol, diseaseName, theme = 'light', onClose, snapshotId }) => {
   const isDark = theme === 'dark';
   if (!geneSymbol) return null;
   const panelBg = isDark ? '#0b1220' : '#ffffff';
@@ -43,6 +47,14 @@ export const GeneDetailDrawer: React.FC<Props> = ({ geneSymbol, diseaseName, the
             <div style={{ fontWeight: 900, fontSize: 18, color: ink }}>{geneSymbol}</div>
             <div style={{ fontSize: 11, color: muted }}>{diseaseName || 'evidence'} · on-demand drill-down</div>
           </div>
+          {snapshotId && geneSymbol && (
+            <a href={wikiUrl.entity(diseaseName || 'disease', snapshotId, 'gene', geneSymbol)}
+              onClick={e => { if (e.button === 0 && !e.metaKey && !e.ctrlKey) { e.preventDefault(); navigate((e.currentTarget as HTMLAnchorElement).getAttribute('href')!); } }}
+              title={`Stored evidence for ${geneSymbol} in snapshot #${snapshotId}, with source, date, run and commit`}
+              style={{ marginLeft: 8, fontSize: 11, fontWeight: 700, color: ink, border: `1px solid ${border}`, borderRadius: 8, padding: '5px 8px', textDecoration: 'none', whiteSpace: 'nowrap' }}>
+              Provenance ↗
+            </a>
+          )}
           <button onClick={onClose} aria-label="Close" style={{ marginLeft: 'auto', border: `1px solid ${border}`, background: 'transparent', color: muted, borderRadius: 8, width: 32, height: 32, cursor: 'pointer', fontSize: 16, lineHeight: 1 }}>✕</button>
         </div>
         {/* body — the existing panels, fetched on demand by symbol */}

@@ -6,9 +6,9 @@
 // Reads /api/dashboard/genes (no new endpoint); all scoring is client-side via
 // rankingBoard.ts.
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Loader2, Trophy, Search, X, Sliders, RotateCcw, Award, ChevronDown, ChevronUp, ChevronsUpDown, BookOpen, FileText, Atom, Microscope, Download } from 'lucide-react';
+import { Loader2, Trophy, Search, X, Sliders, RotateCcw, Award, ChevronDown, ChevronUp, ChevronsUpDown, BookOpen, FileText, Atom, Microscope, Download, GitCommit } from 'lucide-react';
 import { fetchSnapshots, authenticatedFetch, type RankingSnapshotMeta } from './supabase';
-import { navigate } from './nav';
+import { navigate, wikiUrl } from './nav';
 import { CRITERIA, MODALITY_PROFILES, LIT_WINDOWS, buildBoard, criterionBreakdown, computeVerdict, findBetterAlternatives, type CriterionKey, type ModalityKey, type ScoredGene, type SubMetric, type CriterionBreakdown, type LitWindow } from './rankingBoard';
 import { buildTargetReportHTML, type ReportCriterion } from './targetReport';
 import type { Theme } from './types';
@@ -712,6 +712,16 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
                 {selected.gated && <div className="text-[11px] text-amber-500 mt-1">⚠ {selected.gateNote}</div>}
               </div>
               <div className="flex items-center gap-1.5 shrink-0">
+                {/* Provenance: this gene's page in the wiki, for THIS snapshot — every stored row with
+                    its source, retrieval date, run and commit. The four-click path starts here. */}
+                {snapId && (
+                  <a href={wikiUrl.entity(snapshots.find(s => String(s.id) === snapId)?.disease_name || diseaseName || 'disease', Number(snapId), 'gene', selected.symbol)}
+                    onClick={e => { if (e.button === 0 && !e.metaKey && !e.ctrlKey) { e.preventDefault(); navigate((e.currentTarget as HTMLAnchorElement).getAttribute('href')!); } }}
+                    title={`Where these numbers come from: every stored evidence row for ${selected.symbol} in snapshot #${snapId}, with source, date, run and commit`}
+                    className={`flex items-center gap-1 text-[11px] font-bold px-2 py-1 rounded-md border transition-colors ${isDark ? 'border-slate-700 text-slate-200 hover:bg-slate-800' : 'border-slate-300 text-slate-700 hover:bg-slate-100'}`}>
+                    <GitCommit className="w-3.5 h-3.5" /> Provenance
+                  </a>
+                )}
                 <button onClick={generateReport} title="Generate a shareable target report (opens in a new tab)"
                   className={`flex items-center gap-1 text-[11px] font-bold px-2 py-1 rounded-md border transition-colors ${isDark ? 'border-slate-700 text-slate-200 hover:bg-slate-800' : 'border-slate-300 text-slate-700 hover:bg-slate-100'}`}>
                   <FileText className="w-3.5 h-3.5" /> Report
