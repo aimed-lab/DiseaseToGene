@@ -11,7 +11,7 @@
 // (commit-versioned Markdown from wiki/). Each block says which it is.
 import React, { useEffect, useMemo, useState } from 'react';
 import Markdown from 'react-markdown';
-import { ArrowLeft, Search, Sun, Moon, GitCommit, Database, FileText, Dna, Pill, FlaskConical, Route, BookOpen, Layers, ExternalLink, Info, Link2, ChevronRight } from 'lucide-react';
+import { ArrowLeft, Search, Sun, Moon, GitCommit, Menu, Database, FileText, Dna, Pill, FlaskConical, Route, BookOpen, Layers, ExternalLink, Info, Link2, ChevronRight } from 'lucide-react';
 import { navigate, wikiUrl, wikiSlug, type WikiRoute, type WikiEntityKind } from '../nav';
 import type { Theme } from '../types';
 import { WLink } from './WLink';
@@ -96,15 +96,23 @@ export default function WikiApp({ theme, route, onToggleTheme }: { theme: Theme;
   const disease = summary.data?.snapshot.disease_name || (route.page === 'disease' || route.page === 'entity' ? route.disease : '');
   const lineage = useMemo(() => (snapshot && summary.data ? resolveLineage(snapshot, summary.data.snapshot.provenance) : null), [snapshot, summary.data]);
   const mainRef = React.useRef<HTMLDivElement>(null);
-  useEffect(() => { mainRef.current?.scrollTo({ top: 0 }); }, [route]);
+  const [railOpen, setRailOpen] = useState(false);   // narrow screens: the tree is an overlay
+  useEffect(() => { mainRef.current?.scrollTo({ top: 0 }); setRailOpen(false); }, [route]);
 
   const ctx: PageCtx = { t, isDark, route, snapshot, disease, summary: summary.data, lineage };
   return (
     <div className={`h-screen w-screen flex ${t.page}`} style={{ fontFamily: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif' }}>
-      <Tree ctx={ctx} onToggleTheme={onToggleTheme} />
+      {/* the tree: a column from md up; an overlay (toggled from the crumb bar) below */}
+      <div className={`${railOpen ? 'fixed inset-y-0 left-0 z-40 shadow-2xl' : 'hidden'} md:static md:block md:shadow-none`}>
+        <Tree ctx={ctx} onToggleTheme={onToggleTheme} />
+      </div>
+      {railOpen && <div className="fixed inset-0 z-30 bg-black/40 md:hidden" onClick={() => setRailOpen(false)} />}
       <div ref={mainRef} className="flex-1 min-w-0 overflow-y-auto">
-        <div className="max-w-[880px] mx-auto px-8 py-6">
-          <Crumbs ctx={ctx} />
+        <div className="max-w-[880px] mx-auto px-4 sm:px-8 py-6">
+          <div className="flex items-center gap-2">
+            <button onClick={() => setRailOpen(o => !o)} className={`md:hidden mb-4 p-1.5 rounded border ${t.card}`} title="Menu"><Menu className="w-4 h-4" /></button>
+            <Crumbs ctx={ctx} />
+          </div>
           {summary.error && snapshot ? <Notice t={t} tone="error">Could not load snapshot #{snapshot}: {summary.error}</Notice>
             : route.page === 'index' ? <IndexPage ctx={ctx} />
             : route.page === 'doc' ? <DocPage ctx={ctx} slug={route.slug} />
@@ -136,7 +144,7 @@ function Tree({ ctx, onToggleTheme }: { ctx: PageCtx; onToggleTheme: () => void 
   );
   const goGene = (e: React.FormEvent) => { e.preventDefault(); if (snapshot && q.trim()) navigate(wikiUrl.entity(disease, snapshot, 'gene', q.trim().toUpperCase())); };
   return (
-    <nav className={`w-[260px] shrink-0 border-r flex flex-col ${t.rail}`}>
+    <nav className={`w-[260px] h-full shrink-0 border-r flex flex-col ${t.rail}`}>
       <div className="px-3 pt-3 pb-2 flex items-center justify-between">
         <WLink to={wikiUrl.index()} className="font-semibold text-sm flex items-center gap-2"><GitCommit className={`w-4 h-4 ${t.accent}`} /> Provenance Wiki</WLink>
         <button onClick={onToggleTheme} className={`p-1 rounded ${t.treeItem}`} title="Theme">{isDark ? <Sun className="w-3.5 h-3.5" /> : <Moon className="w-3.5 h-3.5" />}</button>
@@ -197,7 +205,7 @@ function Crumbs({ ctx }: { ctx: PageCtx }) {
   if ((route.page === 'disease' || route.page === 'entity') && snapshot) {
     parts.push({ to: wikiUrl.disease(disease, snapshot), label: `${wikiSlug(disease)} / #${snapshot}` });
     if (route.page === 'disease' && route.section) parts.push({ label: route.section });
-    if (route.page === 'entity') parts.push({ to: wikiUrl.disease(disease, snapshot, route.kind + 's'), label: route.kind }, { label: route.id });
+    if (route.page === 'entity') parts.push({ to: wikiUrl.disease(disease, snapshot, route.kind + 's'), label: route.kind }, { label: route.kind === 'trial' || route.kind === 'paper' ? route.id.toUpperCase() : route.id });
   }
   return (
     <div className={`flex items-center gap-1 text-xs mb-4 ${t.muted}`}>
@@ -214,7 +222,7 @@ function Aside({ ctx }: { ctx: PageCtx }) {
   const inbound = key && gi.data ? gi.data.in(key) : [];
   const outbound = key && gi.data ? gi.data.out(key) : [];
   return (
-    <aside className={`w-[280px] shrink-0 border-l overflow-y-auto ${t.aside}`}>
+    <aside className={`hidden lg:block w-[280px] shrink-0 border-l overflow-y-auto ${t.aside}`}>
       <div className="p-4 space-y-5 text-xs">
         {snapshot && summary && (
           <div>
@@ -272,7 +280,7 @@ function LinkList({ ctx, items, gi, limit = 40 }: { ctx: PageCtx; items: Array<{
 function NodeChip({ ctx, node, nodeKey }: { ctx: PageCtx; node: KgNode | null; nodeKey: string }) {
   const { t, isDark, snapshot, disease } = ctx;
   const to = snapshot ? wikiUrl.node(disease, snapshot, nodeKey) : null;
-  const label = node?.label || nodeKey.slice(nodeKey.indexOf(':') + 1);
+  const label = nodeLabel(node, nodeKey);
   const Icon = KIND_ICON[nodeKey.split(':')[0]] || Info;
   const cls = `inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] max-w-full ${isDark ? 'border-white/10 hover:bg-white/5' : 'border-black/10 hover:bg-black/5'}`;
   return to ? <WLink to={to} className={cls} title={nodeKey}><Icon className="w-3 h-3 opacity-60 shrink-0" /><span className="truncate">{label}</span></WLink>
@@ -499,7 +507,7 @@ function NodeListSection({ ctx, type }: { ctx: PageCtx; type: string }) {
         <thead><tr className={`text-left text-xs border-b ${t.th}`}><th className="py-1 pr-3">{type}</th><th className="py-1 pr-3 text-right">degree</th><th className="py-1">properties</th></tr></thead>
         <tbody>{nodes.slice(0, 500).map(n => (
           <tr key={n.key} className={`border-b ${t.row}`}>
-            <td className="py-1 pr-3"><WLink to={wikiUrl.node(disease, snapshot!, n.key) || '#'} className={t.link}>{n.label}</WLink></td>
+            <td className="py-1 pr-3"><WLink to={wikiUrl.node(disease, snapshot!, n.key) || '#'} className={t.link}>{nodeLabel(n, n.key)}</WLink></td>
             <td className="py-1 pr-3 text-right font-mono">{n.degree ?? '—'}</td>
             <td className={`py-1 text-xs ${t.muted}`}>{propsLine(n.props)}</td>
           </tr>))}</tbody>
@@ -508,6 +516,11 @@ function NodeListSection({ ctx, type }: { ctx: PageCtx; type: string }) {
     </>
   );
 }
+// KG labels for trials are stored lowercase (they are slugs); show the registry id as written.
+const nodeLabel = (n: KgNode | null, key: string) => {
+  const raw = n?.label || key.slice(key.indexOf(':') + 1);
+  return /^(trial|paper):/.test(key) ? raw.toUpperCase() : raw;
+};
 const propsLine = (p: any) => p && typeof p === 'object' ? Object.entries(p).filter(([, v]) => v != null && v !== '' && typeof v !== 'object').slice(0, 6).map(([k, v]) => `${k}: ${v}`).join(' · ') : '';
 
 // ── entity pages ────────────────────────────────────────────────────────────
@@ -550,6 +563,8 @@ function GenePage({ ctx, symbol }: { ctx: PageCtx; symbol: string }) {
     </>
   );
 }
+const axisOf = (r: WikiEvidenceRow) => (typeof r.value_json?.axis === 'number' ? r.value_json.axis : -1);
+const sortByAxis = (rows: WikiEvidenceRow[]) => [...rows].sort((a, b) => axisOf(b) - axisOf(a) || a.gene_symbol.localeCompare(b.gene_symbol));
 const dedupe = <X extends { node: KgNode }>(xs: X[]) => { const seen = new Set<string>(); return xs.filter(x => (seen.has(x.node.key) ? false : (seen.add(x.node.key), true))); };
 
 function EvidenceCard({ ctx, row }: { ctx: PageCtx; row: WikiEvidenceRow }) {
@@ -583,7 +598,7 @@ function RunPage({ ctx, id }: { ctx: PageCtx; id: string }) {
   const [q, setQ] = useState('');
   if (!run) return <Notice t={t} tone="warn">No run <span className="font-mono">{id}</span> in the lineage of snapshot #{snapshot}.</Notice>;
   const tone = lineage?.kind === 'recorded' ? 'text-emerald-400' : 'text-amber-400';
-  const list = (rows.data?.rows || []).filter(r => !q || r.gene_symbol.toUpperCase().includes(q.toUpperCase()));
+  const list = sortByAxis((rows.data?.rows || []).filter(r => !q || r.gene_symbol.toUpperCase().includes(q.toUpperCase())));
   return (
     <>
       <h1 className="text-2xl font-semibold mb-0.5 font-mono">{run.id}</h1>
@@ -632,7 +647,7 @@ function SourcePage({ ctx, slug }: { ctx: PageCtx; slug: string }) {
   if (!label) return <Notice t={t} tone="warn">No source <span className="font-mono">{slug}</span> in snapshot #{snapshot}.</Notice>;
   const runs = (lineage?.runs || []).filter(r => r.source === label || (info && sourceInfo(r.source)?.key === info.key));
   const types = [...new Set((rows.data?.rows || []).map(r => r.evidence_type))];
-  const list = (rows.data?.rows || []).filter(r => !q || r.gene_symbol.toUpperCase().includes(q.toUpperCase()));
+  const list = sortByAxis((rows.data?.rows || []).filter(r => !q || r.gene_symbol.toUpperCase().includes(q.toUpperCase())));
   return (
     <>
       <h1 className="text-2xl font-semibold mb-0.5">{label}</h1>
@@ -684,7 +699,7 @@ function GraphEntityPage({ ctx, kind, id }: { ctx: PageCtx; kind: WikiEntityKind
   // "every target this hits in this snapshot" from edges alone — no per-page query.
   return (
     <>
-      <h1 className="text-2xl font-semibold mb-0.5 flex items-center gap-2"><Icon className={`w-5 h-5 ${t.accent}`} />{node.label}</h1>
+      <h1 className="text-2xl font-semibold mb-0.5 flex items-center gap-2"><Icon className={`w-5 h-5 ${t.accent} shrink-0`} />{kind === 'trial' && node.props?.title ? <span>{node.props.title} <span className={`font-mono text-base font-normal ${t.muted}`}>{nodeLabel(node, key)}</span></span> : nodeLabel(node, key)}</h1>
       <p className={`text-sm mb-4 ${t.muted}`}>{kind} · <span className="font-mono">{key}</span> · degree {node.degree ?? neighbours.length}{external && <> · <a href={external} target="_blank" rel="noreferrer" className={`${t.link} inline-flex items-center gap-1`}><ExternalLink className="w-3 h-3" /> live record</a></>}</p>
       {props.length > 0 && (
         <Section t={t} title="Stored properties" tag={<LayerTag t={t} kind="data" detail="KG_NODES.props_json" />}>
