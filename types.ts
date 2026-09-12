@@ -154,7 +154,7 @@ export interface ExpressionRow {
 }
 
 export type Theme = 'dark' | 'light';
-export type ViewMode = 'dashboard' | 'list' | 'enrichment' | 'raw' | 'pubtator' | 'paper' | 'funnel' | 'rankings' | 'jobs' | 'graph' | 'board';
+export type ViewMode = 'dashboard' | 'list' | 'enrichment' | 'paper' | 'rankings' | 'jobs' | 'graph' | 'board';  // 'raw' | 'pubtator' | 'funnel' archived 2026-09-12 (archive/README.md)
 
 export interface FilterCondition {
   field: string;

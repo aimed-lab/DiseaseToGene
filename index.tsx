@@ -61,7 +61,6 @@ import {
   RotateCcw,
   PanelLeft,
   PanelRight,
-  Database,
   ChevronLeft,
   CheckCircle2,
   TrendingUp,
@@ -103,7 +102,6 @@ import DependencyPanel from './DependencyPanel';
 import ProteomicsPanel from './ProteomicsPanel';
 import NetworkPanel from './NetworkPanel';
 import EvidenceCardsPanel from './EvidenceCardsPanel';
-import FunnelView from './FunnelView';
 import RankingsView from './RankingsView';
 import DashboardView, { type DashboardCommand } from './DashboardView';
 import KnowledgeGraphView from './KnowledgeGraphView';
@@ -138,9 +136,6 @@ import {
   ViewMode,
   ResearchContext,
   Message,
-  ClinicalSample,
-  ExpressionRow,
-  PubTatorResult,
   GETWeights,
   PaperAnalysis,
   GeneResult,
@@ -407,171 +402,6 @@ const isPointInCircle = (px: number, py: number, cx: number, cy: number, r: numb
 
 const getSigmaForZoom = (scale: number) => 35 / scale;
 
-const RawDataView = ({ targets, theme, cancerType }: { targets: Target[], theme: Theme, cancerType: string }) => {
-  const [clinicalData, setClinicalData] = useState<ClinicalSample[]>([]);
-  const [selectedSample, setSelectedSample] = useState<ClinicalSample | null>(null);
-  const [expressionData, setExpressionData] = useState<ExpressionRow[]>([]);
-  const [loadingClinical, setLoadingClinical] = useState(false);
-  const [loadingExpression, setLoadingExpression] = useState(false);
-  const [showOnlyGetGenes, setShowOnlyGetGenes] = useState(true);
-  const [offset, setOffset] = useState(0);
-  const getTargetSymbols = useMemo(() => new Set(targets.map(t => t.symbol)), [targets]);
-  
-  useEffect(() => { 
-    const fetchClinical = async () => { 
-      setLoadingClinical(true); 
-      const data = await api.getTcgaClinical(cancerType, offset); 
-      // Normalize clinical data keys
-      const normalized = data.map(item => ({
-        sampleid: item.SAMPLEID ?? item.sampleid ?? item.SampleID ?? item.sample_id ?? item.sample ?? item.PATIENT_ID ?? item.patient_id,
-        vital_status: item.VITAL_STATUS ?? item.vital_status ?? item.VitalStatus ?? 'Unknown'
-      }));
-      setClinicalData(normalized); 
-      setLoadingClinical(false); 
-    }; 
-    fetchClinical(); 
-  }, [offset, cancerType]);
-
-  const handleSelectSample = async (sample: ClinicalSample) => { 
-    setSelectedSample(sample); 
-    setLoadingExpression(true); 
-    
-    // Use the new expression API format
-    // Since we need expression for a specific sample, we fetch the target genes
-    // and filter for this sample. If "Show All" is selected, we are limited by the API
-    // so we'll primarily support the target list genes.
-    const genesToFetch = showOnlyGetGenes ? Array.from(getTargetSymbols) : ['TP53', 'BRCA1', 'EGFR', 'MYC', 'PTEN']; // Fallback small list if not filtered
-    
-    const page = await api.getTcgaExpressionPage(cancerType, genesToFetch, 0);
-    const sampleRows = page.items.filter(item => {
-      const sid = (item.SAMPLEID ?? item.sampleid ?? item.SampleID ?? item.sample_id ?? item.sample ?? item.PATIENT_ID ?? item.patient_id)?.toString().trim().toUpperCase();
-      return sid === sample.sampleid.toString().trim().toUpperCase();
-    }).map(item => ({
-      gene_symbol: (item.GENE_SYMBOL ?? item.gene_symbol ?? item.GeneSymbol ?? item.symbol ?? item.Symbol ?? item.gene),
-      value: (item.EXPRESSION_VALUE ?? item.value ?? item.expression_value ?? item.ExpressionValue ?? item.tpm ?? item.TPM ?? item.exp)
-    }));
-    
-    setExpressionData(sampleRows); 
-    setLoadingExpression(false); 
-  };
-  const filteredExpression = useMemo(() => { if (!showOnlyGetGenes) return expressionData; return expressionData.filter(row => getTargetSymbols.has(row.gene_symbol)); }, [expressionData, getTargetSymbols, showOnlyGetGenes]);
-  return (
-    <div className="h-full flex flex-col md:flex-row divide-y md:divide-y-0 md:divide-x divide-neutral-100 dark:divide-neutral-800">
-      <div className="flex-1 flex flex-col overflow-hidden">
-        <div className="p-4 border-b border-neutral-100 dark:border-neutral-800 flex items-center justify-between"><div className="flex items-center gap-2"><Stethoscope className="w-4 h-4 text-neutral-500" /><span className="text-[12px] font-semibold text-neutral-700 dark:text-neutral-400">Cohort Explorer</span></div><div className="flex items-center gap-2"><button onClick={() => setOffset(Math.max(0, offset - 10))} disabled={offset === 0} className="p-1 rounded hover:bg-neutral-100 transition-colors"><ChevronLeft className="w-4 h-4" /></button><span className="text-[10px] font-mono text-neutral-600 dark:text-neutral-500">P. {offset/10 + 1}</span><button onClick={() => setOffset(offset + 10)} className="p-1 rounded hover:bg-neutral-100 transition-colors"><ChevronRight className="w-4 h-4" /></button></div></div>
-        <div className="flex-1 overflow-auto">{loadingClinical ? (<div className="h-full flex items-center justify-center"><Loader2 className="w-6 h-6 animate-spin text-blue-500" /></div>) : (<table className="w-full text-left"><thead className="sticky top-0 bg-neutral-50 dark:bg-neutral-900 border-b border-neutral-100 dark:border-neutral-800 z-10"><tr><th className="p-4 text-[10px] font-bold text-neutral-600 dark:text-neutral-500 uppercase pl-6">Sample ID</th><th className="p-4 text-[10px] font-bold text-neutral-600 dark:text-neutral-500 uppercase">Type</th><th className="p-4 pr-6 text-right text-[10px] font-bold text-neutral-600 dark:text-neutral-500 uppercase">Status</th></tr></thead><tbody className="divide-y divide-neutral-50 dark:divide-neutral-800">{clinicalData.map(sample => (<tr key={sample.sampleid} onClick={() => handleSelectSample(sample)} className={`cursor-pointer transition-colors hover:bg-neutral-50 dark:hover:bg-neutral-800/50 ${selectedSample?.sampleid === sample.sampleid ? 'bg-blue-50/50 dark:bg-blue-900/10' : ''}`}><td className="p-4 pl-6 font-mono text-[11px] text-blue-600 dark:text-blue-400">{sample.sampleid}</td><td className="p-4 text-[11px] text-neutral-700 dark:text-neutral-400">{sample.vital_status === 'Alive' ? 'Alive' : 'Deceased'}</td><td className={`p-4 pr-6 text-right text-[11px] font-medium ${sample.vital_status === 'Alive' ? 'text-[#EB4236]' : 'text-[#4285F5]'}`}>{sample.vital_status}</td></tr>))}</tbody></table>)}</div>
-      </div>
-      <div className="flex-1 flex flex-col overflow-hidden">
-        <div className="p-4 border-b border-neutral-100 dark:border-neutral-800 flex items-center justify-between"><div className="flex items-center gap-2"><Activity className="w-4 h-4 text-neutral-500" /><span className="text-[12px] font-semibold text-neutral-700 dark:text-neutral-400">Sample Expression</span></div><button onClick={() => setShowOnlyGetGenes(!showOnlyGetGenes)} className={`text-[10px] font-bold px-3 py-1 rounded border transition-colors ${showOnlyGetGenes ? 'bg-blue-500 text-white' : 'text-neutral-500'}`}>{showOnlyGetGenes ? 'FILTERED' : 'ALL'}</button></div>
-        <div className="flex-1 overflow-auto">{!selectedSample ? (<div className="h-full flex flex-col items-center justify-center p-12 text-center text-neutral-400"><DatabaseZap className="w-8 h-8 mb-4 opacity-10" /><p className="text-sm font-medium">Select a patient sample</p></div>) : loadingExpression ? (<div className="h-full flex items-center justify-center"><Loader2 className="w-6 h-6 animate-spin text-blue-500" /></div>) : (<table className="w-full text-left"><thead className="sticky top-0 bg-neutral-50 dark:bg-neutral-900 border-b border-neutral-100 dark:border-neutral-800 z-10"><tr><th className="p-4 text-[10px] font-bold text-neutral-600 dark:text-neutral-500 uppercase pl-6">Gene</th><th className="p-4 text-[10px] font-bold text-neutral-600 dark:text-neutral-500 uppercase text-center">In List</th><th className="p-4 pr-6 text-right text-[10px] font-bold text-neutral-600 dark:text-neutral-500 uppercase">TPM Value</th></tr></thead><tbody className="divide-y divide-neutral-50 dark:divide-neutral-800">{filteredExpression.map(row => { const isGetGene = getTargetSymbols.has(row.gene_symbol); return (<tr key={row.gene_symbol} className={isGetGene ? 'bg-blue-50/20 dark:bg-blue-900/5' : ''}><td className={`p-4 pl-6 font-semibold text-[11px] ${isGetGene ? 'text-blue-600 dark:text-blue-400' : 'text-neutral-600 dark:text-neutral-300'}`}>{row.gene_symbol}</td><td className="p-4 text-center">{isGetGene && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 mx-auto" />}</td><td className="p-4 pr-6 text-right font-mono text-[11px] text-neutral-600 dark:text-neutral-500">{parseFloat(row.value).toFixed(4)}</td></tr>); })}</tbody></table>)}</div>
-      </div>
-    </div>
-  );
-};
-
-const PubTatorView = ({ results, isLoading, theme, onAddGene, onShowScoreInfo, onShowTooltip, activeTooltip, onLoadMore, visibleColumns }: {
-  results?: (PubTatorResult & { otGeneticScore?: number; otExpressionScore?: number; otTargetScore?: number; otGetScore?: number })[],
-  isLoading?: boolean,
-  theme: Theme,
-  onAddGene: (gene: { symbol: string, name: string }) => void,
-  onShowScoreInfo?: (type: any) => void,
-  onShowTooltip?: (id: string | null) => void,
-  activeTooltip?: string | null,
-  onLoadMore?: () => void,
-  visibleColumns?: string[],
-}) => {
-  const col = (key: string) => visibleColumns?.includes(key) ?? false;
-  if (isLoading) {
-    return (
-      <div className="h-full flex flex-col items-center justify-center p-20 text-center">
-        <Loader2 className="w-12 h-12 animate-spin text-blue-500 mb-6" />
-        <h3 className="text-lg font-bold mb-2 text-neutral-800 dark:text-neutral-200">Analyzing Literature Landscape</h3>
-        <p className="text-sm text-neutral-600 dark:text-neutral-500 max-w-md leading-relaxed">
-          Fetching therapeutic targets from PubTator (2024-2026) and calculating publication velocity...
-        </p>
-      </div>
-    );
-  }
-
-  if (!results || results.length === 0) {
-    return (
-      <div className="h-full flex flex-col items-center justify-center p-20 text-center">
-        <BookOpen className="w-16 h-16 text-blue-500 mb-8 opacity-20" />
-        <h3 className="text-lg font-bold mb-2 text-neutral-800 dark:text-neutral-200">No Literature Evidence Found</h3>
-        <p className="text-sm text-neutral-600 dark:text-neutral-500 max-w-md leading-relaxed">
-          Try a different disease or therapeutic area to discover emerging targets.
-        </p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="h-full overflow-auto">
-      <table className="w-full min-w-[1080px] text-left border-collapse">
-        <thead className={`sticky top-0 z-10 text-[10px] font-black uppercase tracking-widest border-b backdrop-blur ${theme === 'dark' ? 'bg-[#101827]/95 border-slate-800 text-slate-400' : 'bg-slate-100/95 border-slate-200 text-slate-600 shadow-sm'}`}>
-          <tr>
-            <th className="p-4 pl-8">Gene</th>
-            <th className="p-4 text-center">Total Papers</th>
-            <th className="p-4 text-center">Last 3 Years</th>
-            <th className="p-4 text-center">Velocity</th>
-            {col('geneticScore') && <th className="p-4 text-center whitespace-nowrap text-blue-500 text-[9px] font-black uppercase tracking-wider">Genetic (OT)</th>}
-            {col('combinedExpression') && <th className="p-4 text-center whitespace-nowrap text-emerald-500 text-[9px] font-black uppercase tracking-wider">Expression (OT)</th>}
-            {col('targetScore') && <th className="p-4 text-center whitespace-nowrap text-amber-500 text-[9px] font-black uppercase tracking-wider">Target (OT)</th>}
-            {col('getScore') && <th className="p-4 text-center whitespace-nowrap text-violet-500 text-[9px] font-black uppercase tracking-wider">GET Score (OT)</th>}
-            <th className="p-4">Top Paper</th>
-            <th className="p-4">Journal</th>
-            <th className="p-4 text-center">Year</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80">
-          {results.map((r, idx) => (
-            <tr key={idx} className="hover:bg-neutral-50/50 dark:hover:bg-neutral-800/20 transition-colors">
-              <td className="p-4 pl-8 font-bold text-blue-600 dark:text-blue-500 text-[13px]">{r.gene}</td>
-              <td className="p-4 text-center font-mono text-[11px] text-neutral-600 dark:text-neutral-400">{r.totalPapers.toLocaleString()}</td>
-              <td className="p-4 text-center font-mono text-[11px] font-bold text-blue-600 dark:text-blue-400">{r.recentPapers.toLocaleString()}</td>
-              <td className="p-4 text-center">
-                <div className="flex items-center justify-center gap-1.5">
-                  <span className={`text-[11px] font-bold ${r.velocity > 20 ? 'text-emerald-600' : 'text-neutral-500'}`}>
-                    {r.velocity.toFixed(1)}%
-                  </span>
-                  {r.velocity > 20 && <TrendingUp className="w-3 h-3 text-emerald-500" />}
-                </div>
-              </td>
-              {col('geneticScore') && <td className="p-4 text-center font-mono text-[11px]">{r.otGeneticScore !== undefined ? <ScoreBar value={r.otGeneticScore} color="bg-blue-500" theme={theme} /> : <span className="text-neutral-400">—</span>}</td>}
-              {col('combinedExpression') && <td className="p-4 text-center font-mono text-[11px]">{r.otExpressionScore !== undefined ? <ScoreBar value={r.otExpressionScore} color="bg-emerald-500" theme={theme} /> : <span className="text-neutral-400">—</span>}</td>}
-              {col('targetScore') && <td className="p-4 text-center font-mono text-[11px]">{r.otTargetScore !== undefined ? <ScoreBar value={r.otTargetScore} color="bg-amber-500" theme={theme} /> : <span className="text-neutral-400">—</span>}</td>}
-              {col('getScore') && <td className="p-4 text-center font-mono text-[11px]">{r.otGetScore !== undefined ? <ScoreBar value={r.otGetScore} color="bg-violet-500" theme={theme} /> : <span className="text-neutral-400">—</span>}</td>}
-              <td className="p-4 max-w-xs">
-                <a 
-                  href={`https://pubmed.ncbi.nlm.nih.gov/${r.pmid}/`} 
-                  target="_blank" 
-                  rel="noopener noreferrer"
-                  className={`text-[11px] font-semibold line-clamp-2 leading-relaxed ${theme === 'dark' ? 'text-slate-200 hover:text-blue-400' : 'text-slate-950 hover:text-blue-700'}`}
-                >
-                  {r.topPaper}
-                </a>
-              </td>
-              <td className={`p-4 text-[10px] font-bold uppercase tracking-tight ${theme === 'dark' ? 'text-slate-400' : 'text-slate-800'}`}>{r.journal}</td>
-              <td className={`p-4 font-mono text-[11px] ${theme === 'dark' ? 'text-slate-400' : 'text-slate-800'}`}>{r.year}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      {results.length > 0 && (
-        <div className="p-8 flex justify-center border-t border-neutral-100 dark:border-neutral-800 bg-neutral-50/30 dark:bg-black/20">
-          <button 
-            onClick={onLoadMore}
-            className="group px-10 py-4 rounded-2xl bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 text-neutral-800 dark:text-neutral-200 text-[12px] font-bold uppercase tracking-widest hover:bg-neutral-50 dark:hover:bg-neutral-800 active:scale-95 transition-all flex items-center gap-3 shadow-sm hover:shadow-md"
-          >
-            <Plus className="w-5 h-5 text-blue-600 group-hover:rotate-90 transition-transform" /> 
-            Load More Literature Analytics
-          </button>
-        </div>
-      )}
-    </div>
-  );
-};
-
 const DrugLandscape = ({ 
   targetId, 
   symbol, 
@@ -751,11 +581,6 @@ const UsefulnessControls = ({
 // "Research ▾" dropdown so the top bar stays short (Targets · Funnel · Rankings · Research ·
 // Enrichment · Jobs). Each item is still one click away; the underlying ViewMode ids are
 // unchanged, so the views themselves need no edits.
-const RESEARCH_GROUP = [
-  { id: 'pubtator', i: BookOpen, l: 'Literature' },
-  { id: 'paper',    i: FileText, l: 'Papers'     },
-  { id: 'raw',      i: Database, l: 'Cohorts'    },
-];
 
 // Views a NON-admin (researcher) may use. Everything else (Funnel, Rankings, the
 // Research menu, Enrichment, Jobs, …) is admin-only — hidden from the nav AND blocked
@@ -775,19 +600,7 @@ const TabNavigation = ({
   isAdmin: boolean;   // effective admin (false when an admin is previewing as researcher)
 }) => {
   const isDark = theme === 'dark';
-  const [researchOpen, setResearchOpen] = useState(false);
-  const researchRef = useRef<HTMLDivElement>(null);
-  // Close the Research menu on outside-click / Escape.
-  useEffect(() => {
-    if (!researchOpen) return;
-    const onDoc = (e: MouseEvent) => { if (researchRef.current && !researchRef.current.contains(e.target as Node)) setResearchOpen(false); };
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setResearchOpen(false); };
-    document.addEventListener('mousedown', onDoc);
-    document.addEventListener('keydown', onKey);
-    return () => { document.removeEventListener('mousedown', onDoc); document.removeEventListener('keydown', onKey); };
-  }, [researchOpen]);
 
-  const researchActive = RESEARCH_GROUP.some(r => r.id === viewMode);
   const btnCls = (active: boolean) => `h-9 px-3 xl:px-4 rounded-md text-[11px] font-semibold transition-all flex items-center gap-2 whitespace-nowrap ${active ? (isDark ? 'bg-slate-800 text-white' : 'bg-slate-950 text-white') : (isDark ? 'text-slate-300 hover:text-white hover:bg-slate-800' : 'text-slate-900 hover:text-slate-950 hover:bg-slate-100')}`;
   const iconCls = (active: boolean) => `w-3.5 h-3.5 ${active ? 'text-white' : (isDark ? 'text-slate-400' : 'text-slate-700')}`;
 
@@ -795,7 +608,7 @@ const TabNavigation = ({
   // navigates instead of switching viewMode. It sits in the nav rather than inside the
   // Ranking Board toolbar: it is a feature in its own right, and moving it out also takes
   // one button off an already-crowded board header.
-  const primaryAll = [ {id:'board',i:Trophy,l:'Ranking Board'}, {id:'dashboard',i:LayoutDashboard,l:'Evidence'}, {id:'list',i:List,l:'Targets'}, {id:'funnel',i:Filter,l:'Funnel'}, {id:'rankings',i:Layers,l:'Score Matrix'}, {id:'graph',i:Network,l:'Graph'}, {id:'modality',i:Atom,l:'Modality',route:ROUTES.modality}, {id:'wiki',i:BookOpen,l:'Wiki',route:'/wiki'} ];
+  const primaryAll = [ {id:'board',i:Trophy,l:'Ranking Board'}, {id:'dashboard',i:LayoutDashboard,l:'Evidence'}, {id:'list',i:List,l:'Targets'}, {id:'rankings',i:Layers,l:'Score Matrix'}, {id:'graph',i:Network,l:'Graph'}, {id:'modality',i:Atom,l:'Modality',route:ROUTES.modality}, {id:'wiki',i:BookOpen,l:'Wiki',route:'/wiki'} ];
   // Researchers see only their allow-listed tabs; admins see everything.
   const primary  = isAdmin ? primaryAll : primaryAll.filter(t => RESEARCHER_VIEWS.has(t.id));
   const trailing = [ {id:'enrichment',i:BarChart3,l:'Enrichment'} ];   // Jobs removed: harvesting is a command-line operation
@@ -814,39 +627,9 @@ const TabNavigation = ({
     <nav className="hidden lg:flex flex-1 items-center justify-start gap-1 min-w-0 px-6">
       {primary.map(flatBtn)}
 
-      {/* Research ▾ — Literature · Papers · Cohorts (admin only) */}
-      {isAdmin && (
-      <div ref={researchRef} className="relative">
-        <button
-          onClick={() => setResearchOpen(o => !o)}
-          aria-haspopup="menu"
-          aria-expanded={researchOpen}
-          className={btnCls(researchActive)}
-        >
-          <FlaskConical className={iconCls(researchActive)} />
-          Research
-          <ChevronDown className={`w-3 h-3 transition-transform ${researchOpen ? 'rotate-180' : ''} ${researchActive ? 'text-white' : (isDark ? 'text-slate-400' : 'text-slate-500')}`} />
-        </button>
-        {researchOpen && (
-          <div role="menu" className={`absolute left-0 top-full mt-1 z-50 min-w-[180px] rounded-lg border py-1 shadow-xl ${isDark ? 'bg-slate-900 border-slate-700' : 'bg-white border-slate-200'}`}>
-            {RESEARCH_GROUP.map(r => {
-              const active = viewMode === r.id;
-              return (
-                <button
-                  key={r.id}
-                  role="menuitem"
-                  onClick={() => { onViewModeChange(r.id as ViewMode); setResearchOpen(false); }}
-                  className={`w-full flex items-center gap-2.5 px-3 py-2 text-[11px] font-semibold text-left transition-colors ${active ? (isDark ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-950') : (isDark ? 'text-slate-300 hover:bg-slate-800 hover:text-white' : 'text-slate-700 hover:bg-slate-50 hover:text-slate-950')}`}
-                >
-                  <r.i className={`w-3.5 h-3.5 ${active ? (isDark ? 'text-white' : 'text-slate-950') : (isDark ? 'text-slate-400' : 'text-slate-500')}`} />
-                  {r.l}
-                </button>
-              );
-            })}
-          </div>
-        )}
-      </div>
-      )}
+      {/* Papers — PDF → evidence cards (admin only). Was inside a Research ▾ dropdown with
+          Literature and Cohorts; those were archived (see archive/README.md). */}
+      {isAdmin && flatBtn({ id: 'paper', i: FileText, l: 'Papers' })}
 
       {isAdmin && trailing.map(flatBtn)}
       {/* New Dashboard tab slots in here, on the same line. */}
@@ -3863,47 +3646,6 @@ const App = () => {
     }
   };
 
-  const handleLoadMoreLiterature = async () => {
-    if (!researchState.pubtatorGenePool || !researchState.activeDisease) return;
-    
-    setLoading(true);
-    setLoadingMessage("Fetching next batch of publication analytics...");
-    
-    try {
-      const PAGE_SIZE = 20;
-      // Initial batch consumes first 100 genes from pool (velocity-ranked) — start load-more after that
-      const INITIAL_BATCH = 100;
-      const start = INITIAL_BATCH + (researchState.pubtatorPage - 1) * PAGE_SIZE;
-      const end = start + PAGE_SIZE;
-      const nextGenes = researchState.pubtatorGenePool.slice(start, end);
-
-      if (nextGenes.length === 0) {
-        alert("End of extracted gene pool reached.");
-        return;
-      }
-
-      const newResults = await api.getPubTatorVelocityBatch(nextGenes, researchState.activeDisease.name);
-
-      setResearchState(prev => {
-        const existing = new Set((prev.pubtatorResults || []).map(r => r.gene.toUpperCase()));
-        const dedupedNew = newResults.filter(r => !existing.has(r.gene.toUpperCase()));
-        const combined = [...(prev.pubtatorResults || []), ...dedupedNew];
-        // Re-sort by weighted score (recentPapers × velocity) — same as initial sort
-        const ws = (r: { recentPapers: number; velocity: number }) => r.recentPapers * (r.velocity / 100);
-        combined.sort((a, b) => ws(b) - ws(a));
-        return { ...prev, pubtatorResults: combined, pubtatorPage: prev.pubtatorPage + 1 };
-      });
-      
-      // Update network scores with new potential seeds
-      performRWR(researchState.targets, newResults.map(r => r.gene));
-      
-    } catch (err) {
-      logDev("Literature pagination error:", err);
-    } finally {
-      setLoading(false);
-    }
-  };
-
   const handlePaperUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []).filter(f => f.type === 'application/pdf');
     if (files.length === 0) return;
@@ -4623,22 +4365,6 @@ CRITICAL RULES:
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [researchState.targets.length]);
 
-
-  useEffect(() => {
-    if (viewMode === 'pubtator' && researchState.activeDisease && !researchState.pubtatorResults && !researchState.isFetchingPubTator) {
-      const fetchPubTator = async () => {
-        setResearchState(prev => ({ ...prev, isFetchingPubTator: true }));
-        try {
-          const data = await api.getPubTatorLiterature(researchState.activeDisease!.name);
-          setResearchState(prev => ({ ...prev, pubtatorResults: data.results, pubtatorGenePool: data.pool, isFetchingPubTator: false }));
-        } catch (e) {
-          logDev("PubTator fetch failed:", e);
-          setResearchState(prev => ({ ...prev, isFetchingPubTator: false }));
-        }
-      };
-      fetchPubTator();
-    }
-  }, [viewMode, researchState.activeDisease, researchState.pubtatorResults, researchState.isFetchingPubTator]);
 
   const calculatePriorityScores = (targets: Target[], weights: GETWeights): Target[] => {
     return targets.map(t => {
@@ -5399,7 +5125,7 @@ CRITICAL RULES:
         { name: 'search_diseases', description: 'Search Open Targets for a disease by name. Use when the user names a disease that is not loaded yet.', parameters: { type: Type.OBJECT, properties: { query: { type: Type.STRING } }, required: ['query'] } },
         { name: 'get_genes', description: 'Load a disease into the Target List by its Open Targets id. Follows search_diseases.', parameters: { type: Type.OBJECT, properties: { id: { type: Type.STRING }, name: { type: Type.STRING } }, required: ['id', 'name'] } },
         { name: 'load_more', description: 'Fetch the next page of targets for the disease already loaded.', parameters: { type: Type.OBJECT, properties: {}, required: [] } },
-        { name: 'update_view', description: 'Switch the main view. board = Target Ranking Board; dashboard = data-quality explorer; funnel = prioritisation funnel; graph = knowledge graph; rankings = ranking dashboard; list = target list.', parameters: { type: Type.OBJECT, properties: { mode: { type: Type.STRING, enum: ['board', 'dashboard', 'list', 'funnel', 'rankings', 'graph', 'enrichment', 'raw', 'pubtator'] } }, required: ['mode'] } },
+        { name: 'update_view', description: 'Switch the main view. board = Target Ranking Board; dashboard = data-quality explorer; graph = knowledge graph; rankings = ranking dashboard; list = target list.', parameters: { type: Type.OBJECT, properties: { mode: { type: Type.STRING, enum: ['board', 'dashboard', 'list', 'rankings', 'graph', 'enrichment', 'paper'] } }, required: ['mode'] } },
         { name: 'focus_gene', description: 'Open the detail view for one gene. Only works for genes already in the Target List.', parameters: { type: Type.OBJECT, properties: { symbol: { type: Type.STRING } }, required: ['symbol'] } },
         { name: 'set_weights', description: 'Change the GET scoring weights (0-1 each) and rescore the Target List.', parameters: { type: Type.OBJECT, properties: { genetic: { type: Type.NUMBER }, expression: { type: Type.NUMBER }, target: { type: Type.NUMBER }, velocity: { type: Type.NUMBER } } } },
         { name: 'dashboard_search', description: 'Type a gene symbol into the dashboard search box (substring match). Switches to the dashboard.', parameters: { type: Type.OBJECT, properties: { query: { type: Type.STRING } }, required: ['query'] } },
@@ -5501,7 +5227,7 @@ ${modalityPromptBlock()}`;
       Additional actions you can take (call the tool, don't just describe it):
       - 'focus_gene' { symbol } — open a specific gene's detail view when the user asks to see/open/inspect one gene.
       - 'set_weights' { genetic, expression, target, velocity } — change the GET scoring weights (0-1 each) and rescore. Use when the user says e.g. "weight genetics higher" or "prioritise expression".
-      - 'update_view' { mode } — switch the main view. 'board' opens the Target Ranking Board (US-News-style: targets ranked by a weighted sum of 8 criteria — use this when the user asks "is X the best target" or "rank targets". Only the small-molecule modality is currently shown; antibody/PROTAC/RNA/gene-therapy are in development, so don't offer them); 'graph' the Knowledge Graph; 'rankings' the ranking dashboard; 'funnel' the prioritisation funnel; 'dashboard' the data-quality dashboard.
+      - 'update_view' { mode } — switch the main view. 'board' opens the Target Ranking Board (US-News-style: targets ranked by a weighted sum of 8 criteria — use this when the user asks "is X the best target" or "rank targets". Only the small-molecule modality is currently shown; antibody/PROTAC/RNA/gene-therapy are in development, so don't offer them); 'graph' the Knowledge Graph; 'rankings' the ranking dashboard; 'dashboard' the data-quality dashboard.
       - When you name specific genes in an answer, list them plainly by symbol so they can be surfaced as clickable chips.
 
       Driving the DASHBOARD (the Oracle data-quality explorer) — use these when the user's intent is about the dashboard, or to search/filter a large snapshot visually. They auto-switch to the dashboard:
@@ -5934,7 +5660,7 @@ ${modalityResultBlock(getLastModalityResult()) || '      (No modality analysis h
                Also hidden until a disease is loaded: with no trail to show, the bar collapses
                to a lone "Home" pill that duplicates the Workspace icon already in the left
                rail, costing a row of vertical space to say nothing. */}
-           {researchState.activeDisease && !['board', 'graph', 'dashboard', 'rankings', 'funnel'].includes(viewMode) && (
+           {researchState.activeDisease && !['board', 'graph', 'dashboard', 'rankings'].includes(viewMode) && (
            <Breadcrumbs
              activeDisease={researchState.activeDisease}
              focusSymbol={researchState.focusSymbol}
@@ -6019,33 +5745,8 @@ ${modalityResultBlock(getLastModalityResult()) || '      (No modality analysis h
                     onShowScoreInfo={setActiveScoreInfo}
                   />
                 </div>
-              ) : researchState.targets.length === 0 && !['dashboard', 'raw', 'paper', 'pubtator', 'funnel', 'rankings', 'graph', 'board'].includes(viewMode) ? (<div className="h-full flex flex-col items-center justify-center p-20 text-center animate-in zoom-in duration-500"><Search className="w-16 h-16 text-blue-500 mb-8 opacity-30" /><h2 className={`text-xl font-bold mb-2 tracking-tight ${theme === 'dark' ? 'text-neutral-200' : 'text-slate-950'}`}>System Ready for Research Focus</h2><p className={`text-sm max-w-sm leading-relaxed ${theme === 'dark' ? 'text-neutral-500' : 'text-slate-700'}`}>Search for a therapeutic area or disease in the terminal to begin multi-modal target discovery.</p></div>) : (viewMode === 'raw') && !activeCancerType ? (<div className="h-full flex flex-col items-center justify-center p-12 text-center"><div className="p-5 rounded-full bg-blue-50 dark:bg-blue-900/20 mb-6"><AlertCircle className="w-12 h-12 text-blue-600" /></div><h3 className="text-xl font-bold mb-2 text-neutral-800 dark:text-neutral-200">Optimized Context Required</h3><p className="text-sm max-w-md text-neutral-600 dark:text-neutral-500 leading-relaxed">Cohort analytics are currently specifically tuned for high-resolution TCGA (e.g. BRCA, KIRC, BLCA) studies.</p></div>) : (
+              ) : researchState.targets.length === 0 && !['dashboard', 'paper', 'rankings', 'graph', 'board'].includes(viewMode) ? (<div className="h-full flex flex-col items-center justify-center p-20 text-center animate-in zoom-in duration-500"><Search className="w-16 h-16 text-blue-500 mb-8 opacity-30" /><h2 className={`text-xl font-bold mb-2 tracking-tight ${theme === 'dark' ? 'text-neutral-200' : 'text-slate-950'}`}>System Ready for Research Focus</h2><p className={`text-sm max-w-sm leading-relaxed ${theme === 'dark' ? 'text-neutral-500' : 'text-slate-700'}`}>Search for a therapeutic area or disease in the terminal to begin multi-modal target discovery.</p></div>) : (
                 <div className={`h-full rounded-2xl border overflow-hidden shadow-xl shadow-slate-950/5 ${theme === 'dark' ? 'bg-[#0b111c]/95 border-slate-800/80' : 'bg-white/95 border-slate-200'}`}>
-                  {viewMode === 'pubtator' && (
-                    <PubTatorView
-                      results={researchState.pubtatorResults?.map(r => {
-                        const otTarget = researchState.targets.find(t => t.symbol.toUpperCase() === r.gene.toUpperCase());
-                        return {
-                          ...r,
-                          rpScore: researchState.rpScores?.[r.gene],
-                          winnerScore: researchState.winnerScores?.[r.gene],
-                          winnerRawScore: researchState.winnerRawScores?.[r.gene],
-                          otGeneticScore: otTarget?.geneticScore,
-                          otExpressionScore: otTarget?.combinedExpression,
-                          otTargetScore: otTarget?.targetScore,
-                          otGetScore: otTarget?.getScore,
-                        };
-                      })}
-                      isLoading={researchState.isFetchingPubTator}
-                      theme={theme}
-                      onAddGene={(g) => handleAddGeneFromPaper(g, 'LIT')}
-                      onShowScoreInfo={setActiveScoreInfo}
-                      onShowTooltip={setActiveTooltip}
-                      activeTooltip={activeTooltip}
-                      onLoadMore={handleLoadMoreLiterature}
-                      visibleColumns={visibleColumns}
-                    />
-                  )}
                   {viewMode === 'paper' && (
                     <PaperExtractor
                       theme={theme}
@@ -6056,11 +5757,6 @@ ${modalityResultBlock(getLastModalityResult()) || '      (No modality analysis h
                   {viewMode === 'dashboard' && (
                     <div className="h-full overflow-hidden">
                       <DashboardView theme={theme} command={dashboardCmd} activeDiseaseName={researchState.activeDisease?.name} />
-                    </div>
-                  )}
-                  {viewMode === 'funnel' && (
-                    <div className="h-full p-4 overflow-hidden">
-                      <FunnelView theme={theme} activeDiseaseName={researchState.activeDisease?.name} />
                     </div>
                   )}
                   {viewMode === 'rankings' && (
@@ -6611,7 +6307,6 @@ ${modalityResultBlock(getLastModalityResult()) || '      (No modality analysis h
                       </div>
                     );
                   })()}
-                  {viewMode === 'raw' && <RawDataView targets={displayTargets} theme={theme} cancerType={activeCancerType || 'BRCA'} />}
                 </div>
               )}
            </div>
