@@ -19,6 +19,7 @@ import { ProvenanceBadge } from './ProvenanceBadge';
 import { wikiApi, graphIndex, type WikiSummary, type WikiGene, type WikiEvidenceRow, type WikiScoreRow, type GraphIndex, type KgNode, type WikiSnapshotMeta } from './wikiApi';
 import { resolveLineage, runForEvidenceType, runById, diseaseNarrative, authoredDocs, docBySlug, NARRATIVE_COMMIT, type LineageRecord, type LineageRun, type WikiDoc } from './content';
 import { sourceInfo, trialUrl, pmidUrl, commitUrl, scriptUrl } from './sources';
+import { ScopedGraph } from './ScopedGraph';
 
 // ── small utilities ─────────────────────────────────────────────────────────
 function useAsync<T>(fn: () => Promise<T>, deps: React.DependencyList): { data: T | null; error: string | null; loading: boolean } {
@@ -557,7 +558,8 @@ function GenePage({ ctx, symbol }: { ctx: PageCtx; symbol: string }) {
 
       <Section t={t} title="In the knowledge graph" tag={<LayerTag t={t} kind="data" detail="KG_EDGES touching this gene, both directions" />}>
         {gi.loading ? <Loading t={t} what="graph" /> : neighbours.length === 0 ? <p className={`text-sm ${t.muted}`}>Not in the graph of this snapshot.</p> : (
-          <div className="space-y-3">{[...byType.entries()].sort((a, b) => b[1].length - a[1].length).map(([type, xs]) => (
+          <div className="space-y-3">
+            <ScopedGraph gi={gi.data!} focusKey={`gene:${symbol}`} disease={disease} snapshot={snapshot!} isDark={isDark} />{[...byType.entries()].sort((a, b) => b[1].length - a[1].length).map(([type, xs]) => (
             <div key={type}><div className={`text-xs mb-1 ${t.muted}`}>{type} · {xs.length}</div><div className="flex flex-wrap gap-1">{dedupe(xs).slice(0, 60).map(x => <NodeChip key={x.node.key} ctx={ctx} node={x.node} nodeKey={x.node.key} />)}{xs.length > 60 && <span className={`text-xs ${t.faint}`}>+{xs.length - 60}</span>}</div></div>))}</div>)}
       </Section>
     </>
@@ -683,7 +685,7 @@ function SourcePage({ ctx, slug }: { ctx: PageCtx; slug: string }) {
 
 // drug / trial / pathway / paper / tissue / variant — one page shape, driven by the graph.
 function GraphEntityPage({ ctx, kind, id }: { ctx: PageCtx; kind: WikiEntityKind; id: string }) {
-  const { t, snapshot, disease } = ctx;
+  const { t, isDark, snapshot, disease } = ctx;
   const key = `${kind}:${id}`;
   const gi = useAsync(() => graphIndex(snapshot!), [snapshot]);
   if (gi.loading) return <Loading t={t} what={kind} />; if (gi.error) return <Notice t={t} tone="error">{gi.error}</Notice>;
@@ -706,6 +708,7 @@ function GraphEntityPage({ ctx, kind, id }: { ctx: PageCtx; kind: WikiEntityKind
           <KV t={t} rows={props.map(([k, v]) => [k, <span className="font-mono text-xs">{typeof v === 'object' ? JSON.stringify(v) : String(v)}</span>])} />
         </Section>)}
       <Section t={t} title={`Connections · ${neighbours.length}`} tag={<LayerTag t={t} kind="data" detail="KG_EDGES, both directions; each edge carries its own source" />}>
+        {neighbours.length > 0 && <div className="mb-3"><ScopedGraph gi={gi.data!} focusKey={key} disease={disease} snapshot={snapshot!} isDark={isDark} height={280} /></div>}
         <div className="space-y-3">{[...groups.entries()].sort((a, b) => b[1].length - a[1].length).map(([g, xs]) => (
           <div key={g}>
             <div className={`text-xs mb-1 ${t.muted}`}>{g} · {xs.length} <span className={t.faint}>· edge source: {[...new Set(xs.map(x => x.edge.src).filter(Boolean))].join(', ') || '—'}</span></div>
