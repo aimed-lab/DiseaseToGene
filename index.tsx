@@ -40,6 +40,7 @@ import {
   Send,
   Sparkles,
   MessageSquare,
+  GitCommit,
   Atom,
   Search,
   Info,
@@ -586,7 +587,7 @@ const UsefulnessControls = ({
 // Research menu, Enrichment, Jobs, …) is admin-only — hidden from the nav AND blocked
 // by a guard in App, so a researcher can't reach it via the co-pilot or a restored
 // session. Nothing is deleted; admins keep the full app.
-const RESEARCHER_VIEWS = new Set<string>(['board', 'dashboard', 'list', 'graph', 'modality', 'wiki']);
+const RESEARCHER_VIEWS = new Set<string>(['board', 'dashboard', 'list', 'graph', 'modality']);   // 'wiki' is admin-only for now
 
 const TabNavigation = ({
   viewMode,
@@ -1092,20 +1093,6 @@ When you cite a value from here, record the **source, the date you retrieved it,
   return (
     <>
       <div className="flex items-center gap-2">
-      {/* ── Feedback → GitHub issues ── */}
-      <a
-        href="https://github.com/aimed-lab/DiseaseToGene/issues/new"
-        target="_blank"
-        rel="noopener noreferrer"
-        title="Send feedback or report an issue on GitHub"
-        className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border text-[11px] font-semibold transition-all ${
-          isDark ? 'bg-slate-900/60 border-slate-800 text-slate-300 hover:bg-slate-800' : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
-        }`}
-      >
-        <MessageSquare className="w-3.5 h-3.5" />
-        <span className="hidden sm:block">Feedback</span>
-      </a>
-
       {/* ── Trigger button ── */}
       <div ref={menuRef} className="relative">
         <button
@@ -5386,6 +5373,15 @@ ${modalityResultBlock(getLastModalityResult()) || '      (No modality analysis h
   // strictly AFTER the auth gate above (unlike /Methodologies), and every read it makes goes
   // through /api/wiki/* behind requireUser. See docs/PLAN_Provenance_Wiki_and_Autonomous_Agent.md.
   if (isWikiPath(routePath)) {
+    // Admin-only for now (the API behind it is gated the same way). A researcher who follows a
+    // link here gets told so, not a blank page.
+    if (!effectiveIsAdmin) return (
+      <div className={`h-screen flex flex-col items-center justify-center gap-3 px-6 text-center ${theme === 'dark' ? 'bg-[#0a0a0a] text-slate-200' : 'bg-neutral-50 text-slate-800'}`}>
+        <GitCommit className="w-8 h-8 opacity-60" />
+        <p className="text-sm font-semibold">The provenance wiki is available to admins only for now.</p>
+        <button onClick={() => navigate('/')} className="text-xs underline">Back to Disease2Target</button>
+      </div>
+    );
     const wikiRoute = parseWikiPath(routePath);
     if (wikiRoute) return <WikiApp theme={theme} route={wikiRoute} onToggleTheme={() => setTheme(t => t === 'dark' ? 'light' : 'dark')} />;
   }
@@ -5520,7 +5516,7 @@ ${modalityResultBlock(getLastModalityResult()) || '      (No modality analysis h
                           reload; anything else opens in a new tab. */}
                       <Markdown components={{ a: ({ href, children }) => {
                         const h = String(href || '');
-                        if (/^\/wiki(\/|$)/.test(h)) return <a href={h} onClick={e => { e.preventDefault(); navigate(h); }} className="underline decoration-dotted">{children}</a>;
+                        if (/^\/wiki(\/|$)/.test(h)) return effectiveIsAdmin ? <a href={h} onClick={e => { e.preventDefault(); navigate(h); }} className="underline decoration-dotted">{children}</a> : <span>{children}</span>;
                         return <a href={h} target="_blank" rel="noreferrer">{children}</a>;
                       } }}>{m.content}</Markdown>
                     </div>
@@ -5781,7 +5777,7 @@ ${modalityResultBlock(getLastModalityResult()) || '      (No modality analysis h
                   )}
                   {viewMode === 'board' && (
                     <div className="h-full overflow-hidden">
-                      <RankingBoardView theme={theme} diseaseName={researchState.activeDisease?.name} />
+                      <RankingBoardView theme={theme} diseaseName={researchState.activeDisease?.name} showProvenance={effectiveIsAdmin} />
                     </div>
                   )}
                   {viewMode === 'list' && (
@@ -6335,8 +6331,6 @@ ${modalityResultBlock(getLastModalityResult()) || '      (No modality analysis h
         <nav className="flex items-center gap-3">
           <button onClick={() => navigate(ROUTES.methodology)} className="font-semibold hover:underline">About</button>
           <button onClick={() => setDocsSignal(n => n + 1)} className="font-semibold hover:underline">Documentation</button>
-          <a href="https://github.com/aimed-lab/DiseaseToGene/issues/new" target="_blank" rel="noreferrer" className="font-semibold hover:underline">Contact</a>
-          <a href="https://github.com/aimed-lab/DiseaseToGene" target="_blank" rel="noreferrer" className="font-semibold hover:underline">GitHub</a>
         </nav>
         <span className="hidden lg:inline opacity-70 italic">Build better therapies, together.</span>
       </footer>

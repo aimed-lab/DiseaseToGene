@@ -1732,8 +1732,8 @@ function setupRoutes() {
 
 
   // ── Provenance wiki (/wiki) — read-only, login-only, snapshot-scoped ─────────
-  // Every route here is behind requireUser: the wiki is a view of the store for signed-in
-  // users, nothing on it is public. A snapshot is immutable, so responses are cached in
+  // Every route here is behind requireAdmin: the wiki is admin-only for now (the client hides
+  // the tab and the /wiki route for everyone else); nothing on it is public. A snapshot is immutable, so responses are cached in
   // memory per snapshot id and told to the browser as immutable too. The full evidence
   // pull (~50k rows over ORDS, ~25s cold) is fetched once and then sliced per axis, so the
   // run/source pages don't re-pull it. See docs/PLAN_Provenance_Wiki_and_Autonomous_Agent.md §0.5.
@@ -1748,7 +1748,7 @@ function setupRoutes() {
   const wikiSnapshotId = (req: express.Request): number | null => { const n = Number(req.params.id); return Number.isInteger(n) && n > 0 ? n : null; };
   const wikiJson = (v: any) => { if (v == null) return null; if (typeof v !== 'string') return v; try { return JSON.parse(v); } catch { return null; } };
 
-  app.get("/api/wiki/snapshots", requireUser, async (_req, res) => {
+  app.get("/api/wiki/snapshots", requireAdmin, async (_req, res) => {
     if (!readStoreEnabled()) return res.status(503).json({ error: "Oracle store disabled" });
     try {
       const svc = await readSvc();
@@ -1758,7 +1758,7 @@ function setupRoutes() {
   });
 
   // Snapshot header + one line per (evidence_type, source): what the wiki's disease page lists.
-  app.get("/api/wiki/:id/summary", requireUser, async (req, res) => {
+  app.get("/api/wiki/:id/summary", requireAdmin, async (req, res) => {
     if (!readStoreEnabled()) return res.status(503).json({ error: "Oracle store disabled" });
     const id = wikiSnapshotId(req); if (!id) return res.status(400).json({ error: "snapshot id required" });
     try {
@@ -1780,7 +1780,7 @@ function setupRoutes() {
 
   // One gene in one snapshot: its score row and every evidence row WITH the provenance
   // columns (the per-gene ORDS handler projects all twelve; the per-snapshot one only five).
-  app.get("/api/wiki/:id/gene/:symbol", requireUser, async (req, res) => {
+  app.get("/api/wiki/:id/gene/:symbol", requireAdmin, async (req, res) => {
     if (!readStoreEnabled()) return res.status(503).json({ error: "Oracle store disabled" });
     const id = wikiSnapshotId(req); if (!id) return res.status(400).json({ error: "snapshot id required" });
     const symbol = String(req.params.symbol || '').toUpperCase().trim();
@@ -1796,7 +1796,7 @@ function setupRoutes() {
   });
 
   // Every row of one axis (run page / source page): sliced from the cached full pull.
-  app.get("/api/wiki/:id/evidence", requireUser, async (req, res) => {
+  app.get("/api/wiki/:id/evidence", requireAdmin, async (req, res) => {
     if (!readStoreEnabled()) return res.status(503).json({ error: "Oracle store disabled" });
     const id = wikiSnapshotId(req); if (!id) return res.status(400).json({ error: "snapshot id required" });
     const type = String(req.query.type || '').trim();
@@ -1812,7 +1812,7 @@ function setupRoutes() {
   });
 
   // The snapshot's knowledge graph — the wiki's link structure (gene ↔ drug ↔ trial ↔ pathway …).
-  app.get("/api/wiki/:id/graph", requireUser, async (req, res) => {
+  app.get("/api/wiki/:id/graph", requireAdmin, async (req, res) => {
     if (!readStoreEnabled()) return res.status(503).json({ error: "Oracle store disabled" });
     const id = wikiSnapshotId(req); if (!id) return res.status(400).json({ error: "snapshot id required" });
     try {

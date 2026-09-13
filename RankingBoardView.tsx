@@ -86,7 +86,7 @@ const Th = ({ col, label, hint, align, sort, onSort, onResize, isDark }: ThProps
   );
 };
 
-export default function RankingBoardView({ theme, diseaseName }: { theme: Theme; diseaseName?: string }) {
+export default function RankingBoardView({ theme, diseaseName, showProvenance }: { theme: Theme; diseaseName?: string; showProvenance?: boolean }) {
   const isDark = theme === 'dark';
   // One calm accent for every criterion bar — the shade deepens with the score, so value
   // still reads at a glance without an 8-colour rainbow.
@@ -714,7 +714,7 @@ export default function RankingBoardView({ theme, diseaseName }: { theme: Theme;
               <div className="flex items-center gap-1.5 shrink-0">
                 {/* Provenance: this gene's page in the wiki, for THIS snapshot — every stored row with
                     its source, retrieval date, run and commit. The four-click path starts here. */}
-                {snapId && (
+                {showProvenance && snapId && (
                   <a href={wikiUrl.entity(snapshots.find(s => String(s.id) === snapId)?.disease_name || diseaseName || 'disease', Number(snapId), 'gene', selected.symbol)}
                     onClick={e => { if (e.button === 0 && !e.metaKey && !e.ctrlKey) { e.preventDefault(); navigate((e.currentTarget as HTMLAnchorElement).getAttribute('href')!); } }}
                     title={`Where these numbers come from: every stored evidence row for ${selected.symbol} in snapshot #${snapId}, with source, date, run and commit`}
