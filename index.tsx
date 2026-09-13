@@ -115,6 +115,7 @@ import { applyDiseaseAccent } from './diseaseAccent';
 import ModalityFitView from './ModalityFitView';
 import { navigate, isMethodologyPath, isModalityPath, isResetPasswordPath, isWikiPath, parseWikiPath, catchRecoveryHash, ROUTES } from './nav';
 import WikiApp from './wiki-app/WikiApp';
+import { FeedbackDialog, FeedbackInbox, type FeedbackContext } from './Feedback';
 
 // Root catch (runs once at module load, BEFORE React mounts and before Supabase consumes the
 // URL hash): if a password-recovery link landed on any path with a #...type=recovery hash,
@@ -797,7 +798,7 @@ type AdminUser = {
 };
 
 const ProfileDropdown = ({
-  currentUser, theme, onSignOut, globalWeights, previewAsResearcher, onTogglePreview, openDocsSignal,
+  currentUser, theme, onSignOut, globalWeights, previewAsResearcher, onTogglePreview, openDocsSignal, feedbackContext,
 }: {
   currentUser: UserSession;
   theme: Theme;
@@ -808,9 +809,21 @@ const ProfileDropdown = ({
   /** Bumped by the footer's Documentation link — the overlay lives here, so it is opened
    *  by signal rather than duplicated. */
   openDocsSignal?: number;
+  /** What the Feedback form attaches (view, disease, snapshot, model) — shown to the user. */
+  feedbackContext?: FeedbackContext;
 }) => {
   const isDark  = theme === 'dark';
   const isAdmin = currentUser.role === 'admin';   // real role (independent of preview mode)
+  // ── Feedback: the form for everyone; for admins, the unread count on the avatar ──
+  const [feedbackOpen, setFeedbackOpen] = React.useState(false);
+  const [feedbackUnread, setFeedbackUnread] = React.useState(0);
+  React.useEffect(() => {
+    if (!isAdmin) return;
+    let alive = true;
+    const poll = async () => { try { const s = (await supabase.auth.getSession()).data.session; if (!s) return; const r = await fetch('/api/admin/feedback/unread-count', { headers: { Authorization: `Bearer ${s.access_token}` } }); const j = await r.json().catch(() => ({})); if (alive && r.ok) setFeedbackUnread(Number(j.count) || 0); } catch { /* badge is best-effort */ } };
+    poll(); const t = setInterval(poll, 5 * 60 * 1000);
+    return () => { alive = false; clearInterval(t); };
+  }, [isAdmin]);
   const initials = (currentUser.username || '?').slice(0, 2).toUpperCase();
 
   // mini-menu open / which full-page is open
@@ -1093,6 +1106,19 @@ When you cite a value from here, record the **source, the date you retrieved it,
   return (
     <>
       <div className="flex items-center gap-2">
+      {/* ── Feedback → in-app form (stored in Supabase, read from the admin console) ── */}
+      <button
+        onClick={() => setFeedbackOpen(true)}
+        title="Send feedback — a bug, a number that looks wrong, something you wish it did"
+        className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border text-[11px] font-semibold transition-all ${
+          isDark ? 'bg-slate-900/60 border-slate-800 text-slate-300 hover:bg-slate-800' : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+        }`}
+      >
+        <MessageSquare className="w-3.5 h-3.5" />
+        <span className="hidden sm:block">Feedback</span>
+      </button>
+      {feedbackOpen && createPortal(<FeedbackDialog isDark={isDark} context={feedbackContext || {}} onClose={() => setFeedbackOpen(false)} />, document.body)}
+
       {/* ── Trigger button ── */}
       <div ref={menuRef} className="relative">
         <button
@@ -1104,8 +1130,9 @@ When you cite a value from here, record the **source, the date you retrieved it,
               : isDark ? 'bg-slate-900/60 border-slate-800 hover:bg-slate-800' : 'bg-white border-slate-200 hover:bg-slate-50'
           }`}
         >
-          <div className={`w-6 h-6 rounded-lg flex items-center justify-center text-[9px] font-black shrink-0 ${isAdmin ? 'bg-rose-500/15 text-rose-500' : 'bg-blue-500/10 text-blue-600'}`}>
+          <div className={`relative w-6 h-6 rounded-lg flex items-center justify-center text-[9px] font-black shrink-0 ${isAdmin ? 'bg-rose-500/15 text-rose-500' : 'bg-blue-500/10 text-blue-600'}`}>
             {initials}
+            {isAdmin && feedbackUnread > 0 && <span title={`${feedbackUnread} new feedback`} className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 rounded-full bg-blue-600 text-white text-[9px] font-black flex items-center justify-center">{feedbackUnread > 99 ? '99+' : feedbackUnread}</span>}
           </div>
           <span className={`hidden sm:block text-[11px] font-semibold max-w-[120px] truncate ${isDark ? 'text-slate-200' : 'text-slate-700'}`}>
             {profile.name || currentUser.username}
@@ -1261,6 +1288,14 @@ When you cite a value from here, record the **source, the date you retrieved it,
                       ))}
                     </div>
                   )}
+                </section>
+              )}
+
+              {/* Feedback inbox — admin only */}
+              {isAdmin && (
+                <section>
+                  <h2 className={`text-[11px] font-black uppercase tracking-widest mb-4 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Feedback{feedbackUnread > 0 ? ` · ${feedbackUnread} new` : ''}</h2>
+                  <FeedbackInbox isDark={isDark} onUnreadChange={setFeedbackUnread} />
                 </section>
               )}
             </div>
@@ -5452,6 +5487,7 @@ ${modalityResultBlock(getLastModalityResult()) || '      (No modality analysis h
               previewAsResearcher={previewAsResearcher}
               onTogglePreview={() => setPreviewAsResearcher(v => !v)}
               openDocsSignal={docsSignal}
+              feedbackContext={{ view: viewMode, disease: researchState.activeDisease?.name ?? null, snapshot_id: getActiveBoardSnapshot()?.id ?? null, model: aiModel }}
             />
           )}
         </div>

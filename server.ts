@@ -3225,6 +3225,79 @@ Rules: fill every field only from what the pages actually say. Where the page do
 
   // ── Admin User Management ────────────────────────────────────────────────────
 
+  // ── Feedback — in-app, stored in Supabase, reviewed from the admin console ────
+  // Replaced the header's "Feedback → GitHub issues" link. Table: docs/sql/feedback.sql.
+  // The row is written with the service-role client so RLS is not in the way; the user is
+  // taken from the verified token (requireUser), never from the body.
+  const FEEDBACK_CATEGORIES = new Set(['bug', 'data', 'feature', 'other']);
+  app.post('/api/feedback', requireUser, express.json({ limit: '64kb' }), async (req, res) => {
+    if (!supabaseAdmin) return res.status(503).json({ error: 'Feedback store not configured (missing SUPABASE_SERVICE_ROLE_KEY)' });
+    const u = (req as any).appUser as { id: string; email?: string };
+    const category = String(req.body?.category || 'other');
+    const message = String(req.body?.message || '').trim();
+    if (!FEEDBACK_CATEGORIES.has(category)) return res.status(400).json({ error: 'category must be bug, data, feature or other' });
+    if (!message || message.length > 4000) return res.status(400).json({ error: 'message is required (max 4000 characters)' });
+    // Context is whatever the client showed the user it was attaching — kept small and flat.
+    const c = req.body?.context && typeof req.body.context === 'object' ? req.body.context : {};
+    const context: Record<string, string | number | null> = {};
+    for (const k of ['url', 'view', 'disease', 'snapshot_id', 'model', 'user_agent']) if (c[k] != null) context[k] = typeof c[k] === 'number' ? c[k] : String(c[k]).slice(0, 500);
+    try {
+      const { data, error } = await supabaseAdmin.from('feedback')
+        .insert({ user_id: u.id, email: u.email ?? null, category, message, context })
+        .select('id, created_at').single();
+      if (error) throw error;
+      res.status(201).json(data);
+    } catch (e: any) { res.status(500).json({ error: e?.message || 'could not save feedback' }); }
+  });
+
+  // A user's own submissions, newest first (so the form can show "what you sent, and its status").
+  app.get('/api/feedback/mine', requireUser, async (req, res) => {
+    if (!supabaseAdmin) return res.status(503).json({ error: 'Feedback store not configured' });
+    const u = (req as any).appUser as { id: string };
+    try {
+      const { data, error } = await supabaseAdmin.from('feedback')
+        .select('id, created_at, category, message, status, context').eq('user_id', u.id)
+        .order('created_at', { ascending: false }).limit(50);
+      if (error) throw error;
+      res.json(data ?? []);
+    } catch (e: any) { res.status(500).json({ error: e?.message || 'could not load feedback' }); }
+  });
+
+  // Admin: everything, filterable by status; and the count of unread for the avatar badge.
+  app.get('/api/admin/feedback', requireAdmin, async (req, res) => {
+    const status = String(req.query.status || '');
+    try {
+      let q = supabaseAdmin!.from('feedback').select('*').order('created_at', { ascending: false }).limit(500);
+      if (status && ['new', 'seen', 'done'].includes(status)) q = q.eq('status', status);
+      const { data, error } = await q;
+      if (error) throw error;
+      res.json(data ?? []);
+    } catch (e: any) { res.status(500).json({ error: e?.message || 'could not load feedback' }); }
+  });
+  app.get('/api/admin/feedback/unread-count', requireAdmin, async (_req, res) => {
+    try {
+      const { count, error } = await supabaseAdmin!.from('feedback').select('id', { count: 'exact', head: true }).eq('status', 'new');
+      if (error) throw error;
+      res.json({ count: count ?? 0 });
+    } catch (e: any) { res.status(500).json({ error: e?.message || 'could not count feedback' }); }
+  });
+  app.patch('/api/admin/feedback/:id', requireAdmin, express.json({ limit: '16kb' }), async (req, res) => {
+    const id = String(req.params.id || '');
+    const patch: Record<string, any> = {};
+    if (req.body?.status != null) { const s = String(req.body.status); if (!['new', 'seen', 'done'].includes(s)) return res.status(400).json({ error: 'status must be new, seen or done' }); patch.status = s; }
+    if (req.body?.admin_note != null) patch.admin_note = String(req.body.admin_note).slice(0, 4000);
+    if (!Object.keys(patch).length) return res.status(400).json({ error: 'nothing to update' });
+    // Who reviewed it: the admin behind the token.
+    try {
+      const token = req.headers.authorization?.replace(/^Bearer\s+/i, '') || '';
+      const { data: { user } } = await supabaseAdmin!.auth.getUser(token);
+      patch.reviewed_by = user?.id ?? null; patch.reviewed_at = new Date().toISOString();
+      const { data, error } = await supabaseAdmin!.from('feedback').update(patch).eq('id', id).select('*').single();
+      if (error) throw error;
+      res.json(data);
+    } catch (e: any) { res.status(500).json({ error: e?.message || 'could not update feedback' }); }
+  });
+
   app.get('/api/admin/users', requireAdmin, async (_req, res) => {
     try {
       const [{ data: authData, error: authErr }, { data: profiles }] = await Promise.all([
