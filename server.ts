@@ -341,7 +341,7 @@ const MODEL_PROFILES: Record<string, ModelProfile> = {
   // recommended disabling tools on the model that had just used six of them.
   // Six steps because a real question spent six tool calls establishing a negative:
   // at four it had to answer or be truncated, so it could never reach search_web.
-  'gpt-5.6-luna': { steps: 6, tools: true, compactReference: true },
+  'gpt-5.6-luna': { steps: 6, tools: true, compactReference: true, toolResultChars: 40_000 },  // room for a whole ranked drug table (rank_drugs, 40 rows)
 
   // 11/14, zero errors. Routes the reach layer correctly (search_literature,
   // search_trials) and the data tools. Two real weaknesses, neither disqualifying:
@@ -741,7 +741,7 @@ export const EVIDENCE_RULES = `EVIDENCE RULES (non-negotiable):
 - Stored snapshot evidence is the ranking's truth; a live deep-dive value is extra context. If the two disagree, say which is which and that the snapshot is what the board ranks on.
 - Label each fact with its source and snapshot inline, e.g. "(Europe PMC, snapshot #103)" or "(STRING, live)". End with a short "Sources" list. When a tool result carries a wiki_url, put it in that list as a Markdown link — e.g. "[Provenance: KRAS, snapshot #102](/wiki/pancreatic-adenocarcinoma/102/gene/KRAS)" — one per gene, exactly the URL the tool returned. It is the app's own provenance page (every stored row with source, date, run and commit), not an external source; never invent one for a gene no tool returned. Keep FACTS (mutation, expression, proteomics, dependency, safety, trials, papers) separate from PREDICTIONS (Open Targets association, board rank, WINNER centrality, tractability).
 - If the store has nothing for a gene in this disease, say exactly that. Do not fill the gap from memory.
-- Our stored evidence ROWS are indexed BY GENE, but the snapshot's KNOWLEDGE GRAPH is not: query_graph answers, from stored rows, which genes a drug targets here, which drugs several genes share, a pathway's ranked members, and what a trial tests. A question that names a drug, a pathway or a trial, or asks which genes share something ("genes that work for the same drug"), calls query_graph FIRST - never answer it from the top of the board. Then use search_literature and search_trials for what the graph does not hold: papers, combinations, trials the snapshot never linked to a gene. "No evidence in our store" is the WRONG answer to a drug question until query_graph has been asked.
+- Our stored evidence ROWS are indexed BY GENE, but the snapshot's KNOWLEDGE GRAPH is not: query_graph answers, from stored rows, which genes a drug targets here, which drugs several genes share, a pathway's ranked members, and what a trial tests. A question that names a drug, a pathway or a trial, or asks which genes share something ("genes that work for the same drug"), calls query_graph FIRST - never answer it from the top of the board. "Rank these drugs" / "which drug has the strongest evidence here" is query_graph rank_drugs, which orders drugs by the trials, phases and approvals STORED for this disease and states its rule - a broad search_trials or search_literature over a whole set of drugs ranks nothing and must not be used for that. Then use search_literature and search_trials for what the graph does not hold: papers, combinations, one named drug the snapshot never linked to a gene. "No evidence in our store" is the WRONG answer to a drug question until query_graph has been asked.
 - WHAT EACH SOURCE CAN AND CANNOT HOLD, so you can judge what a nil result means. Our snapshot holds only what was harvested for the loaded disease, indexed by gene. Europe PMC indexes peer-reviewed papers and preprints; it does NOT index conference abstracts, company pipelines, regulatory decisions or press material. ClinicalTrials.gov indexes trials registered with it; it does NOT index planned or unregistered studies, or trials registered only in another national registry. The open web is what the other two do not index.
 - A NIL RESULT IS ONLY AS STRONG AS THE SOURCES THAT COULD HAVE HELD THE ANSWER. Before you report that something does not exist, has not been tried, or has not been published, ask whether a source you have not yet searched could contain it. If one could, search it first — that decision is yours to make and you do not need to be asked. Finding nothing in a source that structurally cannot hold the answer is not evidence of absence, and reporting it as though it were is the one failure that makes an answer worthless. If you still cannot check, say which sources you searched and which you did not, and keep the conclusion inside that limit.
 - WHEN A LOWER TIER ANSWERS, TIE IT BACK. Do not leave web or live findings as a separate list beside our evidence. Say how they stand against what the snapshot and the registries gave — confirming it, extending it, or contradicting it — and keep each claim's tier label. One account built from every tier is what makes an answer defensible; parallel lists leave the reader to do the joining.
@@ -2186,7 +2186,7 @@ function setupRoutes() {
     { name: 'search_web', description: 'Search the open web and come back with a summary and the source URLs. This is the LAST resort and the WEAKEST evidence we have, so try get_gene_evidence, search_literature and search_trials first and use this only for what they genuinely do not index: conference abstracts (AACR, ASCO), regulatory news and approvals, company pipelines, and events too recent to be indexed. Example of the gap it fills: conference abstracts are routinely absent from Europe PMC entirely while sitting on the society’s own site. Slower than the other searches because it reads pages, so ask one focused question rather than several vague ones. It is NOT expensive to you: it runs on a separate small model with its own rate limit and does not spend this conversation’s budget. Cost is not a reason to skip it — it sits last on the tiers because its evidence is weakest, not because it is dear.', parameters: { type: 'OBJECT', properties: { query: { type: 'STRING', description: 'What to find. Write it as you would type it into a search engine.' } }, required: ['query'] } },
     { name: 'search_trials', description: 'Free-text search of ClinicalTrials.gov. Use it whenever the question names a DRUG rather than a gene, or asks whether a combination is being trialled — get_clinical_trials only takes a gene symbol and is scoped to our snapshot, so it cannot answer "is drug X in trials". Search by intervention (the drug), by condition (the disease), or both. Returns NCT ids, titles, phase, status, sponsor and the actual interventions.', parameters: { type: 'OBJECT', properties: { intervention: { type: 'STRING', description: 'Drug or compound name, a single drug name. Use OR for several.' }, condition: { type: 'STRING', description: 'Disease, e.g. pancreatic cancer.' }, terms: { type: 'STRING', description: 'Any other free text.' }, limit: { type: 'NUMBER', description: 'How many results, default 10, max 25.' } } } },
     { name: 'deep_dive_gene', description: 'LIVE deep dive for ONE gene — the same detail the app\'s target card shows: cohort-aware expression and protein change, dependency, constraint, tissue, per-trial records, latest papers, network centrality with context, STRING neighbours, single-cell, modality fit. Slower (3–8 s) and NOT part of the ranking. Use only for the one or two genes the question names, after get_gene_evidence.', parameters: { type: 'OBJECT', properties: { gene: { type: 'STRING' }, disease: { type: 'STRING' } }, required: ['gene', 'disease'] } },
-    { name: 'query_graph', description: 'Walk the snapshot\'s stored KNOWLEDGE GRAPH - the only tool that starts from something other than a gene. Answers, from stored rows: which genes a DRUG targets here (drug_targets); which drugs hit several genes or a given set of genes (shared_drugs - "genes that work for the same drug"); a GENE\'s drugs, trials, pathways, papers and interaction partners (gene_links); the members of a PATHWAY that are ranked here (pathway_members); what a TRIAL tests and which targets that drug hits (trial). Call this FIRST for any question naming a drug, a pathway, a trial, or asking which genes share something; then use search_literature / search_trials only for what the graph does not hold. Every entity comes with its wiki_url.', parameters: { type: 'OBJECT', properties: { query: { type: 'STRING', description: 'drug_targets | shared_drugs | gene_links | pathway_members | trial' }, name: { type: 'STRING', description: 'The drug, gene symbol, pathway name or NCT id the query is about (not used by shared_drugs).' }, genes: { type: 'STRING', description: 'shared_drugs only: comma-separated gene symbols - return drugs that target ALL of them. Omit to rank drugs by how many snapshot genes they hit.' }, min_genes: { type: 'NUMBER', description: 'shared_drugs only: minimum number of targeted genes (default 3).' }, limit: { type: 'NUMBER', description: 'max items (default 25).' }, disease: { type: 'STRING' } }, required: ['query'] } },
+    { name: 'query_graph', description: 'Walk the snapshot\'s stored KNOWLEDGE GRAPH - the only tool that starts from something other than a gene, and the ONLY way to rank drugs. From stored rows: which genes a DRUG targets here and its trials in this disease (drug_targets); which drugs hit several genes or a given set of genes (shared_drugs - "genes that work for the same drug"); RANK drugs by the evidence stored for this disease - trials here, phase, active status, approval, target standing (rank_drugs - use it for "rank / compare / strongest evidence" across drugs; NEVER rank a set of drugs with search_trials or search_literature); a GENE\'s drugs, trials, pathways, papers and partners (gene_links); the ranked members of a PATHWAY (pathway_members); what a TRIAL tests and what that drug hits (trial). Call this FIRST for any question naming a drug, a pathway or a trial, or asking which genes share something; then search_literature / search_trials only for what the graph does not hold. Every entity carries its wiki_url and every ranking states its rule.', parameters: { type: 'OBJECT', properties: { query: { type: 'STRING', description: 'drug_targets | shared_drugs | rank_drugs | gene_links | pathway_members | trial' }, name: { type: 'STRING', description: 'The drug, gene symbol, pathway name or NCT id the query is about (not used by shared_drugs).' }, genes: { type: 'STRING', description: 'shared_drugs / rank_drugs: comma-separated gene symbols - only drugs that target ALL of them.' }, drugs: { type: 'STRING', description: 'rank_drugs only: comma-separated drug names to rank. Omit to rank every drug that meets min_genes.' }, min_genes: { type: 'NUMBER', description: 'shared_drugs / rank_drugs: minimum number of targeted genes (default 3 / 1).' }, limit: { type: 'NUMBER', description: 'max items (default 25).' }, disease: { type: 'STRING' } }, required: ['query'] } },
   ];
   const jparse = (v: any) => { try { return typeof v === 'string' ? JSON.parse(v) : v; } catch { return null; } };
 
@@ -2655,11 +2655,12 @@ Rules: fill every field only from what the pages actually say. Where the page do
       const named0 = String(args?.name || '').trim();
       // Models sometimes send {"drug_targets":"drug_targets","name":...} or drop `query`. Infer it
       // from the arguments rather than bounce the call: a wrong key, then the shape of the args.
-      const KNOWN = ['drug_targets', 'shared_drugs', 'gene_links', 'pathway_members', 'trial'];
+      const KNOWN = ['drug_targets', 'shared_drugs', 'rank_drugs', 'gene_links', 'pathway_members', 'trial'];
       let q = String(args?.query || '').toLowerCase().trim();
       if (!KNOWN.includes(q)) {
         const k = Object.keys(args || {}).find(x => KNOWN.includes(x.toLowerCase()));
         if (k) q = k.toLowerCase();
+        else if (args?.drugs) q = 'rank_drugs';
         else if (args?.genes) q = 'shared_drugs';
         else if (/^nct\d{6,}/i.test(named0)) q = 'trial';
         else if (named0 && gi.node('gene:' + up(named0))) q = 'gene_links';
@@ -2672,24 +2673,62 @@ Rules: fill every field only from what the pages actually say. Where the page do
       const geneOut = (key: string) => ({ gene: key.slice(5), rank: ranks.get(key.slice(5)) ?? null, wiki_url: url(key) });
       const drugOut = (key: string) => { const n = gi.node(key); return { drug: n?.label || key.slice(5), stage: n?.props?.stage ?? null, modality: n?.props?.modality ?? null, approved: n?.props?.approved ?? null, wiki_url: url(key) }; };
       const trialOut = (key: string) => { const n = gi.node(key); return { nct: key.slice(6).toUpperCase(), title: n?.props?.title ?? null, phase: n?.props?.phase ?? null, status: n?.props?.status ?? null, wiki_url: url(key) }; };
+      // A many-target drug is usually one protein FAMILY (TUBB/TUBA... for a taxane) or an
+      // antibody-drug conjugate whose payload hits that family. Name it, so the model does
+      // not present fifteen tubulins as fifteen independent mechanisms.
+      const family = (genes: string[]): string | null => {
+        if (genes.length < 3) return null;
+        const pre = new Map<string, number>(); for (const g of genes) { const k = g.replace(/[0-9].*$/, '').slice(0, 4); pre.set(k, (pre.get(k) || 0) + 1); }
+        const [k, n] = [...pre.entries()].sort((a, b) => b[1] - a[1])[0];
+        return n >= 3 && n / genes.length >= 0.6 ? `${k}* x${n}${n < genes.length ? ` + ${genes.filter(g => !g.startsWith(k)).slice(0, 4).join(', ')}` : ''}` : null;
+      };
+      const ACTIVE = /RECRUITING|ACTIVE|ENROLLING|NOT_YET/i;
+      // Everything the store holds about one drug in THIS disease, aggregated deterministically.
+      const drugFacts = (key: string) => {
+        const genes = gi.in(key).filter((e: any) => e.rel === 'targeted_by').map((e: any) => String(e.source).slice(5)) as string[];
+        const trials = gi.out(key).filter((e: any) => e.rel === 'tested_in').map((e: any) => trialOut(e.target));
+        const phases = trials.map(t => Number(t.phase)).filter(n => Number.isFinite(n));
+        const rankedTargets = genes.map(g => ({ gene: g, rank: ranks.get(g) ?? null })).sort(byRank);
+        const best = rankedTargets.find(t => t.rank != null)?.rank ?? null;
+        const n = gi.node(key);
+        return { ...drugOut(key), n_targets: genes.length, family: family(genes), best_target: rankedTargets[0]?.gene ?? null, best_target_rank: best,
+          targets_preview: rankedTargets.slice(0, 6).map(t => t.gene), n_trials_here: trials.length, max_phase_here: phases.length ? Math.max(...phases) : null,
+          active_trials_here: trials.filter(t => ACTIVE.test(String(t.status || ''))).length, trials: trials.slice(0, 8), _genes: genes, _approved: n?.props?.approved === true || /approved/i.test(String(n?.props?.stage || '')) };
+      };
+      // The ranking rule, stated so the answer can state it: what the store holds about the
+      // drug IN THIS DISEASE first, then how far it got anywhere, then how strong its target is.
+      const RANK_RULE = 'max_phase_here (trials in this disease, from the stored clinical rows) desc -> active_trials_here desc -> n_trials_here desc -> approved (any indication) -> best_target_rank asc -> n_targets desc. Stored facts only; no literature counts, no model judgement.';
+      const rankScore = (d: ReturnType<typeof drugFacts>) => [d.max_phase_here ?? -1, d.active_trials_here, d.n_trials_here, d._approved ? 1 : 0, -(d.best_target_rank ?? 1e9), d.n_targets];
+      const cmpRank = (a: ReturnType<typeof drugFacts>, b: ReturnType<typeof drugFacts>) => { const x = rankScore(a), y = rankScore(b); for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return y[i] - x[i]; return a.drug.localeCompare(b.drug); };
+      const publicFacts = (d: ReturnType<typeof drugFacts>) => { const { _genes, _approved, ...rest } = d; return { ...rest, approved: _approved }; };
       const HOW = `All from the snapshot's stored knowledge graph (Open Targets known drugs, ClinicalTrials.gov, Reactome via Open Targets, STRING). Cite as (knowledge graph, snapshot #${snap.id}). Put each entity's wiki_url in the Sources list. What is NOT here: drugs never linked to a snapshot gene, trials outside this disease, papers beyond the top few per gene - use search_trials / search_literature for those.`;
       const named = named0;
       if (q === 'drug_targets') {
         const d = gi.findDrug(named);
         if (!d) return { error: `no drug matching "${named}" in the graph of snapshot #${snap.id}`, suggestions: gi.suggestDrugs(named, 8), how_to_read: 'Try one of the suggestions, or search_trials / search_literature for a drug the snapshot never linked to a gene.' };
         const targets = gi.in(d.key).filter((e: any) => e.rel === 'targeted_by').map((e: any) => geneOut(e.source)).sort(byRank);
-        const trials = gi.out(d.key).filter((e: any) => e.rel === 'tested_in').map((e: any) => trialOut(e.target));
-        return { disease: snap.disease_name, snapshot_id: snap.id, ...drugOut(d.key), n_targets: targets.length, targets: targets.slice(0, limit), n_trials: trials.length, trials: trials.slice(0, limit), how_to_read: HOW };
+        const f = publicFacts(drugFacts(d.key));
+        return { disease: snap.disease_name, snapshot_id: snap.id, ...f, targets: targets.slice(0, limit), trials: gi.out(d.key).filter((e: any) => e.rel === 'tested_in').map((e: any) => trialOut(e.target)).slice(0, limit), how_to_read: HOW };
       }
-      if (q === 'shared_drugs') {
+      if (q === 'shared_drugs' || q === 'rank_drugs') {
         const want = String(args?.genes || '').split(/[,\s]+/).map(up).filter(Boolean);
-        const minGenes = Math.max(2, Number(args?.min_genes) || (want.length ? want.length : 3));
-        const rows = gi.byType('drug').map((d: any) => ({ key: d.key, genes: gi.in(d.key).filter((e: any) => e.rel === 'targeted_by').map((e: any) => String(e.source).slice(5)) as string[] }))
-          .filter((r: any) => r.genes.length >= minGenes && want.every(g => r.genes.includes(g)))
-          .sort((a: any, b: any) => b.genes.length - a.genes.length || a.key.localeCompare(b.key));
-        return { disease: snap.disease_name, snapshot_id: snap.id, filter: want.length ? `drugs that target all of ${want.join(', ')}` : `drugs that target at least ${minGenes} snapshot genes`, found: rows.length,
-          drugs: rows.slice(0, limit).map((r: any) => ({ ...drugOut(r.key), n_targets: r.genes.length, targets: r.genes.map((g: string) => ({ gene: g, rank: ranks.get(g) ?? null, wiki_url: url('gene:' + g) })).sort(byRank).slice(0, 20) })),
-          how_to_read: HOW + ' Many-target drugs are usually a protein FAMILY (e.g. the tubulins for taxanes) or an antibody-drug conjugate whose payload hits that family - say so rather than presenting the family as independent targets.' };
+        const namedDrugs = String(args?.drugs || '').split(/\s*,\s*/).map(s => s.trim()).filter(Boolean);
+        const minGenes = Math.max(1, Number(args?.min_genes) || (want.length ? want.length : q === 'rank_drugs' ? 1 : 3));
+        let keys: string[] = namedDrugs.length ? namedDrugs.map(n => gi.findDrug(n)?.key).filter(Boolean) as string[] : gi.byType('drug').map((d: any) => d.key);
+        const missing = namedDrugs.filter(n => !gi.findDrug(n));
+        let rows = keys.map(drugFacts).filter(d => d.n_targets >= minGenes && want.every(g => d._genes.includes(g)));
+        if (q === 'shared_drugs') rows.sort((a, b) => b.n_targets - a.n_targets || a.drug.localeCompare(b.drug)); else rows.sort(cmpRank);
+        // Compact rows so the WHOLE set fits in one tool result: the previous shape (20 target
+        // objects per drug) truncated at 14 of 40 and the model rightly refused to invent the rest.
+        const out = rows.slice(0, Math.max(limit, 60)).map(d => { const pf = publicFacts(d); const { trials, ...compact } = pf; return q === 'rank_drugs' ? { ...compact, trials: trials.slice(0, 4).map(t => `${t.nct} p${t.phase ?? '?'} ${t.status ?? ''}`.trim()) } : compact; });
+        return { disease: snap.disease_name, snapshot_id: snap.id,
+          filter: [want.length ? `target all of ${want.join(', ')}` : null, namedDrugs.length ? `named: ${namedDrugs.join(', ')}` : null, `>= ${minGenes} snapshot gene target${minGenes === 1 ? '' : 's'}`].filter(Boolean).join('; '),
+          found: rows.length, returned: out.length, ...(missing.length ? { not_in_graph: missing } : {}),
+          ...(q === 'rank_drugs' ? { ranking_rule: RANK_RULE } : {}),
+          drugs: out,
+          how_to_read: HOW + (q === 'rank_drugs'
+            ? ' The order IS the evidence ranking under ranking_rule - present it in that order, say the rule, and give each drug\'s phase / trials / approval as its reason. "Evidence" here means trials recorded for this disease plus approval and target standing; it is not efficacy, and a drug with no trials here has no disease evidence in the store (say so; search_trials can check the live registry for ONE drug if asked).'
+            : ' Many-target drugs are usually a protein FAMILY (family names it, e.g. TUB* x15 = tubulins) or an antibody-drug conjugate whose payload hits that family - say so rather than presenting the family as independent targets. To order these by disease evidence, call rank_drugs.') };
       }
       if (q === 'gene_links') {
         const g = up(named); const key = 'gene:' + g;
@@ -2714,7 +2753,7 @@ Rules: fill every field only from what the pages actually say. Where the page do
         const drugs = gi.in(key).filter((e: any) => e.rel === 'tested_in').map((e: any) => ({ ...drugOut(e.source), targets: gi.in(e.source).filter((x: any) => x.rel === 'targeted_by').map((x: any) => geneOut(x.source)).sort(byRank).slice(0, 20) }));
         return { disease: snap.disease_name, snapshot_id: snap.id, ...trialOut(key), url: n.props?.url ?? null, drugs, how_to_read: HOW };
       }
-      return { error: `unknown query "${q}"`, available: ['drug_targets', 'shared_drugs', 'gene_links', 'pathway_members', 'trial'] };
+      return { error: `unknown query "${q}"`, available: KNOWN };
     }
     if (name === 'compare_genes') {
       const raw = Array.isArray(args?.genes) ? args.genes : String(args?.genes || '').split(/[,\s]+/);
