@@ -723,9 +723,20 @@ export function renderScreenBlock(s?: ScreenContext | null): string {
 // Precedence: named disease > ambient snapshot id > ambient disease name > newest snapshot.
 // A named disease we do not hold falls through rather than erroring, so the model still gets
 // an answer and the evidence rules make it state which snapshot the numbers came from.
+// Generic words carry no disease identity: "pancreatic cancer" must match "pancreatic
+// adenocarcinoma" on "pancreatic", not fail on "cancer" vs "adenocarcinoma".
+const GENERIC_DISEASE_WORDS = new Set(['disease', 'cancer', 'carcinoma', 'adenocarcinoma', 'syndrome', 'disorder', 'tumor', 'tumour']);
+export const diseaseWords = (s: string) => String(s || '').toLowerCase().split(/[^a-z]+/).filter(w => w.length >= 4 && !GENERIC_DISEASE_WORDS.has(w));
 export function pickSnapshot(snaps: any[], named?: string, ambient?: string, snapshotId?: number) {
   const sorted = [...(snaps || [])].sort((a, b) => Number(b.id) - Number(a.id));
-  const match = (q: string) => sorted.find(s => { const n = String(s.disease_name || '').toLowerCase(); return n.includes(q) || q.includes(n); });
+  // Exact/substring first; then any distinctive word of the query inside the disease name
+  // (newest snapshot wins), so "pancreatic cancer", "PDAC"-style aliases aside, resolves.
+  const match = (q: string) => {
+    const hit = sorted.find(s => { const n = String(s.disease_name || '').toLowerCase(); return n.includes(q) || q.includes(n); });
+    if (hit) return hit;
+    const words = diseaseWords(q);
+    return words.length ? sorted.find(s => { const nw = diseaseWords(String(s.disease_name || '')); return words.some(w => nw.some(x => x.startsWith(w) || w.startsWith(x))); }) : undefined;
+  };
   const nq = String(named || '').toLowerCase().trim();
   if (nq) { const m = match(nq); if (m) return m; }
   if (snapshotId) return sorted.find(s => Number(s.id) === Number(snapshotId)) || sorted[0];
@@ -741,6 +752,7 @@ export const EVIDENCE_RULES = `EVIDENCE RULES (non-negotiable):
 - Stored snapshot evidence is the ranking's truth; a live deep-dive value is extra context. If the two disagree, say which is which and that the snapshot is what the board ranks on.
 - Label each fact with its source and snapshot inline, e.g. "(Europe PMC, snapshot #103)" or "(STRING, live)". End with a short "Sources" list. When a tool result carries a wiki_url, put it in that list as a Markdown link — e.g. "[Provenance: KRAS, snapshot #102](/wiki/pancreatic-adenocarcinoma/102/gene/KRAS)" — one per gene, exactly the URL the tool returned. It is the app's own provenance page (every stored row with source, date, run and commit), not an external source; never invent one for a gene no tool returned. Keep FACTS (mutation, expression, proteomics, dependency, safety, trials, papers) separate from PREDICTIONS (Open Targets association, board rank, WINNER centrality, tractability).
 - If the store has nothing for a gene in this disease, say exactly that. Do not fill the gap from memory.
+- If a tool returns needs_disease, no disease is selected and the question did not name one: ask the user which of the listed diseases they mean, in one line, and stop. Never answer from a disease the user did not choose or name. Always say which disease and snapshot an answer comes from.
 - Our stored evidence ROWS are indexed BY GENE, but the snapshot's KNOWLEDGE GRAPH is not: query_graph answers, from stored rows, which genes a drug targets here, which drugs several genes share, a pathway's ranked members, and what a trial tests. A question that names a drug, a pathway or a trial, or asks which genes share something ("genes that work for the same drug"), calls query_graph FIRST - never answer it from the top of the board. "Rank these drugs" / "which drug has the strongest evidence here" is query_graph rank_drugs, which orders drugs by the trials, phases and approvals STORED for this disease and states its rule - a broad search_trials or search_literature over a whole set of drugs ranks nothing and must not be used for that. Then use search_literature and search_trials for what the graph does not hold: papers, combinations, one named drug the snapshot never linked to a gene. "No evidence in our store" is the WRONG answer to a drug question until query_graph has been asked.
 - WHAT EACH SOURCE CAN AND CANNOT HOLD, so you can judge what a nil result means. Our snapshot holds only what was harvested for the loaded disease, indexed by gene. Europe PMC indexes peer-reviewed papers and preprints; it does NOT index conference abstracts, company pipelines, regulatory decisions or press material. ClinicalTrials.gov indexes trials registered with it; it does NOT index planned or unregistered studies, or trials registered only in another national registry. The open web is what the other two do not index.
 - A NIL RESULT IS ONLY AS STRONG AS THE SOURCES THAT COULD HAVE HELD THE ANSWER. Before you report that something does not exist, has not been tried, or has not been published, ask whether a source you have not yet searched could contain it. If one could, search it first — that decision is yours to make and you do not need to be asked. Finding nothing in a source that structurally cannot hold the answer is not evidence of absence, and reporting it as though it were is the one failure that makes an answer worthless. If you still cannot check, say which sources you searched and which you did not, and keep the conclusion inside that limit.
@@ -1025,7 +1037,7 @@ function setupRoutes() {
             // glossaries out of the prompt.
             result = call.name === REFERENCE_TOOL.name
               ? lookupReference(call.args?.term)
-              : await execAgentTool(call.name, call.args, { disease: req.body?.disease, snapshotId: req.body?.snapshotId });
+              : await execAgentTool(call.name, call.args, { disease: req.body?.disease, snapshotId: req.body?.snapshotId, userText: userTextOf(messages) });
           } catch (e: any) { result = { error: String(e?.message || e) }; }
           trace.push({ tool: call.name, args: call.args || {} });   // same shape as the other upstreams
           // Cap the payload: a full evidence dossier can dwarf the context and the
@@ -1068,7 +1080,7 @@ function setupRoutes() {
       const dataTools = [...AGENT_TOOLS.filter(t => !clientNames.has(t.name)), REFERENCE_TOOL];
       const dataNames = new Set(dataTools.map(t => t.name));
       const allTools = [...(tools || []), ...dataTools];
-      const toolCtx = { disease: req.body?.disease || screen?.disease?.name, snapshotId: req.body?.snapshotId || screen?.snapshot?.id, modality: screen?.snapshot?.modality, litWindow: screen?.litWindow };
+      const toolCtx = { disease: req.body?.disease || screen?.disease?.name, snapshotId: req.body?.snapshotId || screen?.snapshot?.id, modality: screen?.snapshot?.modality, litWindow: screen?.litWindow, userText: userTextOf(messages) };
       const convo: any[] = [{ role: 'system', content: sysText }];
       for (const m of messages as any[]) convo.push({ role: m.role === 'user' ? 'user' : 'assistant', content: String(m.content || '') });
       const trace: any[] = [];
@@ -1158,7 +1170,7 @@ function setupRoutes() {
       const allTools = [...(tools || []), ...dataTools];
       const trace: any[] = [];
       const pendingClient: any[] = [];
-      const toolCtx = { disease: req.body?.disease || screen?.disease?.name, snapshotId: req.body?.snapshotId || screen?.snapshot?.id, modality: screen?.snapshot?.modality, litWindow: screen?.litWindow };
+      const toolCtx = { disease: req.body?.disease || screen?.disease?.name, snapshotId: req.body?.snapshotId || screen?.snapshot?.id, modality: screen?.snapshot?.modality, litWindow: screen?.litWindow, userText: userTextOf(messages) };
       for (let step = 0; step < 6; step++) {
         const body: Record<string, unknown> = { contents, systemInstruction: { parts: [{ text: sysText }] } };
         if (allTools.length) body.tools = [{ functionDeclarations: allTools }];
@@ -2169,9 +2181,32 @@ function setupRoutes() {
   // The co-pilot's single-shot chat can filter the loaded list; this lets the model PLAN and
   // call evidence tools across several steps, then synthesise. Same Gemini setup as
   // /api/ai/gemini-chat, but the tool loop runs server-side against Oracle/ORDS.
+  // The co-pilot's snapshot: the disease the question names, else the one on screen, else
+  // the one the client pinned. Never a guess: with none of those, pickSnapshot's "newest
+  // snapshot" default answered a pancreatic question from glioblastoma once, so here that
+  // case returns null and the tool asks the user which disease instead.
   async function agentSnapshot(named?: string, ambient?: string, snapshotId?: number) {
+    if (!String(named || '').trim() && !String(ambient || '').trim() && !snapshotId) return null;
     const svc = await readSvc();
-    return pickSnapshot(await svc.listSnapshots(), named, ambient, snapshotId);
+    const snaps = await svc.listSnapshots();
+    const picked = pickSnapshot(snaps, named, ambient, snapshotId);
+    // pickSnapshot's own last resort is "newest snapshot". If the only thing we had was a name
+    // and the pick is not that disease, the name matched nothing — ask rather than answer.
+    if (picked && String(named || '').trim() && !String(ambient || '').trim() && !snapshotId) {
+      const nw = diseaseWords(String(picked.disease_name || '')), qw = diseaseWords(named!);
+      if (qw.length && !qw.some(w => nw.some(x => x.startsWith(w) || w.startsWith(x)))) return null;
+    }
+    return picked;
+  }
+  // Tools that read the store need a snapshot; the live searches and list_diseases do not.
+  const SNAPSHOT_FREE_TOOLS = new Set(['list_diseases', 'search_literature', 'search_trials', 'search_web', 'read_paper']);
+  async function needsDisease() {
+    const svc = await readSvc();
+    const snaps: any[] = await svc.listSnapshots();
+    const byD = new Map<string, any>();
+    for (const s of snaps) { const p = byD.get(s.disease_id); if (!p || Number(s.id) > Number(p.id)) byD.set(s.disease_id, s); }
+    return { needs_disease: true, loaded_diseases: [...byD.values()].map(s => ({ disease: s.disease_name, snapshot_id: s.id, genes: s.gene_count })),
+      how_to_read: 'No disease is selected in the app and the question did not name one. Do NOT pick one. Ask the user which of loaded_diseases they mean (one short question listing them), then stop; once they answer, call the tool again with `disease` set to their choice.' };
   }
   const AGENT_TOOLS = [
     { name: 'list_diseases', description: 'List the diseases loaded in the platform (name, snapshot id, gene count). Call first if unsure which disease is available.', parameters: { type: 'OBJECT', properties: {} } },
@@ -2640,10 +2675,22 @@ Rules: fill every field only from what the pages actually say. Where the page do
     return p;
   }
 
-  async function execAgentTool(name: string, args: any, ctx: { disease?: string; snapshotId?: number; modality?: string; litWindow?: string }): Promise<any> {
+  // What the user actually typed, for the disease guard below.
+  const userTextOf = (messages: any[]) => (Array.isArray(messages) ? messages : []).filter((m: any) => m?.role === 'user').map((m: any) => String(m.content || '')).join(' ').toLowerCase();
+  async function execAgentTool(name: string, args: any, ctx: { disease?: string; snapshotId?: number; modality?: string; litWindow?: string; userText?: string }): Promise<any> {
     const svc = await readSvc();
-    const snap = await agentSnapshot(args?.disease, ctx.disease, ctx.snapshotId);
-    if (!snap) return { error: 'no snapshot loaded' };
+    // The model's own `disease` argument counts only if the USER named that disease. Left
+    // unchecked, the model filled it from its prior ("gemcitabine → pancreatic") and answered
+    // for a disease nobody had chosen — with nothing on screen, and even OVER the disease on
+    // screen. The user decides: their words, else the screen, else ask.
+    let named = String(args?.disease || '').trim();
+    if (named) {
+      const words = diseaseWords(named);
+      const said = String(ctx.userText || '');
+      if (!words.some(w => said.includes(w))) named = '';
+    }
+    const snap = await agentSnapshot(named, ctx.disease, ctx.snapshotId);
+    if (!snap && !SNAPSHOT_FREE_TOOLS.has(String(name))) return await needsDisease();
     const up = (v: any) => String(v || '').toUpperCase().trim();
     // ── query_graph: the stored knowledge graph, from any entity ──────────────
     // Reuses the wiki's per-snapshot graph cache (a snapshot is immutable), indexes it once,
