@@ -109,6 +109,10 @@ import KnowledgeGraphView from './KnowledgeGraphView';
 import RankingBoardView from './RankingBoardView';
 import MethodologyView from './MethodologyView';
 import DiseaseChip from './DiseaseChip';
+import AssessmentView from './AssessmentView';
+import { ASSESS_MAX, assessTargets, withModality, type Assessment, type ModalityFitRow, type MechanisticGoal } from './assessment';
+import { loadBoardRows, resolveSnapshot } from './boardData';
+import { buildBoard, type ModalityKey, type LitWindow } from './rankingBoard';
 import GlobalSearch, { type GlobalSearchHandle } from './GlobalSearch';
 import WelcomeView from './WelcomeView';
 import { applyDiseaseAccent } from './diseaseAccent';
@@ -123,7 +127,7 @@ import { FeedbackDialog, FeedbackInbox, type FeedbackContext } from './Feedback'
 catchRecoveryHash();
 import { glossaryPromptBlock, GLOSSARY } from './dashboardGlossary';
 import { modalityPromptBlock, modalityResultBlock, MODALITY_GLOSSARY } from './modalityGlossary';
-import { boardSnapshotBlock, getActiveBoardSnapshot, screenContext } from './boardStore';
+import { boardSnapshotBlock, getActiveBoardSnapshot, getBoardLitWindow, screenContext } from './boardStore';
 import { getLastModalityResult } from './modalityStore';
 import { getCbioMutations } from './cbioportalService';
 import { getChEMBLDruggability } from './chemblService';
@@ -141,7 +145,6 @@ import {
   GETWeights,
   PaperAnalysis,
   GeneResult,
-  GeneAssessmentData,
   DrillDownData,
 } from './types';
 
@@ -770,12 +773,18 @@ const bioTissueLabel = (t: string) => t.replace(/_/g, ' ').replace(/\b\w/g, c =>
 
 // `rail` is the caption under the icon in the collapsed rail — a real short word, not
 // the first four letters (which gave "TARG" and "ASSE").
+// `views`: the main views a panel serves. The Rank panel (GET weights, RWR/WINNER sliders)
+// filters the Targets table and Score Matrix and means nothing on the Ranking Board, so it
+// is hidden there. The old Target panel (bimodality tissue columns + a GET top-15) is gone:
+// the tissue picker now lives in the Targets table's Columns menu, next to the columns it
+// adds, and the board's Overall is the ranking — a second top-15 beside it only confused.
 const LEFT_NAV_ITEMS = [
-  { id: 'workspace', icon: Home,       label: 'Workspace', rail: 'Work'   },
-  { id: 'targets',   icon: List,       label: 'Targets',   rail: 'Target' },
-  { id: 'rankings',  icon: BarChart3,  label: 'Rankings',  rail: 'Rank'   },
-  { id: 'assess',    icon: Microscope, label: 'Assess',    rail: 'Assess' },
+  { id: 'workspace', icon: Home,       label: 'Workspace', rail: 'Work',   views: null },
+  { id: 'rankings',  icon: BarChart3,  label: 'Rankings',  rail: 'Rank',   views: ['list', 'rankings'] },
+  { id: 'assess',    icon: Microscope, label: 'Assess',    rail: 'Assess', views: null },
 ] as const;
+/** Rail panels that make sense for a main view. */
+const railItemsFor = (viewMode: string) => LEFT_NAV_ITEMS.filter(i => !i.views || (i.views as readonly string[]).includes(viewMode));
 
 // ── Dual-handle range slider ─────────────────────────────────────────────────
 // Uses pointer events on a track div so both thumbs are always independently
@@ -1425,15 +1434,8 @@ When you cite a value from here, record the **source, the date you retrieved it,
 };
 
 // =============================================================================
-// AssessmentView — per-gene evidence cards using ranked-list data + clinical/lit
+// InfoDot — small inline info dot with a click-toggle popover
 // =============================================================================
-const ASSESS_CHEMBL_COLORS: Record<string, string> = {
-  'Clinically Validated':    '#16a34a',
-  'In Clinical Development':  '#2563eb',
-  'Preclinical Only':         '#9333ea',
-  'No Drug Data Found':       '#6b7280',
-};
-
 // Small inline info dot with a click-toggle popover — explains a metric in place.
 // Full definitions live in profile menu → Documentation.
 const InfoDot = ({ text, isDark }: { text: string; isDark: boolean }) => {
@@ -1458,467 +1460,13 @@ const InfoDot = ({ text, isDark }: { text: string; isDark: boolean }) => {
   );
 };
 
-const ScoreChip = ({ val, label, color, isDark }: { val: number; label: string; color: string; isDark: boolean }) => (
-  <div className={`flex flex-col items-center px-2.5 py-2 rounded-xl border ${isDark ? 'border-slate-800 bg-slate-900/40' : 'border-slate-200 bg-white'}`}>
-    <span className={`text-[15px] font-black ${color}`}>{val.toFixed(2)}</span>
-    <span className={`text-[8px] font-bold uppercase tracking-widest mt-0.5 ${isDark ? 'text-slate-600' : 'text-slate-400'}`}>{label}</span>
-    <div className={`mt-1 w-full h-1 rounded-full ${isDark ? 'bg-slate-800' : 'bg-slate-200'}`}>
-      <div className={`h-full rounded-full ${color.replace('text-','bg-')}`} style={{ width: `${Math.min(1, val) * 100}%` }} />
-    </div>
-  </div>
-);
-
-const PhaseBar = ({ phase, isDark }: { phase: string; isDark: boolean }) => {
-  const order = ['EARLY_PHASE1','PHASE1','PHASE2','PHASE3','PHASE4'];
-  const idx = order.indexOf(phase ?? '');
-  const labels = ['Early Ph1','Phase 1','Phase 2','Phase 3','Phase 4'];
-  return (
-    <div className="flex items-center gap-1 mt-1">
-      {order.map((p, i) => (
-        <div key={p} className={`flex-1 h-2 rounded-full transition-all ${
-          i <= idx ? (i >= 3 ? 'bg-emerald-500' : i >= 2 ? 'bg-blue-500' : 'bg-slate-400')
-                   : isDark ? 'bg-slate-800' : 'bg-slate-200'
-        }`} title={labels[i]} />
-      ))}
-    </div>
-  );
-};
-
-async function buildAssessDocx(genes: GeneAssessmentData[], diseaseName: string, narrative: string) {
-  const { Document, Paragraph, TextRun, Table, TableRow, TableCell, WidthType, HeadingLevel, BorderStyle, ShadingType } = await import('docx');
-  const border = { style: BorderStyle.SINGLE, size: 1, color: 'D1D5DB' };
-  const borders = { top: border, bottom: border, left: border, right: border };
-  const mkCell = (text: string, bold = false, shaded = false, w = 2340) =>
-    new TableCell({
-      borders, width: { size: w, type: WidthType.DXA },
-      shading: shaded ? { fill: 'F1F5F9', type: ShadingType.CLEAR } : undefined,
-      margins: { top: 60, bottom: 60, left: 100, right: 100 },
-      children: [new Paragraph({ children: [new TextRun({ text, bold, size: 18 })] })],
-    });
-
-  const children: any[] = [
-    new Paragraph({ heading: HeadingLevel.HEADING_1, children: [new TextRun({ text: 'Target Assessment Report', bold: true, size: 36 })] }),
-    new Paragraph({ children: [new TextRun({ text: `Disease: ${diseaseName}  |  Generated: ${new Date().toLocaleDateString()}`, size: 20, color: '6B7280' })] }),
-    new Paragraph({ children: [] }),
-  ];
-
-  for (const g of genes) {
-    children.push(new Paragraph({ heading: HeadingLevel.HEADING_2, children: [new TextRun({ text: `${g.symbol} — ${g.name}`, bold: true, size: 28 })] }));
-    children.push(new Paragraph({ children: [new TextRun({ text: g.foundInRankedList ? 'Source: Ranked target list' : 'Source: Custom gene (clinical + literature only)', size: 18, color: '6B7280' })] }));
-    children.push(new Paragraph({ children: [] }));
-
-    if (g.foundInRankedList) {
-      children.push(new Paragraph({ children: [new TextRun({ text: 'Evidence Scores (GET Framework)', bold: true, size: 22 })] }));
-      children.push(new Table({
-        width: { size: 9360, type: WidthType.DXA }, columnWidths: [2340, 2340, 2340, 2340],
-        rows: [
-          new TableRow({ children: [mkCell('GET Score', true, true), mkCell('Genetic (G)', true, true), mkCell('Expression (E)', true, true), mkCell('Target (T)', true, true)] }),
-          new TableRow({ children: [mkCell(g.getScore.toFixed(3)), mkCell(g.geneticScore.toFixed(3)), mkCell(g.expressionScore.toFixed(3)), mkCell(g.targetScore.toFixed(3))] }),
-        ],
-      }));
-      children.push(new Paragraph({ children: [] }));
-
-      if (g.tauTissue > 0 || g.tauSingleCell > 0) {
-        children.push(new Paragraph({ children: [new TextRun({ text: `Tissue Specificity — Tau (bulk): ${g.tauTissue.toFixed(3)}  |  Tau (single-cell): ${g.tauSingleCell.toFixed(3)}  |  Expression: ${g.combinedExpression.toFixed(3)}`, size: 20 })] }));
-      }
-
-      const topBimodal = Object.entries(g.bimodalityScores)
-        .filter(([k]) => !k.startsWith('_'))
-        .sort(([, a], [, b]) => b - a).slice(0, 5)
-        .map(([tissue, score]) => `${tissue} (${score.toFixed(2)})`).join(', ');
-      if (topBimodal) {
-        children.push(new Paragraph({ children: [new TextRun({ text: `Top Bimodal Tissues: ${topBimodal}`, size: 20 })] }));
-      }
-
-      if (g.pathways.length > 0) {
-        children.push(new Paragraph({ children: [new TextRun({ text: `Key Pathways: ${g.pathways.slice(0, 5).map(p => p.label).join(', ')}`, size: 20 })] }));
-      }
-      children.push(new Paragraph({ children: [] }));
-    }
-
-    const dd = g.drillDown;
-    children.push(new Paragraph({ children: [new TextRun({ text: 'Clinical Trials (ClinicalTrials.gov)', bold: true, size: 22 })] }));
-    children.push(new Paragraph({ children: [new TextRun({ text: `${dd.trial_count ?? 0} trials  |  Max Phase: ${dd.max_phase ?? 'N/A'}  |  Active: ${dd.active_trial_present ? 'Yes' : 'No'}`, size: 20 })] }));
-    if (dd.top_drugs?.length) {
-      children.push(new Paragraph({ children: [new TextRun({ text: `Top drugs in trials: ${dd.top_drugs.slice(0, 5).map(d => d.name).join(', ')}`, size: 20 })] }));
-    }
-    children.push(new Paragraph({ children: [] }));
-
-    children.push(new Paragraph({ children: [new TextRun({ text: 'Literature (PubMed + Europe PMC)', bold: true, size: 22 })] }));
-    children.push(new Paragraph({ children: [new TextRun({ text: `PubMed: ${g.pubmed.total} total, ${g.pubmed.recent} last 3 years  |  Europe PMC: ${dd.paper_count ?? 0} (${dd.recent_paper_count ?? 0} recent)`, size: 20 })] }));
-    if (g.pubTatorScore > 0) {
-      children.push(new Paragraph({ children: [new TextRun({ text: `PubTator velocity score: ${g.pubTatorScore.toFixed(3)}  |  ${g.pubTatorTotalPapers} total papers, ${g.pubTatorRecentPapers} recent`, size: 20 })] }));
-    }
-    if (g.pubmed.topPapers.length > 0) {
-      children.push(new Paragraph({ children: [new TextRun({ text: 'Top papers:', bold: true, size: 20 })] }));
-      g.pubmed.topPapers.slice(0, 3).forEach(p => {
-        children.push(new Paragraph({ children: [new TextRun({ text: `• ${p.title} (PMID: ${p.id})`, size: 18 })] }));
-      });
-    }
-    children.push(new Paragraph({ children: [] }));
-  }
-
-  if (narrative) {
-    children.push(
-      new Paragraph({ heading: HeadingLevel.HEADING_2, children: [new TextRun({ text: 'AI Trade-off Analysis', bold: true, size: 28 })] }),
-      new Paragraph({ children: [new TextRun({ text: narrative, size: 20 })] }),
-    );
-  }
-
-  return new Document({ sections: [{ properties: { page: { size: { width: 12240, height: 15840 }, margin: { top: 1440, right: 1440, bottom: 1440, left: 1440 } } }, children }] });
-}
-
-const AssessmentView = ({ genes, data, loading, diseaseName, theme, onClose }: {
-  genes: string[];
-  data: GeneAssessmentData[];
-  loading: Record<string, boolean>;
-  diseaseName: string;
-  theme: Theme;
-  onClose: () => void;
-}) => {
-  const isDark = theme === 'dark';
-  const [narrative, setNarrative] = React.useState('');
-  const [narrativeLoading, setNarrativeLoading] = React.useState(false);
-  const [dlLoading, setDlLoading] = React.useState(false);
-
-  const ready = data.filter(d => !loading[d.symbol]);
-  const allDone = genes.length > 0 && genes.every(g => !loading[g] && data.find(d => d.symbol === g));
-
-  const runNarrative = async () => {
-    if (ready.length === 0) return;
-    setNarrativeLoading(true);
-    try {
-      const ctx = ready.map(g => {
-        const topBio = Object.entries(g.bimodalityScores).filter(([k]) => !k.startsWith('_')).sort(([,a],[,b])=>b-a).slice(0,3).map(([t,s])=>`${t}(${s.toFixed(2)})`).join(', ');
-        return `Gene: ${g.symbol} (${g.name})
-Source: ${g.foundInRankedList ? 'Ranked target list' : 'Custom gene'}
-${g.foundInRankedList ? `GET Score: ${g.getScore.toFixed(3)} | Genetic: ${g.geneticScore.toFixed(3)} | Expression: ${g.expressionScore.toFixed(3)} | Target: ${g.targetScore.toFixed(3)}
-Literature Score: ${g.literatureScore.toFixed(3)} | PubTator velocity: ${g.pubTatorScore.toFixed(3)}
-Tau (tissue): ${g.tauTissue.toFixed(3)} | Tau (single-cell): ${g.tauSingleCell.toFixed(3)}
-Top bimodal tissues: ${topBio || '—'}
-Pathways: ${g.pathways.slice(0,5).map(p=>p.label).join(', ')||'—'}` : ''}
-Clinical Trials: ${g.drillDown.trial_count??0} total | Max phase: ${g.drillDown.max_phase??'N/A'} | Active: ${g.drillDown.active_trial_present?'yes':'no'}
-Top trial drugs: ${g.drillDown.top_drugs?.slice(0,3).map(d=>d.name).join(', ')||'—'}
-PubMed: ${g.pubmed.total} total, ${g.pubmed.recent} recent (3y) | Europe PMC: ${g.drillDown.paper_count??0}`.trim();
-      }).join('\n\n---\n\n');
-
-      const prompt = `You are a drug discovery scientist evaluating therapeutic target candidates for ${diseaseName}.
-
-Evidence data for ${ready.length} gene(s):
-
-${ctx}
-
-Write a critical, evidence-based Target Assessment Report covering:
-1. **Clinical Validation** — what does the trial landscape reveal? Early-stage, mature, or untapped?
-2. **Literature Signal** — is research momentum growing or established? Any velocity insights?
-${ready.some(g=>g.foundInRankedList) ? `3. **Genetic & Expression Evidence** — strength of disease association and tissue risk
-4. **Tissue Specificity** — bimodality and tau scores; off-target concerns?` : ''}
-${ready.length > 1 ? `5. **Comparative Trade-offs** — which target offers the better risk/benefit profile and why?
-6. **Recommendation** — prioritize one for a new drug program with justification.` : ''}
-
-Be specific, cite the numbers. Do not fabricate. ~400 words.`;
-
-      const resp = await authenticatedFetch('/api/ai/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt }) });
-      const data = await resp.json();
-      if (!resp.ok) throw new Error(data.error || `AI request failed (${resp.status})`);
-      setNarrative(data.text ?? '');
-    } catch (e: any) {
-      setNarrative(`Error: ${e.message}`);
-    } finally { setNarrativeLoading(false); }
-  };
-
-  const downloadReport = async () => {
-    if (data.length === 0) return;
-    setDlLoading(true);
-    try {
-      const { Packer } = await import('docx');
-      const doc = await buildAssessDocx(data, diseaseName, narrative);
-      const buffer = await Packer.toBuffer(doc);
-      await saveBlob(new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }),
-        `Assessment_${genes.join('_')}_${diseaseName.replace(/\s+/g,'_').slice(0,30)}.docx`);
-    } catch (e: any) { logDev('DOCX export failed:', e); }
-    finally { setDlLoading(false); }
-  };
-
-  return (
-    <div className={`h-full flex flex-col rounded-2xl border overflow-hidden shadow-xl ${isDark ? 'bg-[#0b111c]/95 border-slate-800/80' : 'bg-white/95 border-slate-200'}`}>
-      {/* Header */}
-      <div className={`flex items-center justify-between gap-3 px-5 py-3.5 border-b flex-shrink-0 ${isDark ? 'bg-[#0b111c] border-slate-800' : 'bg-white border-slate-200'}`}>
-        <div className="flex items-center gap-3 min-w-0">
-          <div className={`p-2 rounded-xl flex-shrink-0 ${isDark ? 'bg-blue-600/10' : 'bg-blue-50'}`}>
-            <Microscope className={`w-4 h-4 ${isDark ? 'text-blue-400' : 'text-blue-600'}`} />
-          </div>
-          <div className="min-w-0">
-            <p className={`text-[9px] font-black uppercase tracking-widest ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Target Assessment</p>
-            <p className={`text-[13px] font-bold truncate ${isDark ? 'text-slate-100' : 'text-slate-800'}`}>{diseaseName || 'Evidence Report'}</p>
-          </div>
-        </div>
-        <div className="flex items-center gap-2 flex-shrink-0">
-          {allDone && (
-            <>
-              <button onClick={runNarrative} disabled={narrativeLoading}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-bold whitespace-nowrap transition-all ${isDark ? 'bg-purple-600/15 text-purple-400 hover:bg-purple-600/25 border border-purple-500/20' : 'bg-purple-50 text-purple-600 hover:bg-purple-100 border border-purple-200'} disabled:opacity-40`}>
-                {narrativeLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}AI Trade-off
-              </button>
-              <button onClick={downloadReport} disabled={dlLoading}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-bold whitespace-nowrap transition-all ${isDark ? 'bg-emerald-600/15 text-emerald-400 hover:bg-emerald-600/25 border border-emerald-500/20' : 'bg-emerald-50 text-emerald-600 hover:bg-emerald-100 border border-emerald-200'} disabled:opacity-40`}>
-                {dlLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FileDown className="w-3.5 h-3.5" />}Download Report
-              </button>
-            </>
-          )}
-          <button onClick={onClose} className={`p-1.5 rounded-lg flex-shrink-0 transition-colors ${isDark ? 'hover:bg-slate-800 text-slate-400' : 'hover:bg-slate-100 text-slate-500'}`}>
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-      </div>
-
-      {/* Body */}
-      <div className="flex-1 overflow-y-auto p-5 space-y-5">
-        {/* Gene Cards */}
-        <div className={`grid gap-4 ${genes.length >= 3 ? 'grid-cols-3' : genes.length === 2 ? 'grid-cols-2' : 'grid-cols-1 max-w-xl mx-auto w-full'}`}>
-          {genes.map(sym => {
-            const g = data.find(d => d.symbol === sym);
-            if (loading[sym] || !g) return (
-              <div key={sym} className={`rounded-2xl border p-6 flex flex-col items-center justify-center gap-3 min-h-48 ${isDark ? 'border-slate-800 bg-slate-900/30' : 'border-slate-200 bg-slate-50'}`}>
-                <Loader2 className={`w-6 h-6 animate-spin ${isDark ? 'text-blue-400' : 'text-blue-600'}`} />
-                <p className={`text-[11px] font-bold ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>Loading {sym}…</p>
-                <p className={`text-[9px] ${isDark ? 'text-slate-600' : 'text-slate-400'}`}>ClinicalTrials.gov · PubMed</p>
-              </div>
-            );
-
-            // Top bimodal tissues from bimodalityScores
-            const bioTissues = Object.entries(g.bimodalityScores)
-              .filter(([k]) => !k.startsWith('_') && typeof g.bimodalityScores[k] === 'number')
-              .sort(([,a],[,b]) => b - a).slice(0, 6);
-
-            return (
-              <div key={sym} className={`rounded-2xl border overflow-hidden ${isDark ? 'border-slate-800 bg-[#0d1424]' : 'border-slate-200 bg-white'}`}>
-                {/* Gene header */}
-                <div className={`px-4 py-3 border-b ${isDark ? 'border-slate-800 bg-slate-900/40' : 'border-slate-100 bg-slate-50'}`}>
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <h3 className={`text-[16px] font-black font-mono ${isDark ? 'text-blue-300' : 'text-blue-700'}`}>{g.symbol}</h3>
-                    <span className={`text-[8px] font-black px-1.5 py-0.5 rounded-full border ${
-                      g.foundInRankedList
-                        ? isDark ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' : 'bg-emerald-50 border-emerald-200 text-emerald-600'
-                        : isDark ? 'bg-amber-500/10 border-amber-500/20 text-amber-400' : 'bg-amber-50 border-amber-200 text-amber-600'
-                    }`}>{g.foundInRankedList ? '✓ Ranked' : 'Custom'}</span>
-                  </div>
-                  <p className={`text-[11px] font-semibold mt-0.5 truncate ${isDark ? 'text-slate-300' : 'text-slate-700'}`}>{g.name}</p>
-                </div>
-
-                <div className="px-4 py-3 space-y-4">
-                  {/* GET Scores — only for ranked genes */}
-                  {g.foundInRankedList && (
-                    <div>
-                      <div className="flex items-center gap-1 mb-2">
-                        <p className={`text-[9px] font-black uppercase tracking-widest ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>GET Evidence Scores</p>
-                        <InfoDot isDark={isDark} text="Genetic (G), Expression (E) and Target (T) sub-scores from Open Targets. GET = G×0.50 + E×0.25 + T×0.25. PubTator velocity = % of papers in the last 3 years. Full formulas in Documentation." />
-                      </div>
-                      <div className="grid grid-cols-2 gap-1.5">
-                        <ScoreChip val={g.getScore} label="GET" color="text-purple-600" isDark={isDark} />
-                        <ScoreChip val={g.geneticScore} label="Genetic" color="text-blue-600" isDark={isDark} />
-                        <ScoreChip val={g.expressionScore} label="Expression" color="text-emerald-600" isDark={isDark} />
-                        <ScoreChip val={g.targetScore} label="Target" color="text-amber-600" isDark={isDark} />
-                      </div>
-                      {g.pubTatorScore > 0 && (
-                        <div className={`mt-1.5 flex items-center gap-3 px-3 py-1.5 rounded-xl ${isDark ? 'bg-slate-900/40' : 'bg-slate-50'}`}>
-                          <div>
-                            <span className={`text-[9px] font-black ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>PubTator Velocity</span>
-                            <p className={`text-[13px] font-black ${isDark ? 'text-blue-300' : 'text-blue-700'}`}>{g.pubTatorScore.toFixed(3)}</p>
-                          </div>
-                          <div>
-                            <span className={`text-[9px] font-black ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Papers</span>
-                            <p className={`text-[13px] font-black ${isDark ? 'text-slate-200' : 'text-slate-800'}`}>{g.pubTatorTotalPapers}</p>
-                          </div>
-                          <div>
-                            <span className={`text-[9px] font-black ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Recent 3y</span>
-                            <p className={`text-[13px] font-black ${isDark ? 'text-slate-200' : 'text-slate-800'}`}>{g.pubTatorRecentPapers}</p>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Tissue Specificity — only for ranked genes */}
-                  {g.foundInRankedList && (g.tauTissue > 0 || bioTissues.length > 0) && (
-                    <div>
-                      <div className="flex items-center gap-1 mb-2">
-                        <p className={`text-[9px] font-black uppercase tracking-widest ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Tissue Specificity</p>
-                        <InfoDot isDark={isDark} text="TAU (bulk & single-cell, Human Protein Atlas): 0–1, near 1 = highly tissue/cell-specific. Bimodality bars = how ON/OFF the gene's expression is per tissue (precomputed dataset)." />
-                      </div>
-                      <div className="grid grid-cols-3 gap-1.5 mb-2">
-                        {[
-                          { label: 'Tau (bulk)', val: g.tauTissue },
-                          { label: 'Tau (scRNA)', val: g.tauSingleCell },
-                          { label: 'Expression', val: g.combinedExpression },
-                        ].map(s => (
-                          <div key={s.label} className={`rounded-xl border px-2 py-1.5 text-center ${isDark ? 'border-slate-800 bg-slate-900/30' : 'border-slate-200 bg-slate-50'}`}>
-                            <p className={`text-[13px] font-black ${s.val > 0.6 ? 'text-emerald-500' : s.val > 0.3 ? 'text-amber-500' : isDark ? 'text-slate-400' : 'text-slate-500'}`}>{s.val.toFixed(2)}</p>
-                            <p className={`text-[8px] font-bold ${isDark ? 'text-slate-600' : 'text-slate-400'}`}>{s.label}</p>
-                          </div>
-                        ))}
-                      </div>
-                      {bioTissues.length > 0 && (
-                        <div className="space-y-1">
-                          {bioTissues.map(([tissue, score]) => (
-                            <div key={tissue} className="flex items-center gap-2">
-                              <span className={`text-[9px] truncate w-24 flex-shrink-0 ${isDark ? 'text-slate-400' : 'text-slate-600'}`}>{tissue}</span>
-                              <div className={`flex-1 h-1.5 rounded-full ${isDark ? 'bg-slate-800' : 'bg-slate-200'}`}>
-                                <div className="h-full rounded-full bg-teal-500" style={{ width: `${Math.min(100, score * 100)}%` }} />
-                              </div>
-                              <span className={`text-[8px] font-mono w-8 text-right flex-shrink-0 ${isDark ? 'text-slate-600' : 'text-slate-400'}`}>{score.toFixed(2)}</span>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Clinical Trials */}
-                  <div>
-                    <div className="flex items-center gap-1 mb-2">
-                      <p className={`text-[9px] font-black uppercase tracking-widest ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Clinical Trials</p>
-                      <InfoDot isDark={isDark} text="ClinicalTrials.gov API v2 — trials matching this gene + disease. Shows total/interventional counts, highest trial phase reached, whether any trial is active, and drugs named in trials." />
-                    </div>
-                    <div className={`rounded-xl border p-3 space-y-2 ${isDark ? 'border-slate-800 bg-slate-900/30' : 'border-slate-200 bg-slate-50'}`}>
-                      <div className="flex items-center justify-between">
-                        <span className={`text-[11px] font-bold ${isDark ? 'text-slate-200' : 'text-slate-800'}`}>
-                          {g.drillDown.trial_count ?? 0} trials
-                          {g.drillDown.active_trial_present && <span className="ml-2 text-[9px] text-emerald-500 font-black">● Active</span>}
-                        </span>
-                        <span className={`text-[10px] font-bold ${isDark ? 'text-slate-400' : 'text-slate-600'}`}>
-                          Max: {(g.drillDown.max_phase ?? 'N/A').replace(/_/g,' ').replace('PHASE','Ph')}
-                        </span>
-                      </div>
-                      <PhaseBar phase={g.drillDown.max_phase ?? ''} isDark={isDark} />
-                      {g.drillDown.top_drugs && g.drillDown.top_drugs.length > 0 && (
-                        <p className={`text-[9px] ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
-                          Drugs in trials: {g.drillDown.top_drugs.slice(0,3).map(d=>d.name).join(', ')}
-                        </p>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Literature */}
-                  <div>
-                    <div className="flex items-center gap-1 mb-2">
-                      <p className={`text-[9px] font-black uppercase tracking-widest ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Literature</p>
-                      <InfoDot isDark={isDark} text="PubMed (NCBI E-utilities): query GENE[Gene Name] AND disease — total + last-3-years counts. Europe PMC: GENE AND &quot;disease&quot; full-text hit counts. Both fetched live; numbers differ because EPMC indexes full text." />
-                    </div>
-                    <div className="grid grid-cols-2 gap-1.5">
-                      {[
-                        { label: 'PubMed', value: g.pubmed.total, sub: `${g.pubmed.recent} last 3y` },
-                        { label: 'Europe PMC', value: g.drillDown.paper_count ?? 0, sub: `${g.drillDown.recent_paper_count ?? 0} recent` },
-                      ].map(s => (
-                        <div key={s.label} className={`rounded-xl border px-3 py-2 ${isDark ? 'border-slate-800 bg-slate-900/30' : 'border-slate-200 bg-slate-50'}`}>
-                          <p className={`text-[15px] font-black ${isDark ? 'text-slate-100' : 'text-slate-800'}`}>{s.value.toLocaleString()}</p>
-                          <p className={`text-[9px] font-bold ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>{s.label}</p>
-                          <p className={`text-[8px] ${isDark ? 'text-slate-600' : 'text-slate-400'}`}>{s.sub}</p>
-                        </div>
-                      ))}
-                    </div>
-                    {g.pubmed.topPapers.length > 0 && (
-                      <div className="mt-2 space-y-1">
-                        {g.pubmed.topPapers.slice(0,2).map(p => (
-                          <a key={p.id} href={`https://pubmed.ncbi.nlm.nih.gov/${p.id}`} target="_blank" rel="noopener noreferrer"
-                            className={`flex items-start gap-1.5 text-[9px] leading-relaxed hover:underline ${isDark ? 'text-blue-400/70' : 'text-blue-600/70'}`}>
-                            <ExternalLink className="w-2.5 h-2.5 mt-0.5 flex-shrink-0" />
-                            <span className="line-clamp-2">{p.title}</span>
-                          </a>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Druggability — ChEMBL (always fetched) */}
-                  {g.chembl && (
-                    <div>
-                      <div className="flex items-center gap-1 mb-2">
-                        <p className={`text-[9px] font-black uppercase tracking-widest ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Druggability (ChEMBL)</p>
-                        <InfoDot isDark={isDark} text="ChEMBL API. Label from the highest trial phase of any drug on the target (Clinically Validated = approved/Ph4 → No Drug Data Found). Best IC50 = most potent measured inhibitor (lower = stronger). Compounds = bioactivity records. Modalities are predicted from cellular location, not confirmed." />
-                      </div>
-                      {g.chembl.error ? (
-                        <p className={`text-[10px] italic ${isDark ? 'text-slate-600' : 'text-slate-400'}`}>{g.chembl.error}</p>
-                      ) : (
-                        <div className={`rounded-xl border p-3 space-y-2 ${isDark ? 'border-slate-800 bg-slate-900/30' : 'border-slate-200 bg-slate-50'}`}>
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <span className="px-2 py-0.5 rounded-full text-[9px] font-black text-white" style={{ backgroundColor: ASSESS_CHEMBL_COLORS[g.chembl.label] || '#6b7280' }}>{g.chembl.label}</span>
-                            <span className={`text-[10px] font-bold ${isDark ? 'text-slate-400' : 'text-slate-600'}`}>Score {g.chembl.druggabilityScore.toFixed(2)}</span>
-                          </div>
-                          <div className="flex items-center gap-1 flex-wrap">
-                            {([['AB','Antibody',g.chembl.modalities.antibody],['SM','Small Mol',g.chembl.modalities.smallMolecule],['PR','PROTAC',g.chembl.modalities.protac]] as const).map(([k,label,active]) => (
-                              <span key={k} className={`text-[8px] px-1.5 py-0.5 rounded font-bold ${active ? (isDark ? 'bg-emerald-500/15 text-emerald-400' : 'bg-emerald-100 text-emerald-700') : (isDark ? 'bg-slate-800 text-slate-600' : 'bg-slate-100 text-slate-400')}`}>{active ? '✓' : '✗'} {label}</span>
-                            ))}
-                          </div>
-                          <div className="grid grid-cols-2 gap-1.5">
-                            <div>
-                              <span className={`text-[8px] font-black uppercase ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Best IC50</span>
-                              <p className={`text-[12px] font-black ${isDark ? 'text-slate-200' : 'text-slate-800'}`}>{g.chembl.bestCompound?.ic50Nm != null ? `${g.chembl.bestCompound.ic50Nm.toFixed(1)} nM` : '—'}</p>
-                            </div>
-                            <div>
-                              <span className={`text-[8px] font-black uppercase ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Compounds</span>
-                              <p className={`text-[12px] font-black ${isDark ? 'text-slate-200' : 'text-slate-800'}`}>{g.chembl.totalCompounds.toLocaleString()}</p>
-                            </div>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Pathways — ranked only */}
-                  {g.foundInRankedList && g.pathways.length > 0 && (
-                    <div>
-                      <p className={`text-[9px] font-black uppercase tracking-widest mb-2 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Pathways</p>
-                      <div className="flex flex-wrap gap-1">
-                        {g.pathways.slice(0,6).map(p => (
-                          <span key={p.id} className={`text-[8px] px-2 py-0.5 rounded-full border ${isDark ? 'border-slate-700 bg-slate-800 text-slate-400' : 'border-slate-200 bg-slate-50 text-slate-500'}`}>{p.label}</span>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-
-        {/* AI Narrative */}
-        {(narrative || narrativeLoading) && (
-          <div className={`rounded-2xl border overflow-hidden ${isDark ? 'border-purple-800/40 bg-purple-900/10' : 'border-purple-200 bg-purple-50/50'}`}>
-            <div className={`px-5 py-3 border-b flex items-center gap-2 ${isDark ? 'border-purple-800/30' : 'border-purple-200'}`}>
-              <Sparkles className={`w-4 h-4 ${isDark ? 'text-purple-400' : 'text-purple-600'}`} />
-              <p className={`text-[11px] font-black uppercase tracking-widest ${isDark ? 'text-purple-400' : 'text-purple-700'}`}>AI Trade-off Analysis — {diseaseName}</p>
-            </div>
-            <div className="px-5 py-4">
-              {narrativeLoading
-                ? <div className="flex items-center gap-3"><Loader2 className="w-4 h-4 animate-spin text-purple-500" /><span className={`text-[12px] ${isDark ? 'text-slate-400' : 'text-slate-600'}`}>Generating…</span></div>
-                : <div className="prose prose-sm dark:prose-invert max-w-none"><Markdown>{narrative}</Markdown></div>
-              }
-            </div>
-          </div>
-        )}
-
-        {!narrative && !narrativeLoading && allDone && (
-          <div className={`rounded-2xl border px-6 py-8 text-center ${isDark ? 'border-slate-800 bg-slate-900/20' : 'border-slate-200 bg-slate-50'}`}>
-            <Sparkles className={`w-8 h-8 mx-auto mb-3 ${isDark ? 'text-slate-700' : 'text-slate-300'}`} />
-            <p className={`text-[13px] font-bold mb-1 ${isDark ? 'text-slate-400' : 'text-slate-600'}`}>Ready for AI Analysis</p>
-            <p className={`text-[11px] mb-4 ${isDark ? 'text-slate-600' : 'text-slate-400'}`}>Click "AI Trade-off" for a critical comparison of these targets</p>
-            <button onClick={runNarrative} className="px-5 py-2 rounded-xl bg-purple-600 text-white text-[11px] font-black uppercase tracking-wider hover:bg-purple-700 transition-colors flex items-center gap-2 mx-auto">
-              <Sparkles className="w-3.5 h-3.5" />Generate AI Report
-            </button>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-};
-
 // =============================================================================
 // AssessPanelContent — proper sub-component so hooks are valid
 // =============================================================================
-const AssessPanelContent = ({ isDark, targets, onAssessRun }: {
+const AssessPanelContent = ({ isDark, boardTop, boardLoading, onAssessRun }: {
   isDark: boolean;
-  targets: Target[];
+  boardTop: Array<{ symbol: string; rank: number; display: number }>;   // the Ranking Board's leaders for the loaded disease
+  boardLoading: boolean;
   onAssessRun?: (genes: string[]) => void;
 }) => {
   const [assessChecked, setAssessChecked] = React.useState<string[]>([]);
@@ -1926,36 +1474,36 @@ const AssessPanelContent = ({ isDark, targets, onAssessRun }: {
 
   const toggleCheck = (sym: string) => {
     setAssessChecked(prev =>
-      prev.includes(sym) ? prev.filter(s => s !== sym) : prev.length < 3 ? [...prev, sym] : prev
+      prev.includes(sym) ? prev.filter(s => s !== sym) : prev.length < ASSESS_MAX ? [...prev, sym] : prev
     );
   };
 
   const runAssess = () => {
     const extra = assessCustom.trim().toUpperCase().split(/[\s,]+/).filter(Boolean);
-    const combined = [...new Set([...assessChecked, ...extra])].slice(0, 3);
+    const combined = [...new Set([...assessChecked, ...extra])].slice(0, ASSESS_MAX);
     if (combined.length === 0) return;
     onAssessRun?.(combined);
   };
 
-  const top20 = targets.slice(0, 20);
+  const top20 = boardTop.slice(0, 25);
 
   return (
     <div className="flex flex-col flex-1 overflow-hidden">
       <div className="p-3 space-y-3 flex-shrink-0">
         <p className={`text-[10px] leading-relaxed ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
-          Select up to 3 targets for a deep evidence assessment, or type any gene name below.
+          Compare up to {ASSESS_MAX} targets on the Ranking Board's evidence and modality fit. Pick from the board's leaders, or type any symbols below.
         </p>
 
-        {/* Ranked target checkboxes */}
+        {/* Board leaders */}
         {top20.length > 0 ? (
           <div className={`rounded-xl border overflow-hidden ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
             <div className={`px-3 py-1.5 ${isDark ? 'bg-slate-900/40' : 'bg-slate-50'}`}>
-              <p className={`text-[9px] uppercase tracking-widest font-bold ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>From Ranked List</p>
+              <p className={`text-[9px] uppercase tracking-widest font-bold ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>From the Ranking Board</p>
             </div>
             <div className="max-h-48 overflow-y-auto">
               {top20.map(t => {
                 const checked = assessChecked.includes(t.symbol);
-                const disabled = !checked && assessChecked.length >= 3;
+                const disabled = !checked && assessChecked.length >= ASSESS_MAX;
                 return (
                   <button key={t.symbol} onClick={() => !disabled && toggleCheck(t.symbol)} disabled={disabled}
                     className={`w-full flex items-center gap-2.5 px-3 py-2 transition-colors border-b last:border-0 text-left ${
@@ -1967,8 +1515,8 @@ const AssessPanelContent = ({ isDark, targets, onAssessRun }: {
                       {checked && <CheckCircle2 className="w-2.5 h-2.5 text-white" />}
                     </div>
                     <span className={`text-[11px] font-bold font-mono ${isDark ? 'text-blue-300' : 'text-blue-700'}`}>{t.symbol}</span>
-                    <span className={`text-[9px] truncate flex-1 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>{t.name}</span>
-                    <span className={`text-[9px] font-mono font-bold ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>{(t.getScore ?? 0).toFixed(2)}</span>
+                    <span className={`text-[9px] truncate flex-1 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>rank #{t.rank}</span>
+                    <span className={`text-[9px] font-mono font-bold tabular-nums ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>{t.display}</span>
                   </button>
                 );
               })}
@@ -1976,18 +1524,18 @@ const AssessPanelContent = ({ isDark, targets, onAssessRun }: {
           </div>
         ) : (
           <div className={`text-center py-4 rounded-xl border ${isDark ? 'border-slate-800 text-slate-600' : 'border-slate-200 text-slate-400'}`}>
-            <p className="text-[10px]">Search a disease first to load targets</p>
+            <p className="text-[10px]">{boardLoading ? 'Loading the board…' : 'Choose a disease first'}</p>
           </div>
         )}
 
         {/* Manual gene input */}
         <div>
           <label className={`text-[9px] font-black uppercase tracking-widest block mb-1 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
-            Add any gene (not in list)
+            Any symbols (comma-separated)
           </label>
           <input value={assessCustom} onChange={e => setAssessCustom(e.target.value)}
             onKeyDown={e => e.key === 'Enter' && runAssess()}
-            placeholder="e.g. CLU, BIN1, SORL1"
+            placeholder="e.g. KRAS, BIRC5, CDC7"
             className={`w-full px-3 py-2 rounded-lg border text-[11px] font-mono outline-none transition-colors ${
               isDark ? 'bg-slate-900 border-slate-700 text-white placeholder-slate-600 focus:border-blue-500'
                      : 'bg-white border-slate-300 text-slate-900 placeholder-slate-400 focus:border-blue-500'
@@ -2025,7 +1573,7 @@ const AssessPanelContent = ({ isDark, targets, onAssessRun }: {
 // =============================================================================
 // CohortFilterSidebar
 // =============================================================================
-const CohortFilterSidebar = ({ theme, targets, activeDisease, onScoreRangesChange, onRankRangesChange, visibleCols, onVisibleColsChange, visibleBioTissues, onVisibleBioTissuesChange, currentUser, globalWeights, onWeightsSave, onAssessRun, activeNav: activeNavProp, onActiveNavChange }: {
+const CohortFilterSidebar = ({ theme, targets, activeDisease, viewMode, onScoreRangesChange, onRankRangesChange, visibleCols, onVisibleColsChange, currentUser, globalWeights, onWeightsSave, onAssessRun, boardTop, boardLoading, activeNav: activeNavProp, onActiveNavChange }: {
   theme: Theme;
   targets: Target[];
   activeDisease?: { id: string; name: string } | null;
@@ -2033,8 +1581,9 @@ const CohortFilterSidebar = ({ theme, targets, activeDisease, onScoreRangesChang
   onRankRangesChange?: (ranges: Record<string, [number, number]>) => void;
   visibleCols?: string[];
   onVisibleColsChange?: (cols: string[]) => void;
-  visibleBioTissues?: string[];
-  onVisibleBioTissuesChange?: (tissues: string[]) => void;
+  viewMode: string;
+  boardTop: Array<{ symbol: string; rank: number; display: number }>;
+  boardLoading: boolean;
   currentUser?: UserSession | null;
   globalWeights?: { genetic: number; expression: number; target: number };
   onWeightsSave?: (w: { genetic: number; expression: number; target: number }) => Promise<{ ok: boolean; error?: string }>;
@@ -2046,7 +1595,7 @@ const CohortFilterSidebar = ({ theme, targets, activeDisease, onScoreRangesChang
 
   // ── nav state ────────────────────────────────────────────────────────────
   const [isExpanded, setIsExpanded] = useState(false);   // collapsed by default so the graph/targets get full width; click a nav icon or the chevron to open
-  const [activeNavLocal, setActiveNavLocal] = useState<string>('targets');
+  const [activeNavLocal, setActiveNavLocal] = useState<string>('workspace');
   const activeNav    = activeNavProp    ?? activeNavLocal;
   const setActiveNav = onActiveNavChange ?? setActiveNavLocal;
 
@@ -2194,7 +1743,7 @@ const CohortFilterSidebar = ({ theme, targets, activeDisease, onScoreRangesChang
           {isExpanded ? <ChevronLeft className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
           <span className="text-[7px] font-bold uppercase tracking-wide leading-none">{isExpanded ? 'Hide' : 'Open'}</span>
         </button>
-        {LEFT_NAV_ITEMS.map(item => {
+        {railItemsFor(viewMode).map(item => {
           const active = activeNav === item.id;
           const Icon = item.icon;
           return (
@@ -2355,7 +1904,7 @@ const CohortFilterSidebar = ({ theme, targets, activeDisease, onScoreRangesChang
 
         {/* ── ASSESS panel ──────────────────────────────────────────────── */}
         {activeNav === 'assess' && (
-          <AssessPanelContent isDark={isDark} targets={targets} onAssessRun={onAssessRun} />
+          <AssessPanelContent isDark={isDark} boardTop={boardTop} boardLoading={boardLoading} onAssessRun={onAssessRun} />
         )}
 
         {/* ── WORKSPACE panel ───────────────────────────────────────────── */}
@@ -2409,94 +1958,6 @@ const CohortFilterSidebar = ({ theme, targets, activeDisease, onScoreRangesChang
                 Search for a disease to populate workspace stats.
               </p>
             )}
-          </div>
-        )}
-
-        {/* ── TARGETS panel ─────────────────────────────────────────────── */}
-        {activeNav === 'targets' && (
-          <div className="flex-1 overflow-y-auto p-3 space-y-2">
-            {/* Bimodality tissue selector */}
-            {onVisibleBioTissuesChange && (
-              <div className={`rounded-lg border overflow-hidden ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
-                <div className={`px-3 py-2 flex items-center justify-between ${isDark ? 'bg-slate-900/40' : 'bg-slate-50'}`}>
-                  <span className={`text-[11px] font-bold ${isDark ? 'text-slate-200' : 'text-slate-700'}`}>Bimodality Tissues</span>
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => onVisibleBioTissuesChange(BIMODALITY_TISSUES.slice())}
-                      className={`text-[8px] font-bold uppercase tracking-wider ${isDark ? 'text-slate-500 hover:text-slate-300' : 'text-slate-400 hover:text-slate-600'}`}
-                    >All</button>
-                    <button
-                      onClick={() => onVisibleBioTissuesChange([])}
-                      className={`text-[8px] font-bold uppercase tracking-wider ${isDark ? 'text-slate-500 hover:text-slate-300' : 'text-slate-400 hover:text-slate-600'}`}
-                    >None</button>
-                  </div>
-                </div>
-                <div className={`px-3 py-2 border-t grid grid-cols-2 gap-x-2 gap-y-1.5 ${isDark ? 'border-slate-800' : 'border-slate-100'}`}>
-                  {BIMODALITY_TISSUES.map(tissue => {
-                    const checked = visibleBioTissues?.includes(tissue) ?? false;
-                    return (
-                      <label
-                        key={tissue}
-                        className="flex items-center gap-1.5 cursor-pointer group"
-                        onClick={() => {
-                          const current = visibleBioTissues ?? [];
-                          onVisibleBioTissuesChange(
-                            checked ? current.filter(t => t !== tissue) : [...current, tissue]
-                          );
-                        }}
-                      >
-                        <div
-                          className="w-3.5 h-3.5 rounded flex items-center justify-center border flex-shrink-0 transition-all"
-                          style={{ background: checked ? '#a855f7' : 'transparent', borderColor: checked ? '#a855f7' : isDark ? '#475569' : '#cbd5e1' }}
-                        >
-                          {checked && <svg className="w-2 h-2 text-white" viewBox="0 0 10 10" fill="none"><path d="M1.5 5L4 7.5L8.5 2.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
-                        </div>
-                        <span className={`text-[9px] font-medium select-none leading-tight ${checked ? (isDark ? 'text-white' : 'text-slate-800') : (isDark ? 'text-slate-500' : 'text-slate-400')}`}>{bioTissueLabel(tissue)}</span>
-                      </label>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-
-            <p className={`text-[9px] uppercase tracking-widest font-bold ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
-              Top Targets by GET Score
-            </p>
-            {targets.length === 0 && (
-              <p className={`text-[10px] italic text-center mt-6 ${isDark ? 'text-slate-600' : 'text-slate-400'}`}>
-                No targets loaded yet. Run a disease search first.
-              </p>
-            )}
-            {[...targets]
-              .sort((a, b) => (b.overallScore ?? 0) - (a.overallScore ?? 0))
-              .slice(0, 15)
-              .map((t, i) => {
-                const score = +(t.overallScore ?? 0).toFixed(2);
-                const pct   = Math.round(score * 100);
-                return (
-                  <div key={t.id} className={`rounded-lg border p-2 ${isDark ? 'border-slate-800 bg-slate-900/30' : 'border-slate-100 bg-white'}`}>
-                    <div className="flex items-center gap-1.5 mb-1">
-                      <span className={`text-[9px] font-bold w-4 text-right ${isDark ? 'text-slate-600' : 'text-slate-400'}`}>{i + 1}</span>
-                      <span className={`text-[11px] font-bold ${isDark ? 'text-slate-100' : 'text-slate-800'}`}>{t.symbol}</span>
-                      <span className={`ml-auto text-[10px] font-bold tabular-nums ${isDark ? 'text-rose-400' : 'text-rose-600'}`}>{score}</span>
-                    </div>
-                    <div className={`h-1 rounded-full overflow-hidden ${isDark ? 'bg-slate-800' : 'bg-slate-100'}`}>
-                      <div className="h-full rounded-full bg-gradient-to-r from-blue-500 to-rose-500" style={{ width: `${pct}%` }} />
-                    </div>
-                    <div className="flex gap-1 mt-1">
-                      {[
-                        { label: 'G', val: t.geneticScore,        color: 'bg-blue-500'   },
-                        { label: 'E', val: t.combinedExpression,  color: 'bg-purple-500' },
-                        { label: 'T', val: t.targetScore,         color: 'bg-orange-500' },
-                      ].map(b => (
-                        <span key={b.label} className={`inline-flex items-center gap-0.5 px-1 py-0.5 rounded text-[8px] font-bold text-white ${b.color}`}>
-                          {b.label} {+(b.val ?? 0).toFixed(1)}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                );
-              })}
           </div>
         )}
 
@@ -3308,7 +2769,7 @@ const App = () => {
   useEffect(() => {
     if (!effectiveIsAdmin && !RESEARCHER_VIEWS.has(viewMode)) setViewMode('board');
   }, [effectiveIsAdmin, viewMode]);
-  const [sidebarNav, setSidebarNav] = useState<string>('targets');
+  const [sidebarNav, setSidebarNav] = useState<string>('workspace');
   const OT_PAGE_SIZE = 15;
 
   const [loading, setLoading] = useState(false);
@@ -3355,48 +2816,92 @@ const App = () => {
 
   // ── Assess tab state ────────────────────────────────────────────────────────
   const [assessMode, setAssessMode]     = useState(false);
-  const [assessGenes, setAssessGenes]   = useState<string[]>([]);
-  const [assessData, setAssessData]     = useState<GeneAssessmentData[]>([]);
-  const [assessLoading, setAssessLoading] = useState<Record<string, boolean>>({});
+  const [assessment, setAssessment]     = useState<Assessment | null>(null);
+  const [assessLoading, setAssessLoading] = useState(false);
+  const [assessError, setAssessError]   = useState<string | null>(null);
+  const [assessModalityLoading, setAssessModalityLoading] = useState(false);
+  const [assessGoal, setAssessGoal]     = useState<MechanisticGoal>('inhibit');
+  // The board's rows for the loaded disease — pulled once (cached) when the Assess panel
+  // opens, so the picker can offer the board's leaders and the assessment can score.
+  const [boardTop, setBoardTop]         = useState<Array<{ symbol: string; rank: number; display: number }>>([]);
+  const [boardLoading, setBoardLoading] = useState(false);
+
+  /** Resolve the snapshot for the loaded disease (the board's choice if it is open) and pull its rows. */
+  const ensureBoardRows = useCallback(async (): Promise<{ snapshotId: number; disease: string; rows: any[] } | null> => {
+    const disease = researchState.activeDisease?.name || '';
+    if (!disease) return null;
+    const active = getActiveBoardSnapshot();
+    const snap = active && String(active.disease_name || '').toLowerCase().includes(disease.toLowerCase())
+      ? { id: Number(active.id), disease_name: String(active.disease_name) }
+      : await resolveSnapshot(disease);
+    if (!snap) return null;
+    const rows = await loadBoardRows(snap.id);
+    return { snapshotId: snap.id, disease: snap.disease_name, rows };
+  }, [researchState.activeDisease?.name]);
+
+  // Assess panel opened → offer the board's leaders.
+  useEffect(() => {
+    if (sidebarNav !== 'assess' || !researchState.activeDisease) return;
+    let alive = true;
+    setBoardLoading(true);
+    ensureBoardRows().then(r => {
+      if (!alive) return;
+      if (!r) { setBoardTop([]); return; }
+      const scored = buildBoard(r.rows, 'small_molecule').scored.slice(0, 25);
+      setBoardTop(scored.map(g => ({ symbol: g.symbol, rank: g.boardRank, display: g.display })));
+    }).catch(() => { if (alive) setBoardTop([]); }).finally(() => { if (alive) setBoardLoading(false); });
+    return () => { alive = false; };
+  }, [sidebarNav, researchState.activeDisease?.id, ensureBoardRows]);
+
+  const fetchModalityFit = useCallback(async (genes: string[], goal: MechanisticGoal): Promise<ModalityFitRow[]> => {
+    const r = await authenticatedFetch('/api/modality-fit/batch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ genes, goal }) });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j?.error || `modality fit → ${r.status}`);
+    return Array.isArray(j.rows) ? j.rows : [];
+  }, []);
 
   const handleAssessRun = useCallback(async (genes: string[]) => {
-    setAssessGenes(genes);
-    setAssessData([]);
-    setAssessLoading(Object.fromEntries(genes.map(g => [g, true])));
-    setAssessMode(true);
+    setAssessMode(true); setSidebarNav('assess');
+    setAssessment(null); setAssessError(null); setAssessLoading(true); setAssessModalityLoading(false);
+    let base: Assessment | null = null;
+    try {
+      const r = await ensureBoardRows();
+      if (!r) throw new Error('No stored snapshot for this disease — choose a disease with a Ranking Board first.');
+      const active = getActiveBoardSnapshot();
+      const modality = (active?.modality as ModalityKey | undefined) || 'small_molecule';
+      base = assessTargets(r.rows, genes, { snapshotId: r.snapshotId, disease: r.disease, modality, litWindow: (getBoardLitWindow() as LitWindow) || 'all' });
+      setAssessment(base);
+    } catch (e: any) {
+      setAssessError(String(e?.message || e));
+    } finally { setAssessLoading(false); }
+    if (!base) return;
+    const found = base.targets.filter(t => t.found).map(t => t.symbol);
+    if (!found.length) return;
+    setAssessModalityLoading(true);
+    try {
+      const fit = await fetchModalityFit(found, assessGoal);
+      setAssessment(prev => prev ? withModality(prev, fit) : prev);
+    } catch (e: any) {
+      setAssessment(prev => prev ? withModality(prev, found.map(gene => ({ gene, resolved: false, best: null, byCategory: {}, counts: { Precedented: 0, Plausible: 0, Speculative: 0, Blocked: 0 }, blocked: [], error: String(e?.message || e) }))) : prev);
+    } finally { setAssessModalityLoading(false); }
+  }, [ensureBoardRows, fetchModalityFit, assessGoal]);
 
-    for (const sym of genes) {
-      const existingTarget = researchState.targets.find(t => t.symbol.toUpperCase() === sym.toUpperCase());
-      try {
-        const result = await api.getGeneFullProfile(
-          sym,
-          researchState.activeDisease?.id || null,
-          researchState.activeDisease?.name || '',
-          existingTarget
-        );
-        setAssessData(prev => {
-          const next = [...prev.filter(d => d.symbol !== sym), result];
-          next.sort((a, b) => genes.indexOf(a.symbol) - genes.indexOf(b.symbol));
-          return next;
-        });
-      } catch (e: any) {
-        setAssessData(prev => [...prev, {
-          symbol: sym, name: sym,
-          overallScore: 0, geneticScore: 0, expressionScore: 0, targetScore: 0,
-          getScore: 0, literatureScore: 0,
-          pubTatorScore: 0, pubTatorVelocity: 0, pubTatorTotalPapers: 0, pubTatorRecentPapers: 0,
-          tauTissue: 0, tauSingleCell: 0, combinedExpression: 0,
-          bimodalityScores: {}, pathways: [],
-          drillDown: { trial_count: 0, max_phase: 'N/A', active_trial_present: false, paper_count: 0, recent_paper_count: 0, latest_publication_date: 'N/A' },
-          pubmed: { total: 0, recent: 0, topPapers: [] },
-          foundInRankedList: false,
-          error: e.message,
-        }]);
-      } finally {
-        setAssessLoading(prev => ({ ...prev, [sym]: false }));
-      }
-    }
-  }, [researchState.targets, researchState.activeDisease]);
+  // A new mechanistic goal re-tiers the modalities; the board evidence is unchanged.
+  const handleAssessGoal = useCallback(async (goal: MechanisticGoal) => {
+    setAssessGoal(goal);
+    const found = assessment?.targets.filter(t => t.found).map(t => t.symbol) ?? [];
+    if (!found.length) return;
+    setAssessModalityLoading(true);
+    try { const fit = await fetchModalityFit(found, goal); setAssessment(prev => prev ? withModality(prev, fit) : prev); }
+    catch { /* keep the previous tiers on screen */ }
+    finally { setAssessModalityLoading(false); }
+  }, [assessment, fetchModalityFit]);
+
+  // The rail follows the main view: a panel that serves only the Targets table or the
+  // Score Matrix cannot stay selected on the Ranking Board.
+  useEffect(() => {
+    if (!railItemsFor(viewMode).some(i => i.id === sidebarNav)) setSidebarNav('workspace');
+  }, [viewMode, sidebarNav]);
 
   // ── Evidence highlight: which genes have stored evidence cards in the content store ──
   // Refreshes when the disease changes or a new paper is ingested. Not disease-scoped
@@ -3647,6 +3152,17 @@ const App = () => {
   const bimodalityLoading = useRef(false);
   const sessionRestoredRef = useRef(false);
   const [isExportDropdownOpen, setIsExportDropdownOpen] = useState(false);
+  // Targets table → Columns ▾: the bimodality tissue columns. Lives beside the table it
+  // changes (it used to be a panel in the left rail, open on every screen).
+  const [isColumnsOpen, setIsColumnsOpen] = useState(false);
+  const columnsMenuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!isColumnsOpen) return;
+    const onDown = (e: MouseEvent) => { if (columnsMenuRef.current && !columnsMenuRef.current.contains(e.target as Node)) setIsColumnsOpen(false); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setIsColumnsOpen(false); };
+    document.addEventListener('mousedown', onDown); document.addEventListener('keydown', onKey);
+    return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey); };
+  }, [isColumnsOpen]);
   const [activeScoreInfo, setActiveScoreInfo] = useState<'genetic' | 'expression' | 'target' | 'overall' | 'literature' | 'get_score' | 'priority' | 'rp_score' | 'winner_score' | null>(null);
   const [activeTooltip, setActiveTooltip] = useState<string | null>(null);
   const [drillDownLoading, setDrillDownLoading] = useState<string | null>(null);
@@ -5773,7 +5289,7 @@ ${modalityResultBlock(getLastModalityResult()) || '      (No modality analysis h
              )}
            </form>
         </aside>
-        <CohortFilterSidebar theme={theme} targets={researchState.targets} activeDisease={researchState.activeDisease} onScoreRangesChange={setScoreRangeFilter} onRankRangesChange={setRankRangeFilter} visibleCols={visibleColumns} onVisibleColsChange={setVisibleColumns} visibleBioTissues={visibleBioTissues} onVisibleBioTissuesChange={setVisibleBioTissues} currentUser={currentUser} globalWeights={globalWeights} onWeightsSave={handleWeightsSave} onAssessRun={handleAssessRun} activeNav={sidebarNav} onActiveNavChange={setSidebarNav} />
+        <CohortFilterSidebar theme={theme} targets={researchState.targets} activeDisease={researchState.activeDisease} viewMode={viewMode} onScoreRangesChange={setScoreRangeFilter} onRankRangesChange={setRankRangeFilter} visibleCols={visibleColumns} onVisibleColsChange={setVisibleColumns} currentUser={currentUser} globalWeights={globalWeights} onWeightsSave={handleWeightsSave} onAssessRun={handleAssessRun} boardTop={boardTop} boardLoading={boardLoading} activeNav={sidebarNav} onActiveNavChange={setSidebarNav} />
         {!isLeftSidebarOpen && (<button onClick={() => setIsLeftSidebarOpen(true)} className="absolute right-4 bottom-4 z-20 p-2.5 rounded-full bg-blue-600 text-white shadow-xl hover:scale-110 transition-transform"><MessageSquare className="w-5 h-5" /></button>)}
         <section className="order-1 flex-1 flex flex-col overflow-hidden relative min-w-0">
            {/* Breadcrumbs are only useful for the gene/disease drill-down views; the full-page
@@ -5813,12 +5329,14 @@ ${modalityResultBlock(getLastModalityResult()) || '      (No modality analysis h
               ) : sidebarNav === 'assess' ? (
                 assessMode ? (
                 <AssessmentView
-                  genes={assessGenes}
-                  data={assessData}
+                  assessment={assessment}
                   loading={assessLoading}
-                  diseaseName={researchState.activeDisease?.name || 'Unknown Disease'}
+                  error={assessError}
+                  modalityLoading={assessModalityLoading}
+                  goal={assessGoal}
+                  onGoalChange={handleAssessGoal}
                   theme={theme}
-                  onClose={() => setAssessMode(false)}
+                  onClose={() => { setAssessMode(false); setSidebarNav('workspace'); }}
                 />
                 ) : (
                 <div className="h-full flex flex-col items-center justify-center p-20 text-center animate-in zoom-in duration-500">
@@ -5829,16 +5347,16 @@ ${modalityResultBlock(getLastModalityResult()) || '      (No modality analysis h
                     Target Assessment
                   </h2>
                   <p className={`text-sm max-w-md leading-relaxed mb-8 ${theme === 'dark' ? 'text-neutral-400' : 'text-slate-600'}`}>
-                    Select up to 3 genes from the panel on the left — choose from your ranked list or type any gene symbol — then click <strong>Run Assessment</strong> to get a full evidence report with drug modalities, clinical trial context, tissue expression, and AI-powered trade-off analysis.
+                    Pick up to {ASSESS_MAX} targets in the panel on the left — from the Ranking Board's leaders or any symbols — then <strong>Run Assessment</strong> to compare them on the board's evidence and their modality fit.
                   </p>
                   <div className={`flex flex-col gap-3 text-left max-w-sm w-full px-6 py-5 rounded-2xl border ${theme === 'dark' ? 'bg-slate-900/60 border-slate-800' : 'bg-white border-slate-200'}`}>
                     {[
-                      { icon: '🧬', text: 'GET scores: genetic, expression & target evidence' },
-                      { icon: '💊', text: 'Drug modality: small molecule, antibody, gene therapy' },
-                      { icon: '🏥', text: 'Clinical trials: phase, active studies, conditions' },
-                      { icon: '📚', text: 'Literature: total papers, recent velocity, top hits' },
-                      { icon: '🤖', text: 'AI narrative: trade-off analysis across all genes' },
-                      { icon: '📄', text: 'Download full report as DOCX' },
+                      { icon: '🏆', text: 'Board rank, tier and verdict — strengths, drags, gaps' },
+                      { icon: '🧬', text: 'The 8 criteria side by side, with every sub-metric' },
+                      { icon: '⚛️', text: 'Modality fit per category for a chosen mechanistic goal' },
+                      { icon: '🔎', text: 'Every value linked to its provenance page in the wiki' },
+                      { icon: '🤖', text: 'AI trade-off narrative written from this evidence only' },
+                      { icon: '📄', text: 'Download the comparison as DOCX' },
                     ].map(({ icon, text }) => (
                       <div key={text} className="flex items-center gap-3">
                         <span className="text-base">{icon}</span>
@@ -5937,6 +5455,38 @@ ${modalityResultBlock(getLastModalityResult()) || '      (No modality analysis h
                           )}
                         </div>
                         <div className="flex items-center gap-4">
+                          <div ref={columnsMenuRef} className="relative">
+                            <button onClick={() => setIsColumnsOpen(v => !v)} aria-haspopup="menu" aria-expanded={isColumnsOpen}
+                              title="Add a bimodality column per tissue — how ON/OFF the gene's expression is in that tissue (precomputed dataset, not in the snapshot store)"
+                              className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-[10px] font-bold uppercase transition-all shadow-sm border ${theme === 'dark' ? 'bg-slate-900/60 border-slate-700 text-slate-200 hover:bg-slate-800' : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'}`}>
+                              <SlidersHorizontal className="w-3 h-3" />
+                              Columns{visibleBioTissues.length > 0 ? ` · ${visibleBioTissues.length}` : ''}
+                              <ChevronDown className={`w-3 h-3 transition-transform ${isColumnsOpen ? 'rotate-180' : ''}`} />
+                            </button>
+                            {isColumnsOpen && (
+                              <div role="menu" className={`absolute left-0 xl:left-auto xl:right-0 mt-2 w-[340px] max-w-[calc(100vw-32px)] rounded-xl border shadow-2xl z-50 overflow-hidden ${theme === 'dark' ? 'bg-[#0e1420] border-slate-800' : 'bg-white border-slate-200'}`}>
+                                <div className={`px-3 py-2 flex items-center justify-between border-b ${theme === 'dark' ? 'border-slate-800 bg-slate-900/40' : 'border-slate-100 bg-slate-50'}`}>
+                                  <span className={`text-[11px] font-bold ${theme === 'dark' ? 'text-slate-200' : 'text-slate-700'}`}>Bimodality tissues</span>
+                                  <div className="flex items-center gap-3">
+                                    <button onClick={() => setVisibleBioTissues(BIMODALITY_TISSUES.slice())} className={`text-[9px] font-bold uppercase tracking-wider ${theme === 'dark' ? 'text-slate-400 hover:text-white' : 'text-slate-500 hover:text-slate-900'}`}>All</button>
+                                    <button onClick={() => setVisibleBioTissues([])} className={`text-[9px] font-bold uppercase tracking-wider ${theme === 'dark' ? 'text-slate-400 hover:text-white' : 'text-slate-500 hover:text-slate-900'}`}>None</button>
+                                  </div>
+                                </div>
+                                <div className="px-3 py-2 grid grid-cols-2 gap-x-3 gap-y-1 max-h-[320px] overflow-y-auto">
+                                  {BIMODALITY_TISSUES.map(tissue => {
+                                    const checked = visibleBioTissues.includes(tissue);
+                                    return (
+                                      <label key={tissue} className="flex items-center gap-2 cursor-pointer py-0.5">
+                                        <input type="checkbox" checked={checked} onChange={() => setVisibleBioTissues(cur => checked ? cur.filter(t => t !== tissue) : [...cur, tissue])} className="accent-purple-500 w-3.5 h-3.5" />
+                                        <span className={`text-[10.5px] font-medium select-none leading-tight ${checked ? (theme === 'dark' ? 'text-white' : 'text-slate-900') : (theme === 'dark' ? 'text-slate-400' : 'text-slate-500')}`}>{bioTissueLabel(tissue)}</span>
+                                      </label>
+                                    );
+                                  })}
+                                </div>
+                                <p className={`px-3 py-2 border-t text-[9px] leading-snug ${theme === 'dark' ? 'border-slate-800 text-slate-500' : 'border-slate-100 text-slate-400'}`}>Each tissue adds a column: how bimodal (switch-like ON/OFF) the gene's expression is there. Precomputed dataset — not part of the snapshot store.</p>
+                              </div>
+                            )}
+                          </div>
                           <button 
                             onClick={() => {
                               setResearchState(prev => ({
