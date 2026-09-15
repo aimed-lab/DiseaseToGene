@@ -33,6 +33,7 @@ export const CLIENT_TOOLS = [
 /** DATA tools — these read the store and are executed server-side, in the tool loop. */
 export const DATA_TOOLS = [
   { name: 'query_graph', description: "Walk the snapshot's stored knowledge graph from any entity: a drug's targets and trials here (drug_targets), drugs shared by several genes (shared_drugs), drugs RANKED by the evidence stored for this disease (rank_drugs), a gene's links (gene_links), a pathway's ranked members (pathway_members), what a trial tests (trial). First call for any question naming a drug, pathway or trial, or asking which genes share something; the only way to rank drugs.", parameters: { type: T.OBJECT, properties: { query: { type: T.STRING, enum: ['drug_targets', 'shared_drugs', 'rank_drugs', 'gene_links', 'pathway_members', 'trial'] }, name: { type: T.STRING }, genes: { type: T.STRING }, drugs: { type: T.STRING }, min_genes: { type: T.NUMBER } }, required: ['query'] } },
+  { name: 'find_in_store', description: 'Search everything stored for this disease for a term - every evidence row and every graph node - and return each hit with gene, axis, matching text and wiki page. For any name the specific tools do not take (a drug, a variant, a trial id, a pathway). Call before ever saying "no evidence in our store".', parameters: { type: T.OBJECT, properties: { term: { type: T.STRING }, axis: { type: T.STRING } }, required: ['term'] } },
   { name: 'get_gene_evidence', description: 'All stored evidence for ONE gene: mutation, expression, dependency, clinical, literature.', parameters: { type: T.OBJECT, properties: { gene: { type: T.STRING } }, required: ['gene'] } },
   { name: 'get_clinical_trials', description: 'Per-trial clinical records for a gene: NCT id, phase, status, sponsor.', parameters: { type: T.OBJECT, properties: { gene: { type: T.STRING } }, required: ['gene'] } },
   { name: 'find_novel_tractable', description: 'Druggable targets with NO developed drug and NO disease trial yet.', parameters: { type: T.OBJECT, properties: { limit: { type: T.NUMBER } } } },
@@ -79,6 +80,12 @@ export const CASES: [string, string][] = [
   ['which genes does docetaxel target in this snapshot?',                  'query_graph'],
   ['give me 5 genes that work for the same drug',                          'query_graph'],
   ['rank the drugs with 5 or more targets by pancreatic-cancer evidence',  'query_graph'],
+  // The general lookup: a name the specific tools do not take, asked of OUR data → search the
+  // store, not the web. And a term that is in the store but a question that is not about our
+  // data → no tool: routing is judgement, and over-calling is measured as wrong.
+  ['is olaparib anywhere in our pancreatic data?',                          'find_in_store'],
+  ['which stored rows mention G12C?',                                       'find_in_store'],
+  ['what does a PARP inhibitor do?',                                        'NO_TOOL'],
   ['find published papers on defactinib in pancreatic cancer',            'search_literature'],
   ['are there registered trials combining daraxonrasib and defactinib?',  'search_trials'],
   ['was there an AACR 2025 conference abstract on daraxonrasib?',         'search_web'],
