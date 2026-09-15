@@ -747,12 +747,13 @@ export function pickSnapshot(snaps: any[], named?: string, ambient?: string, sna
 
 export const EVIDENCE_RULES = `EVIDENCE RULES (non-negotiable):
 - Every number, rank, count, phase, score or paper you state MUST come from a tool result in this conversation or from the screen context above. If you have not called a tool yet, call one — never answer an evidence question from general knowledge.
+- A DRUG QUESTION OPENS WITH ONE OR TWO SENTENCES OF EXPLANATION from your own knowledge - what the drug is and what it selects for (e.g. a KRAS G12C-selective covalent inhibitor), marked as explanation - THEN the stored facts. When a target's stored mutation profile is in the tool result, say how common the selected allele is in this cohort. When the drug has no trials here but also_in_snapshots or in_other_conditions lists some, say so, clearly labelled as other diseases or conditions.
 - EXPLAINING IS NOT CLAIMING, and the rule above governs only claiming. You may always explain, in your own words and from your own knowledge: what a class of drug does, how a pathway or resistance mechanism works, what a term means, why a study design matters, what would make a hypothesis plausible. Refusing to explain something general because it is not in our store is a failure, not caution, and never say "our store has no evidence for that" to a question that asked for an explanation rather than a fact. What you may never do without a tool behind it is assert a PARTICULAR: a number, rank, count, date, dose, a trial's result, what a named paper found, or what is or is not true of one gene in one disease. Explain freely; attribute every specific.
 - "Compare A and B" / "why is A above B" → call compare_genes. "How is A related to B" → call gene_relationship. One gene's full picture → get_gene_evidence first, then deep_dive_gene only if the stored summary is not enough. deep_dive_gene is LIVE and slower: at most two genes per question, never for lists or ranking questions.
 - Stored snapshot evidence is the ranking's truth; a live deep-dive value is extra context. If the two disagree, say which is which and that the snapshot is what the board ranks on.
 - Label each fact with its source and snapshot inline, e.g. "(Europe PMC, snapshot #103)" or "(STRING, live)". End with a short "Sources" list. When a tool result carries a wiki_url, put it in that list as a Markdown link — e.g. "[Provenance: KRAS, snapshot #102](/wiki/pancreatic-adenocarcinoma/102/gene/KRAS)" — one per gene, exactly the URL the tool returned. It is the app's own provenance page (every stored row with source, date, run and commit), not an external source; never invent one for a gene no tool returned. Keep FACTS (mutation, expression, proteomics, dependency, safety, trials, papers) separate from PREDICTIONS (Open Targets association, board rank, WINNER centrality, tractability).
 - If the store has nothing for a gene in this disease, say exactly that. Do not fill the gap from memory.
-- If a tool returns needs_disease, no disease is selected and the question did not name one: ask the user which of the listed diseases they mean, in one line, and stop. Never answer from a disease the user did not choose or name. Always say which disease and snapshot an answer comes from.
+- If a tool returns needs_disease, no disease is selected and the question did not name one: ask the user which of the listed diseases they mean, in one line, and STOP - call no other tool in that turn, and do not run searches for a disease the user has not chosen. Never answer from a disease the user did not choose or name. Always say which disease and snapshot an answer comes from.
 - Our stored evidence ROWS are indexed BY GENE, but the snapshot's KNOWLEDGE GRAPH is not: query_graph answers, from stored rows, which genes a drug targets here, which drugs several genes share, a pathway's ranked members, and what a trial tests. A question that names a drug, a pathway or a trial, or asks which genes share something ("genes that work for the same drug"), calls query_graph FIRST - never answer it from the top of the board. "Rank these drugs" / "which drug has the strongest evidence here" is query_graph rank_drugs, which orders drugs by the trials, phases and approvals STORED for this disease and states its rule - a broad search_trials or search_literature over a whole set of drugs ranks nothing and must not be used for that. Then use search_literature and search_trials for what the graph does not hold: papers, combinations, one named drug the snapshot never linked to a gene. "No evidence in our store" is the WRONG answer to a drug question until query_graph has been asked.
 - WHAT EACH SOURCE CAN AND CANNOT HOLD, so you can judge what a nil result means. Our snapshot holds only what was harvested for the loaded disease, indexed by gene. Europe PMC indexes peer-reviewed papers and preprints; it does NOT index conference abstracts, company pipelines, regulatory decisions or press material. ClinicalTrials.gov indexes trials registered with it; it does NOT index planned or unregistered studies, or trials registered only in another national registry. The open web is what the other two do not index.
 - A NIL RESULT IS ONLY AS STRONG AS THE SOURCES THAT COULD HAVE HELD THE ANSWER. Before you report that something does not exist, has not been tried, or has not been published, ask whether a source you have not yet searched could contain it. If one could, search it first — that decision is yours to make and you do not need to be asked. Finding nothing in a source that structurally cannot hold the answer is not evidence of absence, and reporting it as though it were is the one failure that makes an answer worthless. If you still cannot check, say which sources you searched and which you did not, and keep the conclusion inside that limit.
@@ -2757,9 +2758,27 @@ Rules: fill every field only from what the pages actually say. Where the page do
       if (q === 'drug_targets') {
         const d = gi.findDrug(named);
         if (!d) return { error: `no drug matching "${named}" in the graph of snapshot #${snap.id}`, suggestions: gi.suggestDrugs(named, 8), how_to_read: 'Try one of the suggestions, or search_trials / search_literature for a drug the snapshot never linked to a gene.' };
-        const targets = gi.in(d.key).filter((e: any) => e.rel === 'targeted_by').map((e: any) => geneOut(e.source)).sort(byRank);
+        // Each target with its STORED mutation profile in this cohort (frequency, dominant variant):
+        // a mutant-selective drug is only as relevant as the allele it selects for is common here.
+        const mut = new Map<string, any>();
+        for (const r of (await loadSnapshotCached(Number(snap.id))).evidence as any[]) if (r.evidence_type === 'mutation') { const j = jparse(r.value_json); if (j) mut.set(String(r.gene_symbol).toUpperCase(), { frequency: j.frequency ?? null, dominant_variant: j.dominant_variant ?? null, top_variants: Array.isArray(j.top_variants) ? j.top_variants.slice(0, 5) : undefined, source: r.source }); }
+        const targets = gi.in(d.key).filter((e: any) => e.rel === 'targeted_by').map((e: any) => ({ ...geneOut(e.source), mutation_here: mut.get(String(e.source).slice(5)) ?? null })).sort(byRank);
+        // The same drug in the OTHER loaded snapshots, from their stored graphs — so "0 trials here"
+        // is never mistaken for "0 trials anywhere in the store".
+        const also: any[] = [];
+        try {
+          const snaps: any[] = await svc.listSnapshots();
+          const newestByDisease = new Map<string, any>(); for (const s of snaps) { const pv = newestByDisease.get(s.disease_id); if (!pv || Number(s.id) > Number(pv.id)) newestByDisease.set(s.disease_id, s); }
+          for (const s of newestByDisease.values()) {
+            if (Number(s.id) === Number(snap.id)) continue;
+            const og = await agentGraph(Number(s.id)); const od = og.findDrug(d.label) || og.node(d.key); if (!od) continue;
+            const tr = og.out(od.key).filter((e: any) => e.rel === 'tested_in'); const tg = og.in(od.key).filter((e: any) => e.rel === 'targeted_by');
+            also.push({ disease: s.disease_name, snapshot_id: Number(s.id), n_targets: tg.length, n_trials_there: tr.length, wiki_url: wikiUrl.node(String(s.disease_name), Number(s.id), od.key) });
+          }
+        } catch { /* other snapshots are context, not the answer */ }
         const f = publicFacts(drugFacts(d.key));
-        return { disease: snap.disease_name, snapshot_id: snap.id, ...f, targets: targets.slice(0, limit), trials: gi.out(d.key).filter((e: any) => e.rel === 'tested_in').map((e: any) => trialOut(e.target)).slice(0, limit), how_to_read: HOW };
+        return { disease: snap.disease_name, snapshot_id: snap.id, ...f, targets: targets.slice(0, limit), trials: gi.out(d.key).filter((e: any) => e.rel === 'tested_in').map((e: any) => trialOut(e.target)).slice(0, limit),
+          also_in_snapshots: also, how_to_read: HOW + ' targets[].mutation_here is the stored cohort mutation profile of that gene (cBioPortal): for a mutant-selective drug, say which allele it selects for (explanation, your knowledge) and how common that allele is here (stored). also_in_snapshots lists the same drug in the other loaded diseases with its trial counts there - mention it when this disease has no trials, and never present those trials as evidence for THIS disease.' };
       }
       if (q === 'shared_drugs' || q === 'rank_drugs') {
         const want = String(args?.genes || '').split(/[,\s]+/).map(up).filter(Boolean);
@@ -3022,9 +3041,21 @@ Rules: fill every field only from what the pages actually say. Where the page do
             sponsor: ps.sponsorCollaboratorsModule?.leadSponsor?.name || null,
           };
         });
+        // A basket or solid-tumour trial does not carry the disease as a condition, so an
+        // intervention + condition search returning 0 says nothing about the drug's trials as
+        // such. Retry by intervention alone and hand those over labelled as other conditions.
+        let other: any = undefined;
+        if (!trials.length && intr && cond) {
+          try {
+            const r2 = await fetch(`https://clinicaltrials.gov/api/v2/studies?query.intr=${encodeURIComponent(intr)}&pageSize=${limit}&countTotal=true`);
+            if (r2.ok) { const d2: any = await r2.json(); other = { total_matches: d2?.totalCount ?? null, results: (d2?.studies || []).map((st: any) => { const ps = st?.protocolSection || {}; return { nct_id: ps.identificationModule?.nctId || null, title: tidy(ps.identificationModule?.briefTitle), status: ps.statusModule?.overallStatus || null, phase: Array.isArray(ps.designModule?.phases) ? ps.designModule.phases.join(', ') : null, conditions: (ps.conditionsModule?.conditions || []).slice(0, 6), interventions: (ps.armsInterventionsModule?.interventions || []).map((i: any) => i.name).filter(Boolean).slice(0, 6) }; }),
+              how_to_read: `No registered trial lists "${cond}" as a condition for ${intr}. These are ${intr} trials in OTHER conditions (basket / solid-tumour studies included). Report them as such - they are not evidence for ${cond}; say if one is a basket trial that could admit this disease.` }; }
+          } catch { /* the primary result stands */ }
+        }
         return {
           query: { intervention: intr || null, condition: cond || null, terms: term || null },
           total_matches: d?.totalCount ?? null, returned: trials.length, results: trials,
+          ...(other ? { in_other_conditions: other } : {}),
           source: 'ClinicalTrials.gov API v2, live search',
           how_to_read: 'Live registry records, NOT our stored evidence and NOT part of any ranking. Cite by NCT id. Read the interventions list before claiming a trial tests a given drug, because a search can match on a comparator arm or on text elsewhere in the record. total_matches is the whole result set, not what is listed here.',
         };
