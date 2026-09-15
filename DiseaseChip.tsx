@@ -43,10 +43,10 @@ export default function DiseaseChip({ theme, activeDisease, onChangeDisease }: P
       <button
         onClick={onChangeDisease}
         title="Choose a disease — every view is scoped to it"
-        className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[12px] font-black text-white shrink-0 transition-opacity hover:opacity-90"
+        className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[12px] font-black text-white min-w-0 transition-opacity hover:opacity-90"
         style={{ background: a.hex }}>
-        Choose a disease
-        <ChevronDown className="w-3.5 h-3.5 opacity-80" />
+        <span className="truncate">Choose a disease</span>
+        <ChevronDown className="w-3.5 h-3.5 opacity-80 shrink-0" />
       </button>
     );
   }
@@ -66,7 +66,7 @@ export default function DiseaseChip({ theme, activeDisease, onChangeDisease }: P
       style={{ background: a.soft, border: `1px solid ${a.hex}40` }}>
       <span className="h-2 w-2 rounded-full shrink-0" style={{ background: a.hex }} />
       <span
-        className="text-[13px] md:text-[14.5px] font-black tracking-tight truncate max-w-[150px] lg:max-w-[210px] xl:max-w-[300px]"
+        className="text-[13px] md:text-[14.5px] font-black tracking-tight truncate min-w-[60px] max-w-[150px] lg:max-w-[210px] xl:max-w-[300px]"
         style={{ color: isDark ? '#f1f5f9' : '#0f172a' }}>
         {activeDisease.name}
       </span>

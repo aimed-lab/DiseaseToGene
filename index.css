@@ -1,6 +1,12 @@
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
 
+/* The app switches theme by toggling `.dark` on <html> (index.tsx). Tailwind v4's default
+   `dark:` variant follows the OS `prefers-color-scheme` instead, so every `dark:` utility
+   disagreed with the toggle whenever the OS and the app differed (light app on a dark OS
+   showed emerald-300 verdict text on an emerald-50 card). Bind the variant to the class. */
+@custom-variant dark (&:where(.dark, .dark *));
+
 /* Disease accent — set per loaded disease by diseaseAccent.ts (applyDiseaseAccent). Used by
    the frame only: disease bar, logo badge, active tab, view-title chips. Defaults to the
    app blue when no disease is loaded. */

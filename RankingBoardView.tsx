@@ -90,6 +90,8 @@ export default function RankingBoardView({ theme, diseaseName, showProvenance }:
   const isDark = theme === 'dark';
   // One calm accent for every criterion bar — the shade deepens with the score, so value
   // still reads at a glance without an 8-colour rainbow.
+  // emerald-500 on white is 2.5:1 — readable only as a hint; scores and verdicts need a real green.
+  const good = isDark ? 'text-emerald-400' : 'text-emerald-600';
   const barBg = (v: number) => isDark ? `rgba(96,165,250,${(0.35 + 0.6 * v).toFixed(3)})` : `rgba(37,99,235,${(0.28 + 0.62 * v).toFixed(3)})`;
   const [snapshots, setSnapshots] = useState<RankingSnapshotMeta[]>([]);
   const [snapId, setSnapId] = useState('');
@@ -613,7 +615,7 @@ export default function RankingBoardView({ theme, diseaseName, showProvenance }:
             <div className="flex items-center justify-between gap-2 flex-wrap">
               <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">Weight budget — allocate 100 points</span>
               <div className="flex items-center gap-2">
-                <span className={`text-[12px] font-black tabular-nums ${draftValid ? 'text-emerald-500' : 'text-amber-500'}`}>{draftTotal} / 100{draftValid ? ' ✓' : ''}</span>
+                <span className={`text-[12px] font-black tabular-nums ${draftValid ? good : 'text-amber-500'}`}>{draftTotal} / 100{draftValid ? ' ✓' : ''}</span>
                 {/* budget meter */}
                 <div className={`w-24 h-1.5 rounded-full overflow-hidden ${isDark ? 'bg-slate-800' : 'bg-slate-200'}`} title={`${draftTotal} of 100 points allocated`}>
                   <div className="h-1.5 rounded-full transition-all" style={{ width: `${Math.min(100, draftTotal)}%`, background: draftValid ? '#10b981' : (draftTotal > 100 ? '#ef4444' : '#f59e0b') }} />
@@ -632,7 +634,7 @@ export default function RankingBoardView({ theme, diseaseName, showProvenance }:
               <p className="text-[10px] min-h-[1rem]">
                 {!draftValid ? <span className="text-amber-500 font-medium">{draftTotal > 100 ? `Remove ${draftTotal - 100}` : `Add ${100 - draftTotal}`} point{Math.abs(draftTotal - 100) === 1 ? '' : 's'} to reach 100 — or rebalance.</span>
                   : dirty ? <span className="text-blue-500 font-medium">Ready to apply.</span>
-                  : <span className="text-emerald-500 font-medium">✓ Applied — the board reflects these weights.</span>}
+                  : <span className={`${good} font-medium`}>✓ Applied — the board reflects these weights.</span>}
               </p>
               <div className="flex items-center gap-1.5">
                 {!draftValid && <button onClick={rebalanceWeights} className={`text-[11px] font-semibold px-2.5 py-1 rounded-md border ${isDark ? 'border-slate-700 text-slate-300 hover:border-blue-500' : 'border-slate-200 text-slate-600 hover:border-blue-500'}`}>Rebalance to 100</button>}
@@ -692,7 +694,7 @@ export default function RankingBoardView({ theme, diseaseName, showProvenance }:
                       </td>
                     ); })}
                     <td className="px-3 py-1.5 text-right">
-                      <span className={`font-black tabular-nums ${s.display >= 80 ? 'text-emerald-500' : s.display >= 50 ? (isDark ? 'text-white' : 'text-slate-900') : 'text-slate-400'}`}>{s.display}</span>
+                      <span className={`font-black tabular-nums ${s.display >= 80 ? good : s.display >= 50 ? (isDark ? 'text-white' : 'text-slate-900') : 'text-slate-400'}`}>{s.display}</span>
                     </td>
                   </tr>
                 );
@@ -742,19 +744,19 @@ export default function RankingBoardView({ theme, diseaseName, showProvenance }:
                       verdict.isTop ? 'text-emerald-600 dark:text-emerald-300'
                       : verdict.tone === 'low' ? 'text-rose-600 dark:text-rose-300'
                       : 'text-slate-500'}`}>{verdict.tier}</span>
-                    <span className="text-[10px] font-bold text-slate-400 tabular-nums">top {Math.max(1, Math.round(verdict.pctTop * 100))}%</span>
+                    <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 tabular-nums">top {Math.max(1, Math.round(verdict.pctTop * 100))}%</span>
                   </div>
                   <p className={`text-[12px] font-semibold mt-1 ${isDark ? 'text-slate-200' : 'text-slate-800'}`}>
                     #{verdict.rank.toLocaleString()} of {verdict.total.toLocaleString()}{diseaseName ? ` for ${diseaseName}` : ''}
                   </p>
                   {verdict.strengths.length > 0 && (
                     <p className="text-[11px] mt-1.5 leading-snug text-slate-500">
-                      <span className="font-bold text-emerald-500">Strong on:</span> {verdict.strengths.join(', ')}
+                      <span className={`font-bold ${good}`}>Strong on:</span> {verdict.strengths.join(', ')}
                     </p>
                   )}
                   {(verdict.drags.length > 0 || verdict.gaps.length > 0) && (
                     <p className="text-[11px] mt-0.5 leading-snug text-slate-500">
-                      <span className="font-bold text-amber-500">Held back by:</span>{' '}
+                      <span className="font-bold text-amber-600 dark:text-amber-400">Held back by:</span>{' '}
                       {[...verdict.drags, ...verdict.gaps.map(g => `${g} (no data)`)].join(', ')}
                     </p>
                   )}
@@ -779,7 +781,7 @@ export default function RankingBoardView({ theme, diseaseName, showProvenance }:
                         <div className="flex items-center gap-2">
                           <span className="text-[11px] font-bold text-slate-400 tabular-nums w-8">#{a.boardRank}</span>
                           <span className={`text-[12px] font-bold w-14 shrink-0 ${isDark ? 'text-white' : 'text-slate-900'}`}>{a.symbol}</span>
-                          <span className="text-[12px] font-black text-emerald-500 tabular-nums w-7">{a.display}</span>
+                          <span className={`text-[12px] font-black ${good} tabular-nums w-7`}>{a.display}</span>
                           <span className="flex gap-0.5 shrink-0 ml-auto">
                             {a.tags.map(t => (
                               <span key={t} className={`text-[8px] font-bold uppercase px-1 py-px rounded ${t === 'family' ? 'bg-violet-500/15 text-violet-500' : 'bg-cyan-500/15 text-cyan-500'}`}>{t}</span>
@@ -787,7 +789,7 @@ export default function RankingBoardView({ theme, diseaseName, showProvenance }:
                           </span>
                         </div>
                         <div className="text-[9px] text-slate-500 mt-0.5 pl-10 leading-snug">
-                          {a.wins.length ? <><span className="text-emerald-500 font-semibold">beats {selected.symbol} on:</span> {a.wins.join(', ')}</> : 'higher overall score'}
+                          {a.wins.length ? <><span className={`${good} font-semibold`}>beats {selected.symbol} on:</span> {a.wins.join(', ')}</> : 'higher overall score'}
                         </div>
                       </button>
                     ))}

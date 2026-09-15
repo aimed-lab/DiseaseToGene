@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react';
 import { createRoot } from 'react-dom/client';
 import { createPortal } from 'react-dom';
 // AI calls routed through /api/ai/* server endpoints — no keys in browser
@@ -603,37 +603,122 @@ const TabNavigation = ({
 }) => {
   const isDark = theme === 'dark';
 
-  const btnCls = (active: boolean) => `h-9 px-3 xl:px-4 rounded-md text-[11px] font-semibold transition-all flex items-center gap-2 whitespace-nowrap ${active ? (isDark ? 'bg-slate-800 text-white' : 'bg-slate-950 text-white') : (isDark ? 'text-slate-300 hover:text-white hover:bg-slate-800' : 'text-slate-900 hover:text-slate-950 hover:bg-slate-100')}`;
+  const btnCls = (active: boolean) => `h-9 px-3 rounded-md text-[11px] font-semibold transition-all flex items-center gap-2 whitespace-nowrap shrink-0 ${active ? (isDark ? 'bg-slate-800 text-white' : 'bg-slate-950 text-white') : (isDark ? 'text-slate-300 hover:text-white hover:bg-slate-800' : 'text-slate-900 hover:text-slate-950 hover:bg-slate-100')}`;
   const iconCls = (active: boolean) => `w-3.5 h-3.5 ${active ? 'text-white' : (isDark ? 'text-slate-400' : 'text-slate-700')}`;
 
+  type Tab = { id: string; i: any; l: string; route?: string };
   // Modality is a ROUTE (/Modality renders as an overlay), not a view mode, so its tab
   // navigates instead of switching viewMode. It sits in the nav rather than inside the
   // Ranking Board toolbar: it is a feature in its own right, and moving it out also takes
   // one button off an already-crowded board header.
-  const primaryAll = [ {id:'board',i:Trophy,l:'Ranking Board'}, {id:'dashboard',i:LayoutDashboard,l:'Evidence'}, {id:'list',i:List,l:'Targets'}, {id:'rankings',i:Layers,l:'Score Matrix'}, {id:'graph',i:Network,l:'Graph'}, {id:'modality',i:Atom,l:'Modality',route:ROUTES.modality}, {id:'wiki',i:BookOpen,l:'Wiki',route:'/wiki'} ];
+  const primaryAll: Tab[] = [ {id:'board',i:Trophy,l:'Ranking Board'}, {id:'dashboard',i:LayoutDashboard,l:'Evidence'}, {id:'list',i:List,l:'Targets'}, {id:'rankings',i:Layers,l:'Score Matrix'}, {id:'graph',i:Network,l:'Graph'}, {id:'modality',i:Atom,l:'Modality',route:ROUTES.modality}, {id:'wiki',i:BookOpen,l:'Wiki',route:'/wiki'} ];
   // Researchers see only their allow-listed tabs; admins see everything.
   const primary  = isAdmin ? primaryAll : primaryAll.filter(t => RESEARCHER_VIEWS.has(t.id));
-  const trailing = [ {id:'enrichment',i:BarChart3,l:'Enrichment'} ];   // Jobs removed: harvesting is a command-line operation
-  const flatBtn = (t: { id: string; i: any; l: string; route?: string }) => {
-    const active = t.route ? (t.id === 'wiki' ? isWikiPath() : isModalityPath()) : viewMode === t.id;
+  const trailing: Tab[] = [ {id:'enrichment',i:BarChart3,l:'Enrichment'} ];   // Jobs removed: harvesting is a command-line operation
+  // Papers — PDF → evidence cards (admin only). Was inside a Research ▾ dropdown with
+  // Literature and Cohorts; those were archived (see archive/README.md).
+  const tabs: Tab[] = isAdmin ? [...primary, { id: 'paper', i: FileText, l: 'Papers' }, ...trailing] : primary;
+  const isActive = (t: Tab) => (t.route ? (t.id === 'wiki' ? isWikiPath() : isModalityPath()) : viewMode === t.id);
+  const go = (t: Tab) => (t.route ? navigate(t.route) : onViewModeChange(t.id as ViewMode));
+
+  // ── Overflow: the row used to be a fixed list of nowrap buttons in a flex-1 slot, so at
+  // ordinary laptop widths the last tabs were painted UNDER the search box (min-w-0 let
+  // the nav shrink; nothing hid). Now an invisible copy of every button is measured, and
+  // whatever does not fit beside a "More" button moves into a dropdown. ──
+  const navRef = useRef<HTMLElement>(null);
+  const measureRef = useRef<HTMLDivElement>(null);
+  const moreRef = useRef<HTMLDivElement>(null);
+  const [visible, setVisible] = useState<number>(tabs.length);
+  const [minW, setMinW] = useState(0);   // the nav never shrinks below the More button + its padding
+  const [moreOpen, setMoreOpen] = useState(false);
+  const tabKey = tabs.map(t => t.id).join(',');
+
+  useLayoutEffect(() => {
+    const nav = navRef.current, m = measureRef.current;
+    if (!nav || !m) return;
+    const compute = () => {
+      const cs = getComputedStyle(nav);
+      const pad = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight);
+      const avail = nav.clientWidth - pad;
+      const kids = Array.from(m.children) as HTMLElement[];
+      const moreW = kids[kids.length - 1]?.offsetWidth ?? 0;
+      setMinW(moreW + pad);
+      const widths = kids.slice(0, -1).map(k => k.offsetWidth);
+      const GAP = 4;   // gap-1
+      const all = widths.reduce((s, w) => s + w, 0) + GAP * Math.max(0, widths.length - 1);
+      if (all <= avail) { setVisible(widths.length); return; }
+      let used = moreW, n = 0;
+      for (const w of widths) { if (used + GAP + w <= avail) { used += GAP + w; n++; } else break; }
+      setVisible(n);
+    };
+    compute();
+    const ro = new ResizeObserver(compute);
+    ro.observe(nav);
+    return () => ro.disconnect();
+  }, [tabKey]);
+
+  useEffect(() => {
+    if (!moreOpen) return;
+    const onDown = (e: MouseEvent) => { if (moreRef.current && !moreRef.current.contains(e.target as Node)) setMoreOpen(false); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setMoreOpen(false); };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey); };
+  }, [moreOpen]);
+
+  const shown = tabs.slice(0, visible);
+  const hidden = tabs.slice(visible);
+  const hiddenActive = hidden.some(isActive);   // the current view lives in the menu → the More button takes the accent
+
+  const flatBtn = (t: Tab) => {
+    const active = isActive(t);
     return (
-      <button key={t.id} onClick={() => (t.route ? navigate(t.route) : onViewModeChange(t.id as ViewMode))} className={btnCls(active)}
+      <button key={t.id} onClick={() => go(t)} className={btnCls(active)}
         style={active ? { background: 'var(--disease-accent)', color: '#fff' } : undefined}>
         <t.i className={iconCls(active)} />
         {t.l}
       </button>
     );
   };
+  const moreBtn = (label: string, active: boolean, onClick?: () => void) => (
+    <button type="button" onClick={onClick} className={btnCls(active)} aria-haspopup="menu" aria-expanded={moreOpen}
+      style={active ? { background: 'var(--disease-accent)', color: '#fff' } : undefined}>
+      {label}
+      <ChevronDown className={`w-3 h-3 transition-transform ${moreOpen ? 'rotate-180' : ''} ${active ? 'text-white' : (isDark ? 'text-slate-400' : 'text-slate-700')}`} />
+    </button>
+  );
 
   return (
-    <nav className="hidden lg:flex flex-1 items-center justify-start gap-1 min-w-0 px-6">
-      {primary.map(flatBtn)}
+    <nav ref={navRef} className="relative flex flex-1 items-center justify-start gap-1 min-w-0 px-2 md:px-3" style={minW ? { minWidth: minW } : undefined}>
+      {shown.map(flatBtn)}
 
-      {/* Papers — PDF → evidence cards (admin only). Was inside a Research ▾ dropdown with
-          Literature and Cohorts; those were archived (see archive/README.md). */}
-      {isAdmin && flatBtn({ id: 'paper', i: FileText, l: 'Papers' })}
+      {hidden.length > 0 && (
+        <div ref={moreRef} className="relative shrink-0">
+          {moreBtn('More', hiddenActive, () => setMoreOpen(v => !v))}
+          {moreOpen && (
+            <div role="menu" className={`absolute left-0 top-full mt-1.5 z-50 min-w-[180px] py-1 rounded-xl border shadow-2xl ${isDark ? 'bg-[#0e1420] border-slate-800' : 'bg-white border-slate-200'}`}>
+              {hidden.map(t => {
+                const active = isActive(t);
+                return (
+                  <button key={t.id} role="menuitem" onClick={() => { setMoreOpen(false); go(t); }}
+                    className={`w-full flex items-center gap-2.5 px-3 py-2 text-left text-[12px] font-semibold transition-colors ${active ? 'text-white' : (isDark ? 'text-slate-200 hover:bg-slate-800' : 'text-slate-800 hover:bg-slate-100')}`}
+                    style={active ? { background: 'var(--disease-accent)' } : undefined}>
+                    <t.i className={`w-3.5 h-3.5 shrink-0 ${active ? 'text-white' : (isDark ? 'text-slate-400' : 'text-slate-600')}`} />
+                    {t.l}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
 
-      {isAdmin && trailing.map(flatBtn)}
+      {/* Measuring copy: every tab plus the widest More button, laid out off-screen with the
+          same classes, so the count above is computed from real widths, not guesses. */}
+      <div ref={measureRef} aria-hidden className="absolute invisible pointer-events-none flex items-center gap-1" style={{ left: -99999, top: 0 }}>
+        {tabs.map(t => <span key={t.id} className={btnCls(false)}><t.i className={iconCls(false)} />{t.l}</span>)}
+        <span className={btnCls(false)}>More<ChevronDown className="w-3 h-3" /></span>
+      </div>
       {/* New Dashboard tab slots in here, on the same line. */}
     </nav>
   );
@@ -683,11 +768,13 @@ const BIMODALITY_TISSUES = [
 type BioTissue = typeof BIMODALITY_TISSUES[number];
 const bioTissueLabel = (t: string) => t.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 
+// `rail` is the caption under the icon in the collapsed rail — a real short word, not
+// the first four letters (which gave "TARG" and "ASSE").
 const LEFT_NAV_ITEMS = [
-  { id: 'workspace', icon: Home,       label: 'Workspace' },
-  { id: 'targets',   icon: List,       label: 'Targets'   },
-  { id: 'rankings',  icon: BarChart3,  label: 'Rankings'  },
-  { id: 'assess',    icon: Microscope, label: 'Assess'    },
+  { id: 'workspace', icon: Home,       label: 'Workspace', rail: 'Work'   },
+  { id: 'targets',   icon: List,       label: 'Targets',   rail: 'Target' },
+  { id: 'rankings',  icon: BarChart3,  label: 'Rankings',  rail: 'Rank'   },
+  { id: 'assess',    icon: Microscope, label: 'Assess',    rail: 'Assess' },
 ] as const;
 
 // ── Dual-handle range slider ─────────────────────────────────────────────────
@@ -1115,7 +1202,7 @@ When you cite a value from here, record the **source, the date you retrieved it,
         }`}
       >
         <MessageSquare className="w-3.5 h-3.5" />
-        <span className="hidden sm:block">Feedback</span>
+        <span className="hidden 2xl:block">Feedback</span>
       </button>
       {feedbackOpen && createPortal(<FeedbackDialog isDark={isDark} context={feedbackContext || {}} onClose={() => setFeedbackOpen(false)} />, document.body)}
 
@@ -1134,10 +1221,8 @@ When you cite a value from here, record the **source, the date you retrieved it,
             {initials}
             {isAdmin && feedbackUnread > 0 && <span title={`${feedbackUnread} new feedback`} className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 rounded-full bg-blue-600 text-white text-[9px] font-black flex items-center justify-center">{feedbackUnread > 99 ? '99+' : feedbackUnread}</span>}
           </div>
-          <span className={`hidden sm:block text-[11px] font-semibold max-w-[120px] truncate ${isDark ? 'text-slate-200' : 'text-slate-700'}`}>
-            {profile.name || currentUser.username}
-          </span>
-          <span className={`hidden sm:block text-[8px] font-black px-1.5 py-0.5 rounded-full ${isAdmin ? 'bg-rose-500/10 text-rose-500' : 'bg-blue-500/10 text-blue-600'}`}>
+          {/* Name lives in the menu's identity row; the header has no room for it beside nine tabs. */}
+          <span className={`hidden 2xl:block text-[8px] font-black px-1.5 py-0.5 rounded-full ${isAdmin ? 'bg-rose-500/10 text-rose-500' : 'bg-blue-500/10 text-blue-600'}`}>
             {isAdmin ? 'Admin' : 'Researcher'}
           </span>
           <ChevronDown className={`w-3 h-3 transition-transform shrink-0 ${menuOpen ? 'rotate-180' : ''} ${isDark ? 'text-slate-500' : 'text-slate-400'}`} />
@@ -2124,8 +2209,8 @@ const CohortFilterSidebar = ({ theme, targets, activeDisease, onScoreRangesChang
               }`}
             >
               <Icon className="w-3.5 h-3.5" />
-              <span className={`text-[7px] font-bold uppercase tracking-wide leading-none ${active ? (isDark ? 'text-blue-400' : 'text-blue-600') : (isDark ? 'text-slate-600 group-hover:text-slate-400' : 'text-slate-400 group-hover:text-slate-500')}`}>
-                {item.label.slice(0, 4)}
+              <span className={`text-[7px] font-bold uppercase tracking-wide leading-none ${active ? (isDark ? 'text-blue-400' : 'text-blue-600') : (isDark ? 'text-slate-500 group-hover:text-slate-300' : 'text-slate-500 group-hover:text-slate-700')}`}>
+                {item.rail}
               </span>
             </button>
           );
@@ -3105,7 +3190,8 @@ const TargetDetailView = ({
 };
 
 const App = () => {
-  const [theme, setTheme] = useState<Theme>('light');
+  // Remembered across reloads — it used to reset to light on every refresh.
+  const [theme, setTheme] = useState<Theme>(() => { try { return localStorage.getItem('d2t.theme') === 'dark' ? 'dark' : 'light'; } catch { return 'light'; } });
 
   // ── Client-side route (pushState, no router lib) — powers shareable URLs like /Methodologies ──
   const [routePath, setRoutePath] = useState<string>(() => window.location.pathname);
@@ -3627,11 +3713,8 @@ const App = () => {
   const [focusSubPage, setFocusSubPage] = useState<'main' | 'literature' | 'clinical'>('main');
 
   useEffect(() => {
-    if (theme === 'dark') {
-      document.documentElement.classList.add('dark');
-    } else {
-      document.documentElement.classList.remove('dark');
-    }
+    document.documentElement.classList.toggle('dark', theme === 'dark');
+    try { localStorage.setItem('d2t.theme', theme); } catch { /* private mode */ }
   }, [theme]);
 
   const handleAddGeneFromPaper = async (gene: { symbol: string, mentions?: number, role?: string }, source: 'PAPER' | 'LIT' = 'PAPER') => {
@@ -5430,20 +5513,22 @@ ${modalityResultBlock(getLastModalityResult()) || '      (No modality analysis h
           onClose={() => navigate('/')}
           chatOpen={isLeftSidebarOpen}
           onToggleChat={() => setIsLeftSidebarOpen(v => !v)}
+          chatWidth={copilotWidth + 8}   // + <main>'s p-2 right gutter, so the overlay ends exactly at the aside's edge
         />
       )}
       {/* relative z-30 gives the header its own stacking context ABOVE <main>, so the
           Research ▾ dropdown overlays the breadcrumb bar instead of being painted under it. */}
-      <header className={`relative z-30 px-4 md:px-6 py-2.5 flex items-center justify-between gap-3 border-b backdrop-blur-xl ${theme === 'dark' ? 'bg-[#070b12]/90 border-slate-800/80' : 'bg-white/95 border-slate-200'}`}>
+      <header className={`relative z-30 px-4 lg:px-6 py-2.5 flex items-center justify-between gap-2 lg:gap-3 border-b backdrop-blur-xl ${theme === 'dark' ? 'bg-[#070b12]/90 border-slate-800/80' : 'bg-white/95 border-slate-200'}`}>
         {/* Brand, then the loaded disease — one phrase, and the disease is state, not a
             tagline. The tagline this replaced said the same thing on every screen forever;
             the disease changes what every screen means. */}
+        {/* min-w-0 so the disease chip truncates on a phone; the nav below has its own floor (the More button). */}
         <div className="flex items-center gap-2.5 min-w-0">
           <div className="h-9 w-9 rounded-xl text-white flex items-center justify-center shadow-lg shrink-0" style={{ background: 'var(--disease-accent)' }}>
             <FlaskConical className="w-5 h-5" />
           </div>
-          <h1 className="text-base md:text-lg font-black tracking-tight whitespace-nowrap shrink-0">Disease<span style={{ color: 'var(--disease-accent)' }}>2</span>Target</h1>
-          <span className={`hidden md:block h-6 w-px shrink-0 ${theme === 'dark' ? 'bg-slate-700' : 'bg-slate-200'}`} />
+          <h1 className="hidden lg:block text-lg font-black tracking-tight whitespace-nowrap shrink-0">Disease<span style={{ color: 'var(--disease-accent)' }}>2</span>Target</h1>
+          <span className={`hidden lg:block h-6 w-px shrink-0 ${theme === 'dark' ? 'bg-slate-700' : 'bg-slate-200'}`} />
           <DiseaseChip theme={theme} activeDisease={researchState.activeDisease} onChangeDisease={() => globalSearchRef.current?.focus()} />
         </div>
         <TabNavigation
@@ -5474,7 +5559,7 @@ ${modalityResultBlock(getLastModalityResult()) || '      (No modality analysis h
               <Eye className="w-3.5 h-3.5" /> <span className="hidden sm:inline">Researcher view ·</span> Exit
             </button>
           )}
-          <button onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')} className="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">
+          <button onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')} title="Toggle light / dark" className="hidden sm:block p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">
             {theme === 'dark' ? <Sun className="w-4 h-4 text-slate-300" /> : <Moon className="w-4 h-4 text-slate-900" />}
           </button>
           {currentUser && (
@@ -6773,8 +6858,9 @@ const SignInPage = ({ theme, toggleTheme }: { theme: Theme; toggleTheme: () => v
   const submitHandler = mode === 'signin' ? handleSignIn : mode === 'signup' ? handleSignUp : handleReset;
 
   return (
-    <div className={`h-screen flex items-center justify-center p-6 ${theme === 'dark' ? 'bg-[#0a0a0a]' : 'bg-neutral-50'}`}>
-      <div className={`w-full max-w-sm rounded-2xl border transition-all ${theme === 'dark' ? 'bg-[#171717] border-neutral-800 shadow-2xl' : 'bg-white border-neutral-200 shadow-2xl shadow-blue-900/10'}`}>
+    <div className={`h-screen overflow-y-auto flex justify-center p-6 ${theme === 'dark' ? 'bg-[#0a0a0a]' : 'bg-neutral-50'}`}>
+      {/* my-auto, not items-center: a card taller than a short window scrolls instead of losing its top */}
+      <div className={`w-full max-w-sm my-auto rounded-2xl border transition-all ${theme === 'dark' ? 'bg-[#171717] border-neutral-800 shadow-2xl' : 'bg-white border-neutral-200 shadow-2xl shadow-blue-900/10'}`}>
 
         {/* Header */}
         <div className="flex flex-col items-center gap-6 pt-10 pb-6 px-10 text-center">
@@ -6907,8 +6993,9 @@ const ResetPasswordPage = ({ theme, toggleTheme, onDone }: { theme: Theme; toggl
   };
 
   return (
-    <div className={`h-screen flex items-center justify-center p-6 ${theme === 'dark' ? 'bg-[#0a0a0a]' : 'bg-neutral-50'}`}>
-      <div className={`w-full max-w-sm rounded-2xl border transition-all ${theme === 'dark' ? 'bg-[#171717] border-neutral-800 shadow-2xl' : 'bg-white border-neutral-200 shadow-2xl shadow-blue-900/10'}`}>
+    <div className={`h-screen overflow-y-auto flex justify-center p-6 ${theme === 'dark' ? 'bg-[#0a0a0a]' : 'bg-neutral-50'}`}>
+      {/* my-auto, not items-center: a card taller than a short window scrolls instead of losing its top */}
+      <div className={`w-full max-w-sm my-auto rounded-2xl border transition-all ${theme === 'dark' ? 'bg-[#171717] border-neutral-800 shadow-2xl' : 'bg-white border-neutral-200 shadow-2xl shadow-blue-900/10'}`}>
         <div className="flex flex-col items-center gap-6 pt-10 pb-6 px-10 text-center">
           <div className="p-4 bg-blue-600 rounded-2xl shadow-xl shadow-blue-600/30 rotate-3 transition-transform hover:rotate-0">
             <FlaskConical className="w-10 h-10 text-white" />

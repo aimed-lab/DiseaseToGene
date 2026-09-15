@@ -28,11 +28,12 @@ const CMP_TINT = (t: CmpTier, dark: boolean) => (dark
   : ({ Precedented: '#e7f6f0', Plausible: '#e8effc', Speculative: '#fdf1e1', Blocked: '#eef1f5' } as Record<CmpTier, string>)[t]);
 const CMP_SHORT: Record<CmpTier, string> = { Precedented: 'PREC', Plausible: 'PLAUS', Speculative: 'SPEC', Blocked: 'BLOCK' };
 
-export default function ModalityFitView({ isDark, onClose, chatOpen, onToggleChat }: {
+export default function ModalityFitView({ isDark, onClose, chatOpen, onToggleChat, chatWidth = 0 }: {
   isDark: boolean;
   onClose: () => void;
   chatOpen?: boolean;              // whether the co-pilot sidebar is currently open
   onToggleChat?: () => void;       // show/hide it — this view covers the app, so it needs its own control
+  chatWidth?: number;              // px the open co-pilot panel occupies on the right — this page stops there instead of running under it
 }) {
   const initialGene = (queryParam('gene') || '').toUpperCase();
   const [input, setInput] = useState(initialGene);
@@ -92,7 +93,7 @@ export default function ModalityFitView({ isDark, onClose, chatOpen, onToggleCha
   const submit = (e: React.FormEvent) => { e.preventDefault(); const g = input.trim().toUpperCase(); if (g) setGene(g); };
 
   return (
-    <div style={{ position: 'fixed', inset: 0, background: bg, color: ink, overflow: 'auto', zIndex: 50 }}>
+    <div style={{ position: 'fixed', inset: 0, right: chatOpen ? chatWidth : 0, background: bg, color: ink, overflow: 'auto', zIndex: 50, transition: 'right 300ms' }}>
       {/* header */}
       <div style={{ position: 'sticky', top: 0, background: card, borderBottom: `1px solid ${border}`, padding: '14px 20px', display: 'flex', alignItems: 'center', gap: 12, zIndex: 2 }}>
         <Atom className="w-5 h-5" style={{ color: '#2563eb' }} />

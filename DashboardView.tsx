@@ -94,6 +94,7 @@ const AXIS_LABEL: Record<string, string> = {
   mutation: 'Somatic mutation', expression_tvn: 'Expression', dependency: 'Dependency', safety: 'Safety',
   druggability: 'Druggability', clinical: 'Clinical', literature_epmc: 'Literature (EPMC)', literature: 'Literature (PubMed)',
   annotation: 'Annotation / function', tissue: 'Tissue specificity', patents: 'Patents',
+  network: 'Network', proteomics: 'Proteomics',
 };
 
 // An API route that does not exist yet (server not restarted) returns Vite's index.html,

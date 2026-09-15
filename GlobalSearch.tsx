@@ -129,7 +129,7 @@ export const GlobalSearch = forwardRef<GlobalSearchHandle, Props>(function Globa
   let lastKind: string | null = null;
 
   return (
-    <div ref={boxRef} className="hidden md:block relative ml-auto w-[210px] xl:w-[280px] shrink-0">
+    <div ref={boxRef} className="hidden md:block relative ml-auto w-[210px] 2xl:w-[280px] min-w-[150px] shrink">
       <div className={`flex items-center gap-2 rounded-lg border px-2.5 h-9 transition-colors ${border} ${isDark ? 'bg-slate-900/60 focus-within:border-slate-500' : 'bg-slate-50 focus-within:border-slate-400'}`}>
         {busy ? <Loader2 className={`w-3.5 h-3.5 animate-spin shrink-0 ${muted}`} /> : <Search className={`w-3.5 h-3.5 shrink-0 ${muted}`} />}
         {drill && (

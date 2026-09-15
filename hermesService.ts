@@ -81,7 +81,13 @@ const call = async (path: string, init: RequestInit = {}, timeoutMs = 240_000): 
 
 export const listModels = async (): Promise<HermesModel[]> => {
   const d = await call('/api/chats/models', { method: 'GET' }, 15_000);
-  return Array.isArray(d) ? d.filter(m => m?.id).map(m => ({ id: String(m.id), label: String(m.label || m.id) })) : [];
+  if (!Array.isArray(d)) return [];
+  // PLEASER splits its own model list on commas, so a label like "Qwen (ASA-X, free)"
+  // arrives as two entries: one with an unclosed "(" and a phantom model whose id is
+  // "free)". Drop ids that are not identifiers and close the orphaned parenthesis.
+  return d
+    .filter(m => m?.id && /^[A-Za-z0-9][\w.:-]*$/.test(String(m.id)))
+    .map(m => ({ id: String(m.id), label: String(m.label || m.id).replace(/\(([^()]*)$/, '($1)') }));
 };
 
 export const createChat = async (title: string): Promise<string> => {
