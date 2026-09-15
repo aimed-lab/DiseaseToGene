@@ -11,6 +11,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import * as d3 from 'd3';
 import { navigate, wikiUrl } from '../nav';
 import type { GraphIndex, KgNode, KgEdge } from './wikiApi';
+import { cleanTitle } from './WikiApp';
 
 export const TYPE_COLOR: Record<string, string> = {
   gene: '#3b82f6', disease: '#ef4444', drug: '#22c55e', trial: '#a855f7',
@@ -78,7 +79,7 @@ export function ScopedGraph({ gi, focusKey, disease, snapshot, isDark, height = 
         .on('end', (ev, d) => { if (!ev.active) sim.alphaTarget(0); d.fx = null; d.fy = null; }) as any);
     node.append('circle').attr('r', d => d.focus ? 11 : d.hop === 2 ? 4.5 : 6.5).attr('fill', d => TYPE_COLOR[d.type] || '#888')
       .attr('stroke', d => d.focus ? (isDark ? '#fff' : '#111') : 'none').attr('stroke-width', 2).attr('opacity', d => d.hop === 2 ? 0.75 : 1);
-    node.append('text').text(d => (d.type === 'trial' || d.type === 'paper' ? d.label.toUpperCase() : d.label).slice(0, 28))
+    node.append('text').text(d => (d.type === 'trial' ? d.label.toUpperCase() : d.type === 'paper' ? cleanTitle(d.label) : d.label).slice(0, 28))
       .attr('x', d => (d.focus ? 14 : 9)).attr('y', 4).attr('font-size', d => d.focus ? 12 : 10).attr('font-weight', d => d.focus ? 700 : 400)
       .attr('fill', isDark ? '#dcddde' : '#2e3338').attr('paint-order', 'stroke').attr('stroke', isDark ? '#1e1e1e' : '#fff').attr('stroke-width', 3)
       .style('pointer-events', 'none').attr('opacity', d => (d.hop === 2 || d.type === 'gene' && !d.focus && nodes.length > 30) ? 0.6 : 1);

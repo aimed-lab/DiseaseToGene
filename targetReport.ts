@@ -32,7 +32,7 @@ export interface TargetReportInput {
   criteria: ReportCriterion[];
   alternatives: Alternative[];
   generatedAt: string;       // caller-supplied (e.g. new Date().toLocaleString())
-  appUrl?: string;           // product URL shown in the report header/footer (e.g. target.smartdrugdiscovery.com)
+  appUrl?: string;           // product URL shown in the report header/footer (e.g. target.smartdrugdiscovery.org)
 }
 
 const esc = (s: unknown): string =>

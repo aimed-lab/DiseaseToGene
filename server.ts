@@ -1744,14 +1744,26 @@ function setupRoutes() {
 
 
   // ── Provenance wiki (/wiki) — read-only, login-only, snapshot-scoped ─────────
-  // Every route here is behind requireAdmin: the wiki is admin-only for now (the client hides
-  // the tab and the /wiki route for everyone else); nothing on it is public. A snapshot is immutable, so responses are cached in
+  // Every route here is behind requireUser: the wiki is for every signed-in user (admins and
+  // researchers alike); nothing on it is public. A snapshot is immutable, so responses are cached in
   // memory per snapshot id and told to the browser as immutable too. The full evidence
   // pull (~50k rows over ORDS, ~25s cold) is fetched once and then sliced per axis, so the
   // run/source pages don't re-pull it. See docs/PLAN_Provenance_Wiki_and_Autonomous_Agent.md §0.5.
   const WIKI_CACHE_HEADERS = { 'Cache-Control': 'private, max-age=31536000, immutable' };
   const wikiEvidenceCache = new Map<number, Promise<any[]>>();
   const wikiGraphCache = new Map<number, Promise<any>>();
+  // The one loader for a snapshot's graph — the wiki route and the co-pilot's query_graph both
+  // use it, so the cache holds ONE shape ({snapshot_id, stats, nodes, edges}). A second writer
+  // that omitted stats once left the wiki's overview crashing on `stats.nodes`.
+  const loadWikiGraph = (svc: any, id: number): Promise<{ snapshot_id: number; stats: any; nodes: any[]; edges: any[] }> => {
+    let p = wikiGraphCache.get(id);
+    if (!p) {
+      p = Promise.all([svc.kgGraph(id), svc.kgStats(id)]).then(([g, stats]) => ({ snapshot_id: id, stats, nodes: g.nodes, edges: g.edges }))
+        .catch((e: any) => { wikiGraphCache.delete(id); throw e; });
+      wikiGraphCache.set(id, p);
+    }
+    return p;
+  };
   const wikiSnapshotEvidence = (svc: any, id: number): Promise<any[]> => {
     let p = wikiEvidenceCache.get(id);
     if (!p) { p = svc.snapshotEvidence(id).catch((e: any) => { wikiEvidenceCache.delete(id); throw e; }); wikiEvidenceCache.set(id, p!); }
@@ -1760,7 +1772,7 @@ function setupRoutes() {
   const wikiSnapshotId = (req: express.Request): number | null => { const n = Number(req.params.id); return Number.isInteger(n) && n > 0 ? n : null; };
   const wikiJson = (v: any) => { if (v == null) return null; if (typeof v !== 'string') return v; try { return JSON.parse(v); } catch { return null; } };
 
-  app.get("/api/wiki/snapshots", requireAdmin, async (_req, res) => {
+  app.get("/api/wiki/snapshots", requireUser, async (_req, res) => {
     if (!readStoreEnabled()) return res.status(503).json({ error: "Oracle store disabled" });
     try {
       const svc = await readSvc();
@@ -1770,7 +1782,7 @@ function setupRoutes() {
   });
 
   // Snapshot header + one line per (evidence_type, source): what the wiki's disease page lists.
-  app.get("/api/wiki/:id/summary", requireAdmin, async (req, res) => {
+  app.get("/api/wiki/:id/summary", requireUser, async (req, res) => {
     if (!readStoreEnabled()) return res.status(503).json({ error: "Oracle store disabled" });
     const id = wikiSnapshotId(req); if (!id) return res.status(400).json({ error: "snapshot id required" });
     try {
@@ -1792,7 +1804,7 @@ function setupRoutes() {
 
   // One gene in one snapshot: its score row and every evidence row WITH the provenance
   // columns (the per-gene ORDS handler projects all twelve; the per-snapshot one only five).
-  app.get("/api/wiki/:id/gene/:symbol", requireAdmin, async (req, res) => {
+  app.get("/api/wiki/:id/gene/:symbol", requireUser, async (req, res) => {
     if (!readStoreEnabled()) return res.status(503).json({ error: "Oracle store disabled" });
     const id = wikiSnapshotId(req); if (!id) return res.status(400).json({ error: "snapshot id required" });
     const symbol = String(req.params.symbol || '').toUpperCase().trim();
@@ -1808,7 +1820,7 @@ function setupRoutes() {
   });
 
   // Every row of one axis (run page / source page): sliced from the cached full pull.
-  app.get("/api/wiki/:id/evidence", requireAdmin, async (req, res) => {
+  app.get("/api/wiki/:id/evidence", requireUser, async (req, res) => {
     if (!readStoreEnabled()) return res.status(503).json({ error: "Oracle store disabled" });
     const id = wikiSnapshotId(req); if (!id) return res.status(400).json({ error: "snapshot id required" });
     const type = String(req.query.type || '').trim();
@@ -1824,18 +1836,12 @@ function setupRoutes() {
   });
 
   // The snapshot's knowledge graph — the wiki's link structure (gene ↔ drug ↔ trial ↔ pathway …).
-  app.get("/api/wiki/:id/graph", requireAdmin, async (req, res) => {
+  app.get("/api/wiki/:id/graph", requireUser, async (req, res) => {
     if (!readStoreEnabled()) return res.status(503).json({ error: "Oracle store disabled" });
     const id = wikiSnapshotId(req); if (!id) return res.status(400).json({ error: "snapshot id required" });
     try {
       const svc = await readSvc();
-      let p = wikiGraphCache.get(id);
-      if (!p) {
-        p = Promise.all([svc.kgGraph(id), svc.kgStats(id)]).then(([g, stats]) => ({ snapshot_id: id, stats, nodes: g.nodes, edges: g.edges }))
-          .catch((e: any) => { wikiGraphCache.delete(id); throw e; });
-        wikiGraphCache.set(id, p);
-      }
-      res.set(WIKI_CACHE_HEADERS).json(await p);
+      res.set(WIKI_CACHE_HEADERS).json(await loadWikiGraph(svc, id));
     } catch (e: any) { res.status(502).json({ error: e?.message || 'wiki graph failed' }); }
   });
 
@@ -2648,9 +2654,7 @@ Rules: fill every field only from what the pages actually say. Where the page do
     if (!p) {
       p = (async () => {
         const svc = await readSvc();
-        let g = wikiGraphCache.get(snapId);
-        if (!g) { g = svc.kgGraph(snapId).then((r: any) => ({ snapshot_id: snapId, nodes: r.nodes, edges: r.edges })); wikiGraphCache.set(snapId, g); }
-        const { nodes, edges } = (await g) as { nodes: GNode[]; edges: GEdge[] };
+        const { nodes, edges } = (await loadWikiGraph(svc, snapId)) as { nodes: GNode[]; edges: GEdge[] };
         const byKey = new Map<string, GNode>(nodes.map(n => [n.key, n]));
         const outE = new Map<string, GEdge[]>(), inE = new Map<string, GEdge[]>(), byType = new Map<string, GNode[]>();
         for (const e of edges) { (outE.get(e.source) ?? outE.set(e.source, []).get(e.source)!).push(e); (inE.get(e.target) ?? inE.set(e.target, []).get(e.target)!).push(e); }

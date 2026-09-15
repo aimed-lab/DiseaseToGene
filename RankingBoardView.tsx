@@ -292,7 +292,7 @@ export default function RankingBoardView({ theme, diseaseName, showProvenance }:
       snapshotLabel,
       verdict, criteria, alternatives: betterAlternatives,
       generatedAt: new Date().toLocaleString(),
-      appUrl: 'target.smartdrugdiscovery.com',
+      appUrl: 'target.smartdrugdiscovery.org',
     });
     const url = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
     const win = window.open(url, '_blank');

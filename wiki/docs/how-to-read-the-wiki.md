@@ -46,8 +46,8 @@ different questions.
 **What was done to it?** — the *lineage badge*
 - the run id and the commit of the script that produced the row. Click it for the script,
   the parameters, and every other row the same run produced.
-- <span style="color:#34d399">green · recorded</span> — the harvest wrote this record itself.
-- <span style="color:#fbbf24">amber · reconstructed</span> — a person wrote it afterwards from
+- **green · recorded** — the harvest wrote this record itself.
+- **amber · reconstructed** — a person wrote it afterwards from
   git history. Its confidence is stated; read the run's note before quoting it.
 
 ## Four clicks from a number to its commit

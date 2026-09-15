@@ -588,7 +588,7 @@ const UsefulnessControls = ({
 // Research menu, Enrichment, Jobs, …) is admin-only — hidden from the nav AND blocked
 // by a guard in App, so a researcher can't reach it via the co-pilot or a restored
 // session. Nothing is deleted; admins keep the full app.
-const RESEARCHER_VIEWS = new Set<string>(['board', 'dashboard', 'list', 'graph', 'modality']);   // 'wiki' is admin-only for now
+const RESEARCHER_VIEWS = new Set<string>(['board', 'dashboard', 'list', 'graph', 'modality', 'wiki']);
 
 const TabNavigation = ({
   viewMode,
@@ -3128,6 +3128,10 @@ const App = () => {
 
   // Fetch role from DB in the background and patch currentUser if it differs.
   // Called AFTER we already let the user in — never blocks the UI.
+  // True once the DB role has been read (or the read failed). Role-gated routes wait on it
+  // rather than judging the 'user' placeholder — the wiki flashed "admins only" at admins
+  // on a cold load until the profile arrived.
+  const [roleResolved, setRoleResolved] = useState(false);
   const syncRole = async (userId: string) => {
     try {
       const profile = await fetchUserProfile(userId);
@@ -3137,6 +3141,7 @@ const App = () => {
         );
       }
     } catch { /* non-critical — user stays as 'user' */ }
+    finally { setRoleResolved(true); }
   };
 
   useEffect(() => {
@@ -3155,9 +3160,11 @@ const App = () => {
           userId:   session.user.id,
         });
         setAuthLoading(false);
+        setRoleResolved(false);
         syncRole(session.user.id);   // fire-and-forget
       } else {
         setCurrentUser(null);
+        setRoleResolved(true);
         setAuthLoading(false);
       }
     };
@@ -5408,15 +5415,7 @@ ${modalityResultBlock(getLastModalityResult()) || '      (No modality analysis h
   // strictly AFTER the auth gate above (unlike /Methodologies), and every read it makes goes
   // through /api/wiki/* behind requireUser. See docs/PLAN_Provenance_Wiki_and_Autonomous_Agent.md.
   if (isWikiPath(routePath)) {
-    // Admin-only for now (the API behind it is gated the same way). A researcher who follows a
-    // link here gets told so, not a blank page.
-    if (!effectiveIsAdmin) return (
-      <div className={`h-screen flex flex-col items-center justify-center gap-3 px-6 text-center ${theme === 'dark' ? 'bg-[#0a0a0a] text-slate-200' : 'bg-neutral-50 text-slate-800'}`}>
-        <GitCommit className="w-8 h-8 opacity-60" />
-        <p className="text-sm font-semibold">The provenance wiki is available to admins only for now.</p>
-        <button onClick={() => navigate('/')} className="text-xs underline">Back to Disease2Target</button>
-      </div>
-    );
+    // Every signed-in user (the auth gate above already ran); the API behind it is gated the same way.
     const wikiRoute = parseWikiPath(routePath);
     if (wikiRoute) return <WikiApp theme={theme} route={wikiRoute} onToggleTheme={() => setTheme(t => t === 'dark' ? 'light' : 'dark')} />;
   }
@@ -5552,7 +5551,7 @@ ${modalityResultBlock(getLastModalityResult()) || '      (No modality analysis h
                           reload; anything else opens in a new tab. */}
                       <Markdown components={{ a: ({ href, children }) => {
                         const h = String(href || '');
-                        if (/^\/wiki(\/|$)/.test(h)) return effectiveIsAdmin ? <a href={h} onClick={e => { e.preventDefault(); navigate(h); }} className="underline decoration-dotted">{children}</a> : <span>{children}</span>;
+                        if (/^\/wiki(\/|$)/.test(h)) return <a href={h} onClick={e => { e.preventDefault(); navigate(h); }} className="underline decoration-dotted">{children}</a>;
                         return <a href={h} target="_blank" rel="noreferrer">{children}</a>;
                       } }}>{m.content}</Markdown>
                     </div>
@@ -5813,7 +5812,7 @@ ${modalityResultBlock(getLastModalityResult()) || '      (No modality analysis h
                   )}
                   {viewMode === 'board' && (
                     <div className="h-full overflow-hidden">
-                      <RankingBoardView theme={theme} diseaseName={researchState.activeDisease?.name} showProvenance={effectiveIsAdmin} />
+                      <RankingBoardView theme={theme} diseaseName={researchState.activeDisease?.name} showProvenance />
                     </div>
                   )}
                   {viewMode === 'list' && (

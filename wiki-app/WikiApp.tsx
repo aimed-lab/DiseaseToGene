@@ -11,6 +11,7 @@
 // (commit-versioned Markdown from wiki/). Each block says which it is.
 import React, { useEffect, useMemo, useState } from 'react';
 import Markdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { ArrowLeft, Search, Sun, Moon, GitCommit, Menu, Database, FileText, Dna, Pill, FlaskConical, Route, BookOpen, Layers, ExternalLink, Info, Link2, ChevronRight } from 'lucide-react';
 import { navigate, wikiUrl, wikiSlug, type WikiRoute, type WikiEntityKind } from '../nav';
 import type { Theme } from '../types';
@@ -22,6 +23,20 @@ import { sourceInfo, trialUrl, pmidUrl, commitUrl, scriptUrl } from './sources';
 import { ScopedGraph } from './ScopedGraph';
 
 // ── small utilities ─────────────────────────────────────────────────────────
+// Markdown with GitHub tables (remark-gfm). Raw HTML is deliberately NOT enabled — the
+// docs use markdown emphasis instead — so nothing an author writes can inject markup.
+const Md = ({ children }: { children: string }) => <Markdown remarkPlugins={[remarkGfm]}>{children}</Markdown>;
+
+// A page that throws must say so, not go blank. Wraps the page body; the shell stays up.
+class PageBoundary extends React.Component<{ children: React.ReactNode; isDark: boolean; routeKey: string }, { error: Error | null; forKey: string }> {
+  state = { error: null as Error | null, forKey: '' };
+  static getDerivedStateFromError(error: Error) { return { error }; }
+  render() {
+    if (this.state.error && this.state.forKey === this.props.routeKey) return <div className={`rounded border px-3 py-2 text-sm ${this.props.isDark ? 'border-red-500/40 text-red-300' : 'border-red-500/40 text-red-700'}`}>This page hit an error and could not render: <span className="font-mono">{String(this.state.error.message || this.state.error)}</span>. The rest of the wiki still works; use the tree on the left.</div>;
+    return this.props.children;
+  }
+  componentDidCatch() { this.setState({ forKey: this.props.routeKey }); }
+}
 function useAsync<T>(fn: () => Promise<T>, deps: React.DependencyList): { data: T | null; error: string | null; loading: boolean } {
   const [s, set] = useState<{ data: T | null; error: string | null; loading: boolean }>({ data: null, error: null, loading: true });
   useEffect(() => {
@@ -114,12 +129,14 @@ export default function WikiApp({ theme, route, onToggleTheme }: { theme: Theme;
             <button onClick={() => setRailOpen(o => !o)} className={`md:hidden mb-4 p-1.5 rounded border ${t.card}`} title="Menu"><Menu className="w-4 h-4" /></button>
             <Crumbs ctx={ctx} />
           </div>
+          <PageBoundary isDark={isDark} routeKey={JSON.stringify(route)}>
           {summary.error && snapshot ? <Notice t={t} tone="error">Could not load snapshot #{snapshot}: {summary.error}</Notice>
             : route.page === 'index' ? <IndexPage ctx={ctx} />
             : route.page === 'doc' ? <DocPage ctx={ctx} slug={route.slug} />
             : !summary.data ? <Loading t={t} what={`snapshot #${snapshot}`} />
             : route.page === 'disease' ? <DiseasePage ctx={ctx} section={route.section} />
             : <EntityPage ctx={ctx} kind={route.kind} id={route.id} />}
+          </PageBoundary>
           <footer className={`mt-16 pt-4 border-t text-xs ${t.faint} ${isDark ? 'border-white/10' : 'border-black/10'}`}>
             Oracle is the truth; this wiki is a view of it. Stored rows only — live links are marked. Narrative layer at commit <span className="font-mono">{NARRATIVE_COMMIT.slice(0, 7)}</span>.
           </footer>
@@ -323,7 +340,7 @@ function DocPage({ ctx, slug }: { ctx: PageCtx; slug: string }) {
   return (
     <>
       <div className="mb-3"><LayerTag t={t} kind="narrative" detail={`${d.path} · commit ${NARRATIVE_COMMIT.slice(0, 7)}`} /></div>
-      <article className={t.prose}><Markdown>{d.body}</Markdown></article>
+      <article className={t.prose}><Md>{d.body}</Md></article>
     </>
   );
 }
@@ -336,6 +353,7 @@ function DiseasePage({ ctx, section }: { ctx: PageCtx; section?: string }) {
   if (section === 'genes') return <GenesSection ctx={ctx} />;
   if (section === 'runs') return <RunsSection ctx={ctx} />;
   if (section === 'sources') return <SourcesSection ctx={ctx} />;
+  if (section === 'graph-genes') return <NodeListSection ctx={ctx} type="gene" />;
   if (section && ['drugs', 'trials', 'pathways', 'papers', 'tissues', 'variants'].includes(section)) return <NodeListSection ctx={ctx} type={section.replace(/s$/, '')} />;
   return (
     <>
@@ -344,7 +362,7 @@ function DiseasePage({ ctx, section }: { ctx: PageCtx; section?: string }) {
 
       {narrative ? (
         <Section t={t} title="About this disease in Disease2Target" tag={<LayerTag t={t} kind="narrative" detail={`${narrative.path} · commit ${NARRATIVE_COMMIT.slice(0, 7)}`} />}>
-          <article className={t.prose}><Markdown>{narrative.body}</Markdown></article>
+          <article className={t.prose}><Md>{narrative.body}</Md></article>
         </Section>
       ) : <Notice t={t}>No narrative page yet for this disease (<span className="font-mono">wiki/diseases/{wikiSlug(s.disease_name)}.md</span>). Everything below is data.</Notice>}
 
@@ -460,7 +478,7 @@ function RunsSection({ ctx }: { ctx: PageCtx }) {
         </table>)}
       {lineage?.body && (
         <Section t={t} title="How this record was reconstructed" tag={<LayerTag t={t} kind="narrative" detail={`${lineage.path} · commit ${NARRATIVE_COMMIT.slice(0, 7)}`} />}>
-          <article className={`${t.prose} mt-2`}><Markdown>{lineage.body}</Markdown></article>
+          <article className={`${t.prose} mt-2`}><Md>{lineage.body}</Md></article>
         </Section>)}
     </>
   );
@@ -486,9 +504,12 @@ function GraphStats({ ctx }: { ctx: PageCtx }) {
   const gi = useAsync(() => (snapshot ? graphIndex(snapshot) : Promise.resolve(null)), [snapshot]);
   if (gi.loading) return <Loading t={t} what="graph" />; if (gi.error) return <Notice t={t} tone="error">{gi.error}</Notice>; if (!gi.data) return null;
   const st = gi.data.stats;
+  if (!st || !st.nodes || !st.nodeTotal) return <p className={`text-sm ${t.muted}`}>No knowledge graph stored for this snapshot.</p>;
   return (
     <div className="flex flex-wrap gap-2 text-sm">
-      {(Object.entries(st.nodes) as Array<[string, number]>).sort((a, b) => b[1] - a[1]).map(([type, n]) => { const Icon = KIND_ICON[type] || Info; const to = ['drug', 'trial', 'pathway', 'paper', 'tissue', 'variant', 'gene'].includes(type) ? wikiUrl.disease(disease, snapshot!, type + 's') : null; const inner = <><Icon className="w-3.5 h-3.5 opacity-60" /> {type} <span className="font-mono">{num(n)}</span></>; return to ? <WLink key={type} to={to} className={`inline-flex items-center gap-1 rounded border px-2 py-1 ${t.card} hover:underline`}>{inner}</WLink> : <span key={type} className={`inline-flex items-center gap-1 rounded border px-2 py-1 ${t.card}`}>{inner}</span>; })}
+      {(Object.entries(st.nodes) as Array<[string, number]>).sort((a, b) => b[1] - a[1]).map(([type, n]) => { const Icon = KIND_ICON[type] || Info;
+        // The gene badge counts genes IN THE GRAPH, so it opens that set — not the ranked list.
+        const to = type === 'gene' ? wikiUrl.disease(disease, snapshot!, 'graph-genes') : ['drug', 'trial', 'pathway', 'paper', 'tissue', 'variant'].includes(type) ? wikiUrl.disease(disease, snapshot!, type + 's') : null; const inner = <><Icon className="w-3.5 h-3.5 opacity-60" /> {type} <span className="font-mono">{num(n)}</span></>; return to ? <WLink key={type} to={to} className={`inline-flex items-center gap-1 rounded border px-2 py-1 ${t.card} hover:underline`}>{inner}</WLink> : <span key={type} className={`inline-flex items-center gap-1 rounded border px-2 py-1 ${t.card}`}>{inner}</span>; })}
       <span className={`self-center text-xs ${t.faint}`}>{num(st.edgeTotal)} edges: {(Object.entries(st.edges) as Array<[string, number]>).map(([r, n]) => `${r} ${num(n)}`).join(' · ')}</span>
     </div>
   );
@@ -504,25 +525,38 @@ function NodeListSection({ ctx, type }: { ctx: PageCtx; type: string }) {
       <h1 className="text-xl font-semibold mb-1 capitalize">{type}s <span className={`text-sm font-normal ${t.muted}`}>{num(gi.data.byType(type).length)} in the graph of #{snapshot}</span></h1>
       <div className="mb-3"><LayerTag t={t} kind="data" detail={`KG_NODES where node_type = ${type}`} /></div>
       <div className={`flex items-center gap-1 rounded border px-2 mb-3 max-w-xs ${t.input}`}><Search className="w-3.5 h-3.5 opacity-50" /><input value={q} onChange={e => setQ(e.target.value)} placeholder="filter" className="bg-transparent text-sm py-1 w-full outline-none" /></div>
-      <table className="w-full text-sm">
+      <table className="w-full table-fixed text-sm">
+        <colgroup><col className="w-[38%]" /><col className="w-[10%]" /><col /></colgroup>
         <thead><tr className={`text-left text-xs border-b ${t.th}`}><th className="py-1 pr-3">{type}</th><th className="py-1 pr-3 text-right">degree</th><th className="py-1">properties</th></tr></thead>
         <tbody>{nodes.slice(0, 500).map(n => (
-          <tr key={n.key} className={`border-b ${t.row}`}>
-            <td className="py-1 pr-3"><WLink to={wikiUrl.node(disease, snapshot!, n.key) || '#'} className={t.link}>{nodeLabel(n, n.key)}</WLink></td>
+          <tr key={n.key} className={`border-b ${t.row} align-top`}>
+            <td className="py-1 pr-3 break-words"><WLink to={wikiUrl.node(disease, snapshot!, n.key) || '#'} className={t.link}>{nodeLabel(n, n.key)}</WLink></td>
             <td className="py-1 pr-3 text-right font-mono">{n.degree ?? '—'}</td>
-            <td className={`py-1 text-xs ${t.muted}`}>{propsLine(n.props)}</td>
+            <td className={`py-1 text-xs whitespace-normal break-words [overflow-wrap:anywhere] ${t.muted}`}>{propsLine(n.props, type === 'paper' || type === 'trial')}</td>
           </tr>))}</tbody>
       </table>
       {nodes.length > 500 && <p className={`text-xs mt-1 ${t.faint}`}>{num(nodes.length - 500)} more — narrow the filter</p>}
     </>
   );
 }
-// KG labels for trials are stored lowercase (they are slugs); show the registry id as written.
+// KG trial labels are stored lowercase (they are slugs): show the registry id upper-case.
+// Paper titles are shown as stored, CLEANED, never upper-cased: harvested titles carry escaped
+// HTML (&lt;i&gt;Mitragyna&lt;/i&gt;) and charset casualties (an en dash stored as \u00bf, a Greek
+// beta stored as \u00df — which .toUpperCase() had been turning into "SS").
+const ENTITIES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' };
+export const cleanTitle = (s: string) => String(s ?? '')
+  .replace(/&(#x?[0-9a-f]+|[a-z]+);/gi, (m, e) => { if (e[0] === '#') { const hex = /^#x/i.test(e); try { return String.fromCodePoint(parseInt(hex ? e.slice(2) : e.slice(1), hex ? 16 : 10)); } catch { return m; } } return ENTITIES[e.toLowerCase()] ?? m; })
+  .replace(/<\/?[a-z][^>]*>/gi, '')
+  .replace(/\u00bf/g, '\u2013')
+  .replace(/\bA\u00df/g, 'A\u03b2')
+  .replace(/\s+/g, ' ').trim();
 const nodeLabel = (n: KgNode | null, key: string) => {
   const raw = n?.label || key.slice(key.indexOf(':') + 1);
-  return /^(trial|paper):/.test(key) ? raw.toUpperCase() : raw;
+  if (key.startsWith('trial:')) return raw.toUpperCase();
+  if (key.startsWith('paper:')) return cleanTitle(raw);
+  return raw;
 };
-const propsLine = (p: any) => p && typeof p === 'object' ? Object.entries(p).filter(([, v]) => v != null && v !== '' && typeof v !== 'object').slice(0, 6).map(([k, v]) => `${k}: ${v}`).join(' · ') : '';
+const propsLine = (p: any, clean = false) => p && typeof p === 'object' ? Object.entries(p).filter(([, v]) => v != null && v !== '' && typeof v !== 'object').slice(0, 6).map(([k, v]) => `${k}: ${clean && typeof v === 'string' ? cleanTitle(v) : v}`).join(' · ') : '';
 
 // ── entity pages ────────────────────────────────────────────────────────────
 function EntityPage({ ctx, kind, id }: { ctx: PageCtx; kind: WikiEntityKind; id: string }) {
@@ -701,11 +735,11 @@ function GraphEntityPage({ ctx, kind, id }: { ctx: PageCtx; kind: WikiEntityKind
   // "every target this hits in this snapshot" from edges alone — no per-page query.
   return (
     <>
-      <h1 className="text-2xl font-semibold mb-0.5 flex items-center gap-2"><Icon className={`w-5 h-5 ${t.accent} shrink-0`} />{kind === 'trial' && node.props?.title ? <span>{node.props.title} <span className={`font-mono text-base font-normal ${t.muted}`}>{nodeLabel(node, key)}</span></span> : nodeLabel(node, key)}</h1>
+      <h1 className="text-2xl font-semibold mb-0.5 flex items-center gap-2"><Icon className={`w-5 h-5 ${t.accent} shrink-0`} />{kind === 'trial' && node.props?.title ? <span>{cleanTitle(node.props.title)} <span className={`font-mono text-base font-normal ${t.muted}`}>{nodeLabel(node, key)}</span></span> : nodeLabel(node, key)}</h1>
       <p className={`text-sm mb-4 ${t.muted}`}>{kind} · <span className="font-mono">{key}</span> · degree {node.degree ?? neighbours.length}{external && <> · <a href={external} target="_blank" rel="noreferrer" className={`${t.link} inline-flex items-center gap-1`}><ExternalLink className="w-3 h-3" /> live record</a></>}</p>
       {props.length > 0 && (
         <Section t={t} title="Stored properties" tag={<LayerTag t={t} kind="data" detail="KG_NODES.props_json" />}>
-          <KV t={t} rows={props.map(([k, v]) => [k, <span className="font-mono text-xs">{typeof v === 'object' ? JSON.stringify(v) : String(v)}</span>])} />
+          <KV t={t} rows={props.map(([k, v]) => [k, <span className="font-mono text-xs break-words [overflow-wrap:anywhere]">{typeof v === 'object' ? JSON.stringify(v) : typeof v === 'string' && (kind === 'paper' || kind === 'trial') ? cleanTitle(v) : String(v)}</span>])} />
         </Section>)}
       <Section t={t} title={`Connections · ${neighbours.length}`} tag={<LayerTag t={t} kind="data" detail="KG_EDGES, both directions; each edge carries its own source" />}>
         {neighbours.length > 0 && <div className="mb-3"><ScopedGraph gi={gi.data!} focusKey={key} disease={disease} snapshot={snapshot!} isDark={isDark} height={280} /></div>}

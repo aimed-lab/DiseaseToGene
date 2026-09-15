@@ -451,7 +451,7 @@ function buildModalityReportHTML(d: FitResult): string {
   @media print{.toolbar{display:none}}
   </style></head><body>
   <div class="toolbar"><button onclick="window.print()">Print / Save as PDF</button></div>
-  <div class="brand">target.smartdrugdiscovery.com</div>
+  <div class="brand">target.smartdrugdiscovery.org</div>
   <h1>Modality fit for ${esc(d.gene)}</h1>
   <p class="sub">Whole-protein feasibility tiers · goal: <b>${esc(d.goalText)}</b> · Precedented &gt; Plausible &gt; Speculative &gt; Blocked. Tiers are rule-based (deterministic); rationale is model-written (temp 0).</p>
   ${sharedNote}${rows}
