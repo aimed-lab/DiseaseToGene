@@ -1800,7 +1800,10 @@ function setupRoutes() {
         const vj = wikiJson(r.value_json); if (vj && typeof vj.axis === 'number') a.scored++;
       }
       const { targets: _t, ...meta } = snap;
-      res.set(WIKI_CACHE_HEADERS).json({ snapshot: { ...meta, id }, evidence_rows: rows.length, axes: [...axes.values()].sort((a, b) => a.evidence_type.localeCompare(b.evidence_type)) });
+      // Not immutable: the harvest appends to provenance.runs[] after the fact (a re-run of an
+      // axis, a lineage file loaded later), and the browser must see it without a hard refresh.
+      // The evidence and graph routes stay immutable — their rows are what the snapshot IS.
+      res.set({ 'Cache-Control': 'private, no-cache' }).json({ snapshot: { ...meta, id }, evidence_rows: rows.length, axes: [...axes.values()].sort((a, b) => a.evidence_type.localeCompare(b.evidence_type)) });
     } catch (e: any) { res.status(502).json({ error: e?.message || 'wiki summary failed' }); }
   });
 

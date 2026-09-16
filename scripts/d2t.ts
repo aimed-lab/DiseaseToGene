@@ -58,6 +58,41 @@ const FLAGS_WITH_VALUE = ['--genes', '--source', '--cutoff', '--added-source', '
 // costs the least. `annotation` and `patents` are the axes added for the dashboard.
 const AXES = ['expression', 'proteomics', 'dependency', 'safety', 'tissue', 'mutation', 'annotation', 'druggability', 'clinical', 'patents', 'literature', 'network'] as const;
 
+// ── Lineage: the harvest records its own runs ────────────────────────────────
+// One entry per step, appended to snapshot.provenance.runs[] as the step finishes: what ran
+// (script, git commit of this checkout), when, on which source at which version, with which
+// formula. The wiki reads this record first and shows it green, "recorded"; a run that only
+// exists in wiki/lineage/<id>.md is amber, "reconstructed". Until 16 Sep 2026 nothing wrote
+// this, so every snapshot's lineage had to be reconstructed by a person from git history.
+const GIT_COMMIT = (() => { try { return spawnSync('git', ['rev-parse', '--short', 'HEAD'], { encoding: 'utf8' }).stdout.trim() || 'unknown'; } catch { return 'unknown'; } })();
+const GIT_DIRTY = (() => { try { return spawnSync('git', ['status', '--porcelain'], { encoding: 'utf8' }).stdout.split('\n').some(l => l && !l.startsWith('??')); } catch { return false; } })();
+const refBuilt = (file: string): string | null => { const m = loadRef(file)?.meta; return m?.built ? `data/${file} built ${m.built}` : null; };
+// What each axis does to its source — the same formulas as the code above, stated once for
+// the record. Keep in step with buildAxis().
+const AXIS_LINEAGE: Record<string, { evidence_type: string; params: Record<string, unknown>; source_version: (ctx: { cohort?: any }) => string | null }> = {
+  expression:   { evidence_type: 'expression_tvn', params: { axis: 'clamp01(|log2FC| / 4)', log2fc_cap: 10, low_confidence_floor: 'normal median at the pseudocount floor → low_confidence, magnitude capped' }, source_version: c => refBuilt(c.cohort?.expression?.ref_file || '') },
+  proteomics:   { evidence_type: 'proteomics', params: { axis: 'clamp01(|protein log2FC| / scale); scale = cohort log2fc_scale or 3' }, source_version: c => refBuilt(c.cohort?.proteomics?.ref_file || '') },
+  dependency:   { evidence_type: 'dependency', params: { axis: 'clamp01(-mean_chronos)', frac_dependent: 'share of lines with Chronos < -0.5 (context)' }, source_version: c => refBuilt(c.cohort?.dependency?.ref_file || '') },
+  safety:       { evidence_type: 'safety', params: { axis: 'concern = clamp01(1 - LOEUF / 1.5); pLI when LOEUF is missing', direction: 'con' }, source_version: () => refBuilt('gnomad_constraint.json') },
+  tissue:       { evidence_type: 'tissue', params: { axis: 'Yanai tau on log2(TPM+1) over 54 GTEx tissues' }, source_version: () => refBuilt('tissue_specificity.json') },
+  mutation:     { evidence_type: 'mutation', params: { axis: 'clamp01(mutated_samples / sequenced_samples)' }, source_version: () => 'cBioPortal REST, queried live' },
+  annotation:   { evidence_type: 'annotation', params: { axis: null, role: 'annotation' }, source_version: () => 'Open Targets GraphQL, queried live per gene' },
+  druggability: { evidence_type: 'druggability', params: { axis: 'label → score: Clinically Validated 1.0 · In Clinical Development 0.85 · Preclinical Only 0.5 (developed drugs) / 0.3 (tractable only) · No Drug Data Found 0.0' }, source_version: () => 'Open Targets GraphQL, queried live per gene' },
+  clinical:     { evidence_type: 'clinical', params: { axis: 'clamp01(max_phase / 4 + min(0.10, 0.02 · ln(1 + n_drugs))); 0 without a disease-scoped trial' }, source_version: () => 'Open Targets GraphQL, disease scope resolved once per run' },
+  patents:      { evidence_type: 'patents', params: { axis: null, role: 'context' }, source_version: () => 'Europe PMC SRC:PAT, queried live per gene' },
+  literature:   { evidence_type: 'literature_epmc', params: { axis: 'clamp01(recent / total); null with low_confidence when total < MIN_LIT_PAPERS', pubmed: 'stored alongside as annotation (evidence_type literature, axis null)' }, source_version: () => `Europe PMC + NCBI E-utilities, queried live per gene; recent window ${new Date().getFullYear() - 3}-01-01 to ${new Date().getFullYear()}-12-31` },
+  network:      { evidence_type: 'network', params: { axis: 'WINNER score as a within-run midrank percentile', rwr: 'restart random walk on the same induced subgraph (context)' }, source_version: () => 'STRING v12.0 files in WINNER/data · winner-net (aimed-lab/WINNER) · see WINNER/runs/<key>/graph.json' },
+};
+async function recordRun(snapshotId: number, run: { id: string; axis: string; evidence_type: string | null; script: string; ran_at: string; source: string | null; source_version?: string | null; params?: Record<string, unknown>; n_rows?: number; note?: string }) {
+  if (DRY) return;
+  const entry = { ...run, finished_at: new Date().toISOString(), commit: GIT_COMMIT + (GIT_DIRTY ? '+dirty' : ''), recorded_by: 'scripts/d2t.ts', host: (await import('node:os')).hostname() };
+  try {
+    const svc = await oracle();
+    await svc.updateSnapshotMeta(snapshotId, { provenancePatch: { runs: [entry] }, actor: 'cli' });
+    log(`  lineage: recorded run ${run.id} @${entry.commit}`);
+  } catch (e: any) { log(`  lineage: could not record run ${run.id} — ${String(e?.message || e).slice(0, 120)} (the evidence rows are saved; the run is missing from provenance.runs[])`); }
+}
+
 // Network axis: no longer computed here. `enrich <id> network` delegates to
 // WINNER/scripts/run_disease.mjs (see runNetworkAxis below).
 const STRING_MIN_SCORE = Number(process.env.STRING_MIN_SCORE) || 400; // STRING confidence (0–1000)
@@ -180,6 +215,7 @@ async function resolveDisease(query: string): Promise<{ id: string; name: string
 }
 
 async function harvest(query: string, geneCount: number) {
+  const harvestStarted = new Date().toISOString();
   log(`Resolving disease "${query}"…`);
   const dis = await resolveDisease(query);
   log(`Disease: ${dis.name} (${dis.id}) · target ${geneCount} genes`);
@@ -215,6 +251,9 @@ async function harvest(query: string, geneCount: number) {
   log(`Saving ${targets.length} genes to Oracle (row-by-row — this takes ~1–3 min, please wait, do NOT run the next command yet)…`);
   const res = await svc.saveSnapshot({ disease_id: dis.id, disease_name: dis.name, label: 'CLI harvest', gene_count: targets.length, targets, provenance, created_by: 'cli' });
   log(`✔✔✔ SAVED snapshot #${res.id} (v${res.version}) — ${targets.length} genes.`);
+  await recordRun(res.id, { id: `r${res.id}-harvest`, axis: 'harvest', evidence_type: null, script: `scripts/d2t.ts harvest "${dis.name}" ${geneCount}`, ran_at: harvestStarted, source: 'Open Targets associatedTargets',
+    source_version: `Open Targets ${rel.ot_release ?? '?'} · API ${rel.ot_api_version ?? '?'} · ${count ?? '?'} associations, top ${geneCount} selected (${targets.length} symbols)`,
+    params: { candidate_rule: `top ${geneCount} by Open Targets overall association score`, query: OT_ASSOC_QUERY, score_definition: OT_SCORE_DEFINITION }, n_rows: targets.length });
   log(`     Next: npx tsx --env-file=.env scripts/d2t.ts enrich ${res.id} mutation   (use the number ${res.id})`);
 }
 
@@ -517,11 +556,18 @@ async function enrich(snapshotId: number, axisArg: string) {
     list = list.filter(a => a !== 'network');
     if (subset) log('network: --genes does not apply — the whole candidate graph is re-run.');
     log(`── axis: network ──`);
-    try { await runNetworkAxis(snapshotId); done.push('network'); }
+    const netStarted = new Date().toISOString();
+    try {
+      await runNetworkAxis(snapshotId); done.push('network');
+      const L = AXIS_LINEAGE.network;
+      await recordRun(snapshotId, { id: `r${snapshotId}-network-${netStarted.slice(0, 16).replace(/[-:T]/g, '')}`, axis: 'network', evidence_type: L.evidence_type, script: `scripts/d2t.ts enrich ${snapshotId} network`, ran_at: netStarted, source: 'STRING v12.0 PPI (score>=400) · WINNER (winner-net) + RWR', source_version: L.source_version({}), params: L.params });
+    }
     catch (e: any) { log(`✖ network: ${String(e?.message || e).slice(0, 200)}`); failed.push('network'); }
   }
+  const cohortForLineage = resolveCohort(diseaseName, diseaseId);
   for (const axis of list) {
     log(`── axis: ${axis} ──`);
+    const axisStarted = new Date().toISOString();
     // BUILD is wrapped: an upstream outage (cBioPortal returned a 502 mid-run once) must cost
     // only THIS axis, never the rest of the run. Each axis is independent and idempotent, so
     // the right behaviour is to record the failure, carry on, and report what to re-run.
@@ -541,7 +587,12 @@ async function enrich(snapshotId: number, axisArg: string) {
     const svc = await oracle();
     let saved = false;
     for (let attempt = 1; attempt <= 3; attempt++) {
-      try { const res = await svc.saveAxisEvidence(snapshotId, diseaseId, rows, 'cli', subset); log(`✔ ${axis}: saved ${res.count} rows to Oracle`); saved = true; break; }
+      try {
+        const res = await svc.saveAxisEvidence(snapshotId, diseaseId, rows, 'cli', subset); log(`✔ ${axis}: saved ${res.count} rows to Oracle`); saved = true;
+        const L = AXIS_LINEAGE[axis];
+        if (L) await recordRun(snapshotId, { id: `r${snapshotId}-${axis}-${axisStarted.slice(0, 16).replace(/[-:T]/g, '')}`, axis, evidence_type: L.evidence_type, script: `scripts/d2t.ts enrich ${snapshotId} ${axis}${subset ? ` --genes ${path.basename(GENES_ARG!)}` : ''}`, ran_at: axisStarted, source: String(rows[0]?.source ?? ''), source_version: L.source_version({ cohort: cohortForLineage }), params: { ...L.params, ...(subset ? { subset: `${genes.length} genes` } : {}) }, n_rows: res.count });
+        break;
+      }
       catch (e: any) { const msg = String(e?.message || e).slice(0, 140); if (attempt < 3) { log(`save ${axis} failed (${attempt}/3): ${msg} — retrying in ${8 * attempt}s`); await sleep(8000 * attempt); } else { log(`✖ ${axis}: NOT saved after 3 tries: ${msg} — re-run this axis`); } }
     }
     (saved ? done : failed).push(axis);
@@ -556,6 +607,33 @@ async function enrich(snapshotId: number, axisArg: string) {
   } else {
     log(`All requested axes stored. Next: npx tsx --env-file=.env scripts/d2t.ts dossier ${snapshotId}`);
   }
+}
+
+// ════════════════════════════ LINEAGE (load a file into the store) ════════════════════════════
+// lineage <id> <file>   — append the runs[] of a wiki/lineage/<id>.md (or a runs/<id>.lineage.yaml
+// written by deploy/rc-cloud-harvest/bin/harvest.sh) into snapshot.provenance.runs[]. For
+// snapshots harvested before the harvest recorded its own runs: once loaded, the wiki shows
+// them green "recorded" and stops falling back to the file. Each run is marked with where it
+// came from; the file's confidence is kept.
+async function loadLineage(snapshotId: number, file: string) {
+  const YAML = (await import('yaml')).default;
+  const raw = fs.readFileSync(file, 'utf8');
+  const fm = raw.startsWith('---') ? raw.split(/^---\s*$/m)[1] : raw;
+  const doc: any = YAML.parse(fm);
+  if (Number(doc?.snapshot) !== snapshotId) throw new Error(`${file} is for snapshot #${doc?.snapshot}, not #${snapshotId}`);
+  const runs: any[] = Array.isArray(doc?.runs) ? doc.runs : [];
+  if (!runs.length) throw new Error(`${file} has no runs[]`);
+  const svc = await oracle();
+  const snap = await svc.getSnapshot(snapshotId);
+  if (!snap) throw new Error(`Snapshot #${snapshotId} not found`);
+  let prov: any = {}; try { prov = typeof snap.provenance === 'string' ? JSON.parse(snap.provenance) : (snap.provenance || {}); } catch { /* ignore */ }
+  const have = new Set((Array.isArray(prov.runs) ? prov.runs : []).map((r: any) => String(r.id)));
+  const fresh = runs.filter(r => r?.id && !have.has(String(r.id))).map(r => ({ ...r, loaded_from: path.basename(file), loaded_at: new Date().toISOString(), recorded_by: r.recorded_by || `lineage file (${doc.kind || 'reconstructed'})` }));
+  log(`Snapshot #${snapshotId} · ${runs.length} runs in ${path.basename(file)} · ${have.size} already in the store · ${fresh.length} to load`);
+  if (!fresh.length) { log('nothing to do'); return; }
+  if (DRY) { log(`--dry: would append ${fresh.map(r => r.id).join(', ')}`); return; }
+  const res = await svc.updateSnapshotMeta(snapshotId, { provenancePatch: { runs: fresh }, actor: 'cli' });
+  log(`✔ provenance.runs now has ${res.provenance.runs.length} entries. The wiki shows this snapshot's lineage as "recorded" from the store; wiki/lineage/${snapshotId}.md is now a fallback only.`);
 }
 
 // ════════════════════════════ LIST ════════════════════════════
@@ -635,6 +713,7 @@ async function dossier(snapshotId: number) {
 // no longer ephemeral. Idempotent per snapshot. Bounded to the top-N ranked genes so
 // the graph stays tractable and readable.
 async function buildGraph(snapshotId: number) {
+  const kgStarted = new Date().toISOString();
   const svc = await oracle();
   const snap = await svc.getSnapshot(snapshotId);
   if (!snap) throw new Error(`Snapshot #${snapshotId} not found`);
@@ -771,6 +850,7 @@ async function buildGraph(snapshotId: number) {
   }
   const stats = await svc.kgStats(snapshotId);
   log(`✔ KG built for #${snapshotId}`);
+  await recordRun(snapshotId, { id: `r${snapshotId}-kg-${kgStarted.slice(0, 16).replace(/[-:T]/g, '')}`, axis: 'kg', evidence_type: null, script: `scripts/d2t.ts kg ${snapshotId}`, ran_at: kgStarted, source: `EVIDENCE rows of snapshot ${snapshotId}`, source_version: `${stats.nodeTotal} nodes · ${stats.edgeTotal} edges`, params: { projection: 'genes, drugs, trials, pathways, papers, tissues and variants from the axes\' value_json' } });
   log(`  nodes: ${Object.entries(stats.nodes).map(([k, v]) => `${k} ${v}`).join(' · ')}`);
   log(`  edges: ${Object.entries(stats.edges).map(([k, v]) => `${k} ${v}`).join(' · ')}`);
   log(`  Next: open the Knowledge Graph page (needs the server restarted) or export with \`kg-export ${snapshotId}\`.`);
@@ -800,6 +880,7 @@ async function buildGraph(snapshotId: number) {
     else if (cmd === 'status') { if (!a) throw new Error('usage: status <snapshotId>'); await status(snapId(a)); }
     else if (cmd === 'dossier') { if (!a) throw new Error('usage: dossier <snapshotId>  (run after enrich; needs GENE_DOSSIER table)'); await dossier(snapId(a)); }
     else if (cmd === 'kg') { if (!a) throw new Error('usage: kg <snapshotId>  (projects EVIDENCE→KG_NODES/KG_EDGES; needs the kg_tables.sql tables)'); await buildGraph(snapId(a)); }
+    else if (cmd === 'lineage') { if (!a || !b) throw new Error('usage: lineage <snapshotId> <wiki/lineage/<id>.md | runs/<id>.lineage.yaml>'); await loadLineage(snapId(a), b); }
     else if (cmd === 'list') { await list(); }
     else { console.log('Commands:\n  list                             show all snapshots + their ids\n  harvest "<disease>" [geneCount]  create a snapshot\n  enrich <snapshotId> <axis|all>   (axes: ' + AXES.join(', ') + ')\n  dossier <snapshotId>             build the dashboard cards\n  kg <snapshotId>                  project the snapshot into a knowledge graph (KG_NODES/KG_EDGES)\n  addgenes <snapshotId> <file> --source AGORA   append symbols (labelled), then enrich them\n  provenance <snapshotId> --cutoff N [--added-source AGORA] [--ot-release 26.06]   backfill candidate metadata\n  status <snapshotId>              per-axis coverage\n  add --dry to any command to skip the Oracle write'); }
   } catch (e: any) { console.error('ERROR:', e?.message || e); process.exit(1); }

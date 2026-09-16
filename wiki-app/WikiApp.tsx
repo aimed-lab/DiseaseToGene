@@ -411,7 +411,9 @@ function LineageSummary({ ctx }: { ctx: PageCtx }) {
   return (
     <div className="text-sm space-y-2">
       {lineage.kind === 'recorded'
-        ? <p><span className="text-emerald-400 font-medium">Recorded by the harvest.</span> {lineage.runs.length} runs written into <span className="font-mono">snapshot.provenance.runs</span> as the axes were built.</p>
+        ? (() => { const loaded = lineage.runs.filter(r => r.loaded_from).length; const live = lineage.runs.length - loaded; return (
+            <p><span className="text-emerald-400 font-medium">Recorded in the store.</span> {lineage.runs.length} runs in <span className="font-mono">snapshot.provenance.runs</span>{live ? ` — ${live} written by the harvest as the axes were built` : ''}{loaded ? `${live ? ', ' : ' — '}${loaded} loaded from a lineage file (${[...new Set(lineage.runs.filter(r => r.loaded_from).map(r => r.loaded_from))].join(', ')}) and carrying that file's confidence` : ''}.</p>
+          ); })()
         : <Notice t={t} tone="warn"><span className="text-amber-400 font-medium">Reconstructed after the fact.</span> {lineage.runs.length} runs, written by {lineage.reconstructed_by || 'a person'} on {lineage.reconstructed_on || '—'} from {lineage.reconstructed_from || 'git history'}, stored at <span className="font-mono">{lineage.path}</span>. Confidence: {conf.high} high · {conf.medium} medium · {conf.low} low. Not the harvest's own testimony — read each run's note.</Notice>}
       <div className="flex flex-wrap gap-1">{lineage.runs.map(r => <RunChip key={r.id} ctx={ctx} run={r} />)}</div>
     </div>

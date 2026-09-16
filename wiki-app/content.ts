@@ -90,6 +90,8 @@ export interface LineageRun {
   params?: Record<string, any>;
   confidence?: LineageConfidence;
   note?: string;
+  loaded_from?: string;        // set when the run came into the store from a lineage file, not from the harvest itself
+  recorded_by?: string;
 }
 export interface LineageRecord {
   snapshot: number;
@@ -117,6 +119,8 @@ const normaliseRun = (r: any, i: number): LineageRun => ({
   params: r?.params && typeof r.params === 'object' ? r.params : undefined,
   confidence: (['high', 'medium', 'low'] as const).includes(r?.confidence) ? r.confidence : undefined,
   note: r?.note ? String(r.note) : undefined,
+  loaded_from: r?.loaded_from ? String(r.loaded_from) : undefined,
+  recorded_by: r?.recorded_by ? String(r.recorded_by) : undefined,
 });
 
 export function lineageFile(snapshot: number): LineageRecord | null {
@@ -139,7 +143,11 @@ export function resolveLineage(snapshot: number, provenance: any): LineageRecord
   return lineageFile(snapshot);
 }
 
-export const runForEvidenceType = (lineage: LineageRecord | null, evidenceType: string): LineageRun | null =>
-  lineage?.runs.find(r => r.evidence_type === evidenceType) ?? null;
+// The LAST run for an evidence type wins: a re-run of an axis is appended as a new entry
+// (never edited in), and it is the one whose rows are in the store.
+export const runForEvidenceType = (lineage: LineageRecord | null, evidenceType: string): LineageRun | null => {
+  const runs = lineage?.runs.filter(r => r.evidence_type === evidenceType) ?? [];
+  return runs.length ? runs[runs.length - 1] : null;
+};
 export const runById = (lineage: LineageRecord | null, id: string): LineageRun | null =>
   lineage?.runs.find(r => r.id === id) ?? null;

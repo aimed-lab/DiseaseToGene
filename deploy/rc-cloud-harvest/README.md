@@ -149,13 +149,18 @@ run is **2–4 hours**; it is fine to walk away.
 | `runs/<id>.summary.txt` | the per-axis OK/FAIL table, the audit verdict and the final `status` output |
 | `runs/<id>.audit.txt` | every audit check, PASS / WARN / FAIL — `--raw` adds DepMap and GTEx recomputed from the raw files |
 
-**The lineage file is the point of this folder beyond convenience.** Until the harvest writes
-its own `provenance.runs[]` into Oracle (planned; see §7), the wiki shows *no lineage* for any
-snapshot except #102. The file `harvest.sh` writes is in the wiki's lineage format, recorded
-at run time rather than reconstructed afterwards. To publish it: copy it to
-`wiki/lineage/<id>.md` in the repo, set `confidence: high` on each run (the wrapper saw the
-commit and the parameters directly), open a pull request. The snapshot's wiki pages then show
-its runs — amber, because the record lives in a file, but complete and exact.
+**Lineage is recorded by the harvest itself** (since 16 Sep 2026): every `harvest`, `enrich`
+and `kg` step appends an entry to `snapshot.provenance.runs[]` in Oracle — script, git commit
+of the checkout, source and version, the formula, start and finish — and the wiki shows the
+snapshot's lineage green, *recorded*, with no file to copy. `runs/<id>.lineage.yaml` is still
+written as a belt-and-braces copy; for a snapshot harvested before this (or if a run's write
+to `provenance.runs[]` failed — the log says so), load the file into the store:
+
+```bash
+npx tsx --env-file=.env scripts/d2t.ts lineage <id> runs/<id>.lineage.yaml     # or wiki/lineage/<id>.md
+```
+
+A re-run of an axis appends a new entry; the wiki shows the latest run per axis.
 
 ## 6. Before running unattended
 
@@ -173,10 +178,6 @@ its runs — amber, because the record lives in a file, but complete and exact.
 
 ## 7. Known gaps this kit does not close (code changes, tracked separately)
 
-- **Harvest writes its own lineage into Oracle** — `d2t.ts enrich` should append one entry
-  per axis to `snapshot.provenance.runs[]` (script, commit, params, source_version, ran_at,
-  evidence_type). Then every snapshot is green *recorded* in the wiki with no file to copy.
-  The wrapper's `runs/<id>.lineage.yaml` is the bridge until then.
 - **`source_url` is empty on every evidence row.** The fetchers know the URL they read; the
   harvest should store it, and the wiki's live-link template becomes a fallback.
 - **Charset at ingestion.** Paper titles arrive with `¿` for an en dash and `ß` for `β`;
