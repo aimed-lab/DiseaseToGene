@@ -104,3 +104,7 @@ WINNER/runs/
 # API key / auth key handling. Local reference only.
 docs/asax-dsv4-deployment/
 
+
+# Harvest run artefacts written by deploy/rc-cloud-harvest/bin/harvest.sh
+logs/
+runs/

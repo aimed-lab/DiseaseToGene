@@ -1,0 +1,29 @@
+# deploy/rc-cloud-harvest/systemd/d2t-harvest@.service
+# One harvest run as a systemd service, so it survives logout and shows in journalctl.
+# Install (bin/01-install.sh prints this with the paths filled in):
+#   sed -e "s|@ROOT@|/home/<user>/d2t|g" -e "s|@USER@|<user>|g" d2t-harvest@.service | sudo tee /etc/systemd/system/d2t-harvest@.service
+#   sudo systemctl daemon-reload
+# Use — the instance name is the disease (quote it):
+#   sudo systemctl start 'd2t-harvest@pancreatic adenocarcinoma'
+#   journalctl -u 'd2t-harvest@pancreatic adenocarcinoma' -f
+# The gene count is the default in harvest.sh (7500); for another count, run harvest.sh directly.
+
+[Unit]
+Description=Disease2Target harvest: %I
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=@USER@
+WorkingDirectory=@ROOT@
+# .env is read by the pipeline itself (tsx --env-file); nothing secret is placed here.
+Environment=HOME=/home/@USER@
+ExecStart=/usr/bin/env bash @ROOT@/deploy/rc-cloud-harvest/bin/harvest.sh "%I" 7500
+# A full run is 2–4 h; give it 8 before systemd gives up.
+TimeoutStartSec=8h
+Nice=10
+IOSchedulingClass=idle
+
+[Install]
+WantedBy=multi-user.target

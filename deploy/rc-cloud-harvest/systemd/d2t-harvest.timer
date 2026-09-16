@@ -1,0 +1,18 @@
+# deploy/rc-cloud-harvest/systemd/d2t-harvest.timer — EXAMPLE of a schedule. Not installed
+# by default: on demand is the recommended mode (README §6). If you do want it, decide
+# who reviews each new snapshot first, then:
+#   sudo cp d2t-harvest.timer /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now d2t-harvest.timer
+# This example re-harvests ONE disease on the first Sunday of each month at 02:00.
+# One timer per disease: copy the file, change the Unit= instance name.
+
+[Unit]
+Description=Monthly Disease2Target harvest (pancreatic adenocarcinoma)
+
+[Timer]
+OnCalendar=Sun *-*-01..07 02:00:00
+Persistent=true
+Unit=d2t-harvest@pancreatic adenocarcinoma.service
+
+[Install]
+WantedBy=timers.target
