@@ -4,7 +4,7 @@ import compression from "compression";
 import path from "path";
 import fs from "fs";
 import { createClient } from "@supabase/supabase-js";
-import { createHash } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { fetchCohortMutations, fetchDruggability, fetchClinical, fetchLiterature, fetchPubmedLiterature, resolveCbioStudy, resolveDiseaseScope } from "./evidenceProviders.js";
 import { getPocketStructure } from "./dogsiteService.js";
 import { getModalityProfile } from "./modalityService.js";
@@ -155,11 +155,18 @@ async function requireAuthenticated(
 
 // Like requireAuthenticated, but also attaches the user to the request so
 // endpoints can record who created/changed content (created_by, audit actor).
+// The co-pilot's deep_dive_gene tool calls this process's own dashboard routes over
+// loopback on the user's behalf. Those routes require a session; the tool has the user's
+// session only indirectly. A per-process secret, accepted only from a loopback address,
+// lets the process call itself without carrying user tokens through the tool layer.
+const INTERNAL_TOKEN = randomUUID();
+const isLoopback = (ip: string | undefined) => !!ip && /^(::1|127\.0\.0\.1|::ffff:127\.0\.0\.1)$/.test(ip);
 async function requireUser(
   req: express.Request,
   res: express.Response,
   next: express.NextFunction
 ) {
+  if (req.headers['x-d2t-internal'] === INTERNAL_TOKEN && isLoopback(req.socket?.remoteAddress)) { (req as any).appUser = { id: 'internal', email: null }; next(); return; }
   const verifier = supabaseAuthVerifier || supabaseAdmin;
   if (!verifier) { res.status(503).json({ error: 'Authentication is not configured' }); return; }
   const token = req.headers.authorization?.replace(/^Bearer\s+/i, '');
@@ -2078,7 +2085,9 @@ function setupRoutes() {
   // Power the gene-drawer Clinical & Literature panels so the drill-down shows the
   // SAME numbers the funnel filters on (the funnel reads these from stored Oracle
   // evidence; here we compute them live for any gene on demand). Cached server-side.
-  app.get("/api/clinical", async (req, res) => {
+  // The store-backed dashboard routes below were open to anyone who knew the URL while every
+  // other store read required a session; they read the same Oracle rows, so they get the same gate.
+  app.get("/api/clinical", requireUser, async (req, res) => {
     const gene = String(req.query.gene || '').toUpperCase().trim();
     const disease = String(req.query.disease || '').trim();
     if (!gene || !disease) return res.status(400).json({ error: "gene and disease required" });
@@ -2102,7 +2111,7 @@ function setupRoutes() {
   });
   // Network axis (WINNER + RWR) — read from the STORED evidence (it is a batch-computed axis,
   // not a cheap live call). Resolves the disease's latest snapshot and returns that gene's row.
-  app.get("/api/network", async (req, res) => {
+  app.get("/api/network", requireUser, async (req, res) => {
     const gene = String(req.query.gene || '').toUpperCase().trim();
     const disease = String(req.query.disease || '').trim();
     if (!gene || !disease) return res.status(400).json({ error: "gene and disease required" });
@@ -2138,7 +2147,7 @@ function setupRoutes() {
     }
     return sorted[0] || null;   // default: newest snapshot
   }
-  app.get("/api/graph/stats", async (req, res) => {
+  app.get("/api/graph/stats", requireUser, async (req, res) => {
     if (!readStoreEnabled()) return res.status(503).json({ error: "Oracle store disabled" });
     try {
       const svc = await readSvc();
@@ -2148,7 +2157,7 @@ function setupRoutes() {
       res.json({ snapshot_id: snap.id, disease_name: snap.disease_name, disease_id: snap.disease_id, ...stats });
     } catch (e: any) { res.status(502).json({ error: e?.message || 'kg stats failed' }); }
   });
-  app.get("/api/graph", async (req, res) => {
+  app.get("/api/graph", requireUser, async (req, res) => {
     if (!readStoreEnabled()) return res.status(503).json({ error: "Oracle store disabled" });
     try {
       const svc = await readSvc();
@@ -2160,7 +2169,7 @@ function setupRoutes() {
   });
   // Live STRING network neighbours for ONE gene — powers the Ranking Board's "better
   // neighbours" recommender (the RWR/Amazon "you may also like"). One STRING call, no store.
-  app.get("/api/graph/neighbors", async (req, res) => {
+  app.get("/api/graph/neighbors", requireUser, async (req, res) => {
     const gene = String(req.query.gene || '').toUpperCase().trim();
     if (!gene) return res.status(400).json({ error: "gene required" });
     try {
@@ -2177,7 +2186,7 @@ function setupRoutes() {
   });
   // Proteomics axis — CPTAC tumor-vs-normal protein log2FC. Disease-aware reference file
   // (built like expression: build_proteomics.py <cohort> → data/proteomics_<cohort>.json).
-  app.get("/api/proteomics", async (req, res) => {
+  app.get("/api/proteomics", requireUser, async (req, res) => {
     const gene = String(req.query.gene || '').toUpperCase().trim();
     const disease = String(req.query.disease || '').trim();
     if (!gene || !disease) return res.status(400).json({ error: "gene and disease required" });
@@ -2283,7 +2292,8 @@ function setupRoutes() {
   };
   const fetchJsonTimeout = async (url: string, ms: number): Promise<any> => {
     const ac = new AbortController(); const t = setTimeout(() => ac.abort(), ms);
-    try { const r = await fetch(url, { signal: ac.signal }); if (!r.ok) return { error: `HTTP ${r.status}` }; return await r.json(); }
+    const internal = /^http:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?\//.test(url);
+    try { const r = await fetch(url, { signal: ac.signal, headers: internal ? { 'x-d2t-internal': INTERNAL_TOKEN } : undefined }); if (!r.ok) return { error: `HTTP ${r.status}` }; return await r.json(); }
     catch (e: any) { return { error: String(e?.name === 'AbortError' ? 'timeout' : e?.message || e) }; }
     finally { clearTimeout(t); }
   };

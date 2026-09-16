@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { authenticatedFetch } from './supabase';
 
 interface Props {
   geneSymbol: string;
@@ -39,7 +40,7 @@ export const ClinicalPanel: React.FC<Props> = ({ geneSymbol, currentDisease = ''
     if (!currentDisease) { setLoading(false); return; }
     let active = true;
     setLoading(true); setData(null);
-    fetch(`/api/clinical?gene=${encodeURIComponent(geneSymbol)}&disease=${encodeURIComponent(currentDisease)}`)
+    authenticatedFetch(`/api/clinical?gene=${encodeURIComponent(geneSymbol)}&disease=${encodeURIComponent(currentDisease)}`)
       .then(r => r.json()).then(j => { if (!active) return; setData(j?.data ?? null); setLoading(false); })
       .catch(() => { if (active) { setData(null); setLoading(false); } });
     return () => { active = false; };

@@ -71,7 +71,7 @@ export default function KnowledgeGraphView({ theme, diseaseName }: { theme: Them
         if (alive) setSnapList(list);
         const withCounts = await Promise.all(list.map(async sn => {
           try {
-            const st = await fetch(`/api/graph/stats?snapshot=${sn.id}`).then(r => (r.ok ? r.json() : null));
+            const st = await authenticatedFetch(`/api/graph/stats?snapshot=${sn.id}`).then(r => (r.ok ? r.json() : null));
             return { ...sn, nodes: st && typeof st.nodeTotal === 'number' ? st.nodeTotal : null };
           } catch { return sn; }
         }));
@@ -85,7 +85,7 @@ export default function KnowledgeGraphView({ theme, diseaseName }: { theme: Them
   useEffect(() => {
     let alive = true;
     setLoading(true); setError(null);
-    fetch(`/api/graph${snapId ? `?snapshot=${snapId}` : diseaseName ? `?disease=${encodeURIComponent(diseaseName)}` : ''}`)
+    authenticatedFetch(`/api/graph${snapId ? `?snapshot=${snapId}` : diseaseName ? `?disease=${encodeURIComponent(diseaseName)}` : ''}`)
       .then(async r => { if (!r.ok) throw new Error((await r.json().catch(() => ({})))?.error || `HTTP ${r.status}`); return r.json(); })
       .then((j: KgPayload) => { if (alive) { setData(j); setLoading(false); } })
       .catch(e => { if (alive) { setError(String(e?.message || e)); setLoading(false); } });

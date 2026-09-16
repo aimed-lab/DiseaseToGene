@@ -549,7 +549,7 @@ export const api = {
       // so we also pull the curated, gene-attributed, disease-scoped number here. This is the
       // SAME signal the funnel's clinical axis stores, so the drill-down agrees with the funnel.
       try {
-        const otRes = await fetch(`/api/clinical?gene=${encodeURIComponent(symbol)}&disease=${encodeURIComponent(clinicalDiseaseName)}`);
+        const otRes = await authenticatedFetch(`/api/clinical?gene=${encodeURIComponent(symbol)}&disease=${encodeURIComponent(clinicalDiseaseName)}`);
         if (otRes.ok) {
           const otJson = await otRes.json();
           const d = otJson?.data;

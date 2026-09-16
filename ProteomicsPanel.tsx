@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { authenticatedFetch } from './supabase';
 
 // Proteomics drill-down — one gene's record from data/proteomics_<cohort>.json, the
 // protein-level counterpart of the expression panel. Protein is closer to the druggable
@@ -43,7 +44,7 @@ export const ProteomicsPanel: React.FC<Props> = ({ geneSymbol, currentDisease = 
     if (!currentDisease) { setState('none'); return; }
     let active = true;
     setState('loading'); setData(null);
-    fetch(`/api/proteomics?gene=${encodeURIComponent(geneSymbol)}&disease=${encodeURIComponent(currentDisease)}`)
+    authenticatedFetch(`/api/proteomics?gene=${encodeURIComponent(geneSymbol)}&disease=${encodeURIComponent(currentDisease)}`)
       .then(async r => {
         const j = await r.json().catch(() => ({}));
         if (!active) return;
