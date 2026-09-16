@@ -65,6 +65,10 @@ rows.sort((a, b) => a.rank - b.rank);
 const TOP = Number(opt('--top', prov.candidate_cutoff || 0));
 const candidateRule = TOP ? `stored rank_position <= ${TOP}` : 'all snapshot genes';
 const candidates = TOP ? rows.filter(r => r.rank <= TOP) : rows;
+// Symbols are upper-cased for STRING resolution only. The rows written back keep the
+// snapshot's own spelling (C19orf44, not C19ORF44): the board and the wiki join on it, and
+// 17 genes of #143 were orphaned when the upper-cased form was stored.
+const originalSymbol = new Map(rows.map(r => [String(r.gene_symbol).toUpperCase(), String(r.gene_symbol)]));
 const allSymbols = rows.map(r => String(r.gene_symbol).toUpperCase());
 const candSymbols = candidates.map(r => String(r.gene_symbol).toUpperCase());
 const candSet = new Set(candSymbols);
@@ -143,10 +147,10 @@ const seedSet = new Set(seeds);
 // ── 7. per-gene status over the WHOLE snapshot ───────────────────────────────
 const mapOf = new Map(resolvedAll.map(r => [r.symbol, r]));
 const scoreRows = allSymbols.map(sym => {
-  const m = mapOf.get(sym); const i = nodeIdx.get(sym);
-  if (!candSet.has(sym)) return { gene_symbol: sym, string_name: m?.string_name ?? null, status: 'NOT_IN_CANDIDATE_SET' };
-  if (i === undefined) return { gene_symbol: sym, string_name: null, status: 'ABSENT_FROM_GRAPH' };
-  return { gene_symbol: sym, string_name: m.string_name, status: 'PRESENT', raw_score: raw[i], norm_score: raw[i] / maxRaw, percentile: pct[i],
+  const m = mapOf.get(sym); const i = nodeIdx.get(sym); const orig = originalSymbol.get(sym) ?? sym;
+  if (!candSet.has(sym)) return { gene_symbol: orig, string_name: m?.string_name ?? null, status: 'NOT_IN_CANDIDATE_SET' };
+  if (i === undefined) return { gene_symbol: orig, string_name: null, status: 'ABSENT_FROM_GRAPH' };
+  return { gene_symbol: orig, string_name: m.string_name, status: 'PRESENT', raw_score: raw[i], norm_score: raw[i] / maxRaw, percentile: pct[i],
     rank_position: rank[i], degree: graph.degree[i], weighted_degree: wdeg[i], rwr: rwr[i] / maxR, is_seed: seedSet.has(sym) };
 });
 const counts = {}; for (const r of scoreRows) counts[r.status] = (counts[r.status] || 0) + 1;
@@ -221,8 +225,11 @@ try {
   // the board's projection: EVIDENCE 'network' rows for PRESENT genes (replaces the whole axis)
   await conn.execute(`DELETE FROM ${T('evidence')} WHERE snapshot_id = :s AND evidence_type = 'network'`, { s: SNAPSHOT });
   const EV = `INSERT INTO ${T('evidence')} (snapshot_id, disease_id, gene_symbol, evidence_type, source, source_url, value_text, value_json, retrieved_at, generated_by, audit_status)
-              VALUES (:snapshot_id, :disease_id, :gene_symbol, 'network', :source, NULL, :value_text, :value_json, SYSTIMESTAMP, :generated_by, 'not_audited')`;
-  const EV_DEFS = { snapshot_id: { type: oracledb.NUMBER }, disease_id: { type: oracledb.STRING, maxSize: 100 }, gene_symbol: { type: oracledb.STRING, maxSize: 64 }, source: { type: oracledb.STRING, maxSize: 100 }, value_text: { type: oracledb.STRING, maxSize: 4000 }, value_json: { type: oracledb.CLOB }, generated_by: { type: oracledb.STRING, maxSize: 200 } };
+              VALUES (:snapshot_id, :disease_id, :gene_symbol, 'network', :source, NULL, :value_text, :value_json, :retrieved_at, :generated_by, 'not_audited')`;
+  const EV_DEFS = { snapshot_id: { type: oracledb.NUMBER }, disease_id: { type: oracledb.STRING, maxSize: 100 }, gene_symbol: { type: oracledb.STRING, maxSize: 64 }, source: { type: oracledb.STRING, maxSize: 100 }, value_text: { type: oracledb.STRING, maxSize: 4000 }, value_json: { type: oracledb.CLOB }, retrieved_at: { type: oracledb.DATE }, generated_by: { type: oracledb.STRING, maxSize: 200 } };
+  // Same stamp as every other axis (saveAxisEvidence): generated_by 'job' and a UTC timestamp
+  // from this process, not SYSTIMESTAMP in the database's local zone. The script is in value_json.
+  const retrievedAt = new Date();
   const source = `STRING v${STRING_VERSION} PPI (score>=${MIN_SCORE}) · WINNER (winner-net) + RWR`;
   const evBinds = scoreRows.filter(r => r.status === 'PRESENT').map(r => ({
     snapshot_id: SNAPSHOT, disease_id: snap.disease_id, gene_symbol: r.gene_symbol, source: source.slice(0, 100),
@@ -234,9 +241,10 @@ try {
       degree: r.degree, rwr_score: +r.rwr.toFixed(4), is_seed: r.is_seed,
       ranking_pval: null, expansion_pval: null,
       run_id: runId, rwr_run_id: rwrRunId, graph_key: graphKey, context: contextLabel, status: 'PRESENT',
-      n_network_genes: N, n_edges: graph.edges.length, implementation: WINNER_VERSION,
+      n_network_genes: N, n_edges: graph.edges.length, implementation: WINNER_VERSION, script: 'WINNER/scripts/run_disease.mjs',
     }),
-    generated_by: 'WINNER/scripts/run_disease.mjs',
+    retrieved_at: retrievedAt,
+    generated_by: 'job',
   }));
   for (let i = 0; i < evBinds.length; i += 1000) await conn.executeMany(EV, evBinds.slice(i, i + 1000), { bindDefs: EV_DEFS });
 

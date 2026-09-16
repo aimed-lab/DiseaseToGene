@@ -1,6 +1,11 @@
 // Build the gnomAD constraint (safety) reference table FROM THE LIVE gnomAD GraphQL API.
-//   node scripts/build_gnomad_constraint_api.mjs            # all genes in the current table
-//   node scripts/build_gnomad_constraint_api.mjs KRAS TP53  # just these (validation run)
+//   node scripts/build_gnomad_constraint_api.mjs                    # all genes in the current table
+//   node scripts/build_gnomad_constraint_api.mjs KRAS TP53          # just these (validation run, nothing written)
+//   node scripts/build_gnomad_constraint_api.mjs --add genes.txt    # fetch ONLY these symbols and MERGE them into the table
+//
+// The table's gene list is self-referential (a full build re-queries the keys it already
+// has), so a gene the first build never saw (PRRG1, found by the #143 audit) could never
+// appear. --add is the way in: one symbol per line, existing rows kept, new ones added.
 //
 // WHY THIS EXISTS (bug #6). The sibling builder (build_gnomad_constraint.mjs) parses gnomAD's
 // published v4.1 bulk TSV. Verified this session: the bulk TSV and gnomAD's own GraphQL API
@@ -49,14 +54,19 @@ async function fetchBatch(genes) {
 }
 
 async function main() {
-  const argv = process.argv.slice(2);
+  let argv = process.argv.slice(2);
   let existing = { genes: {} };
   try { existing = JSON.parse(fs.readFileSync(OUT, 'utf8')); } catch { /* fresh build */ }
 
-  const genes = argv.length ? argv : Object.keys(existing.genes || {});
+  const addIdx = argv.indexOf('--add');
+  const addFile = addIdx >= 0 ? argv[addIdx + 1] : null;
+  if (addFile) argv = argv.filter((_, i) => i !== addIdx && i !== addIdx + 1);
+  const addGenes = addFile ? fs.readFileSync(addFile, 'utf8').split(/\r?\n/).map(s => s.trim()).filter(Boolean) : [];
+  const genes = addGenes.length ? addGenes : argv.length ? argv : Object.keys(existing.genes || {});
   if (!genes.length) { console.error('No gene list. Run build_gnomad_constraint.mjs first, or pass symbols.'); process.exit(1); }
-  const validation = argv.length > 0;
-  console.log(`${validation ? 'VALIDATION' : 'FULL'} build — ${genes.length} genes from the live gnomAD API`);
+  const validation = !addGenes.length && argv.length > 0;
+  const merge = addGenes.length > 0;
+  console.log(`${validation ? 'VALIDATION' : merge ? 'MERGE' : 'FULL'} build — ${genes.length} genes from the live gnomAD API`);
 
   const result = {};
   let done = 0, missing = 0;
@@ -86,19 +96,21 @@ async function main() {
     return;
   }
 
+  const finalGenes = merge ? { ...(existing.genes || {}), ...result } : result;
   const out = {
     meta: {
       source: 'gnomAD v4 GraphQL API (gnomad_constraint) — matches the live gene drill-down',
       metric: 'pLI / LOEUF (oe_lof_upper)',
       note: 'Built from the API, NOT the bulk v4.1 TSV: the two disagree for the same MANE transcript (see header of this script).',
-      n_genes: Object.keys(result).length,
+      n_genes: Object.keys(finalGenes).length,
       built: new Date().toISOString().slice(0, 10),
+      ...(merge ? { last_merge: { on: new Date().toISOString().slice(0, 10), requested: genes.length, added: Object.keys(result).length, previous_built: existing?.meta?.built ?? null } } : {}),
     },
-    genes: result,
+    genes: finalGenes,
   };
   fs.mkdirSync(path.dirname(OUT), { recursive: true });
   fs.writeFileSync(OUT, JSON.stringify(out));
-  console.log(`Wrote ${out.meta.n_genes} genes → ${OUT} (${missing} symbols had no constraint record)`);
+  console.log(`Wrote ${out.meta.n_genes} genes → ${OUT} (${missing} of the ${genes.length} requested symbols had no constraint record${merge ? `; ${Object.keys(result).length} added or refreshed` : ''})`);
 }
 
 main().catch(e => { console.error(e); process.exit(1); });
