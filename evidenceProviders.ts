@@ -439,7 +439,7 @@ export interface LiteratureStat {
 }
 
 // Same disease-name normalization the drill-down uses before querying literature.
-function cleanDiseaseName(d: string): string {
+export function cleanDiseaseName(d: string): string {
   return (d || '')
     .replace(/['"]/g, '')
     .replace(/\b(biomarker measurement|measurement|pathology|disorder|syndrome)\b.*$/i, '')

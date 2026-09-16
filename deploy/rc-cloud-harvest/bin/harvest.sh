@@ -153,7 +153,19 @@ else
   log "finished clean. Next: open the Ranking Board and /wiki for snapshot #$SNAP and check coverage; publish $LINEAGE as wiki/lineage/$SNAP.md (README §5)."
 fi
 
-# ── 5. notify (optional) ──
+# ── 5. audit — the snapshot re-derived from the sources, independently of the harvester ──
+# (scripts/auditSnapshot.ts). A FAIL here does not undo anything; it is reported in the
+# summary and the notification so a person looks before the snapshot is trusted.
+if [ -z "$DRY" ]; then
+  if run "audit" npx tsx --env-file=.env scripts/auditSnapshot.ts "$SNAP" --sample 15; then
+    echo "audit:  passed (runs/$SNAP.audit.txt)" | tee -a "$SUMMARY" | tee -a "$LOG"
+  else
+    echo "audit:  FAILED — read runs/$SNAP.audit.txt before trusting this snapshot" | tee -a "$SUMMARY" | tee -a "$LOG"
+    FAILS="$FAILS audit"
+  fi
+fi
+
+# ── 6. notify (optional) ──
 if grep -qE '^GITHUB_TOKEN=.+' .env && grep -qE '^NOTIFY_ISSUE=.+' .env; then
   bash "$HERE/notify.sh" "$SNAP" 2>&1 | tee -a "$LOG" || true
 fi

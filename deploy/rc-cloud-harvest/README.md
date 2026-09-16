@@ -33,8 +33,11 @@ status <id>                       → per-axis gene coverage
 ```
 
 `harvest.sh` runs exactly that, records every step (script, git commit, parameters, start
-and end time) into `runs/<id>.lineage.yaml`, and never stops the whole run because one axis
-failed — a failed axis is listed in the summary and can be re-run with `enrich.sh`.
+and end time) into `runs/<id>.lineage.yaml`, then **audits the snapshot against the sources**
+(`scripts/auditSnapshot.ts`: every row checked for consistency, a random sample of genes
+re-derived from Open Targets, cBioPortal, gnomAD and Europe PMC with the script's own queries;
+result in `runs/<id>.audit.txt`). It never stops the whole run because one axis failed — a
+failed axis or a failed audit is listed in the summary and can be re-run with `enrich.sh`.
 
 **Every harvest creates a new snapshot.** The app shows the newest snapshot per disease, so a
 finished run becomes what users see. Run `--dry` first on a new machine; and read §6 before
@@ -143,7 +146,8 @@ run is **2–4 hours**; it is fine to walk away.
 | Oracle | the snapshot, its scores, its evidence rows, its graph — what the app and the wiki read |
 | `logs/<date>_<disease>.log` (+ `logs/latest.log`) | everything the pipeline printed, timestamped |
 | `runs/<id>.lineage.yaml` | one entry per step: script, git commit, parameters, source versions where known, started/finished, exit status |
-| `runs/<id>.summary.txt` | the per-axis OK/FAIL table and the final `status` output |
+| `runs/<id>.summary.txt` | the per-axis OK/FAIL table, the audit verdict and the final `status` output |
+| `runs/<id>.audit.txt` | every audit check, PASS / WARN / FAIL — `--raw` adds DepMap and GTEx recomputed from the raw files |
 
 **The lineage file is the point of this folder beyond convenience.** Until the harvest writes
 its own `provenance.runs[]` into Oracle (planned; see §7), the wiki shows *no lineage* for any
