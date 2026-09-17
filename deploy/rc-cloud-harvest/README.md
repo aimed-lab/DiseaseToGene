@@ -20,6 +20,7 @@ deploy/rc-cloud-harvest/
 │   └── notify.sh          post a run summary to a GitHub issue (optional)
 └── systemd/
     ├── d2t-harvest@.service   run one harvest as a service:  systemctl start 'd2t-harvest@pancreatic adenocarcinoma'
+    ├── d2t-queue.service      the queue worker — harvests queued from the app's Settings → Harvest (§4b)
     └── d2t-harvest.timer      example monthly schedule — DISABLED by default; on demand is the recommended mode
 ```
 
@@ -125,6 +126,32 @@ Options for `harvest.sh`:
 | `--no-kg` | do not build the knowledge graph at the end |
 | `--dry` | fetch everything, write nothing (the harvest step still needs Oracle to *read*) |
 | `--snapshot <id>` | skip the harvest step and enrich an existing snapshot |
+
+### 4b. From the browser — the queue worker
+
+An admin can queue a harvest from the app (**Settings → Harvest**: disease, candidate genes,
+*Queue harvest*). The request is a row in Supabase (`docs/sql/harvest_jobs.sql`, run once in
+the Supabase SQL editor). On the VM, the **queue worker** polls that table over outbound HTTPS,
+runs `harvest.sh` for each job exactly as above, and writes progress, the log tail, the
+summary, the snapshot id and the audit verdict back to the row — the panel shows all of it
+and whether a worker is listening. One job at a time; a job for a disease that already has
+one queued or running is refused; only a queued job can be cancelled.
+
+```bash
+# .env needs SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY (see env.example)
+npx tsx --env-file=.env scripts/harvestQueue.ts --once      # try it: takes one job if any, then exits
+
+# keep it running — with sudo:
+sed -e "s|@ROOT@|$PWD|g" -e "s|@USER@|$USER|g" deploy/rc-cloud-harvest/systemd/d2t-queue.service | sudo tee /etc/systemd/system/d2t-queue.service >/dev/null
+sudo systemctl daemon-reload && sudo systemctl enable --now d2t-queue
+journalctl -u d2t-queue -f
+
+# without sudo:
+nohup setsid npx tsx --env-file=.env scripts/harvestQueue.ts > logs/queue-worker.out 2>&1 &
+```
+
+The panel's job options can also carry `snapshot: <id>` (re-run axes on an existing
+snapshot, like `enrich.sh`) — not in the form yet, but the worker honours it.
 
 **Re-run one axis** (after a source outage, or to refresh):
 

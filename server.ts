@@ -3497,6 +3497,74 @@ Rules: fill every field only from what the pages actually say. Where the page do
   });
 
   // Admin: view the current invite code + where it comes from
+  // Diseases the pipeline knows a reference cohort for (expression / dependency / proteomics
+  // tables). Any disease name works for the API axes; these are the ones with local tables.
+  const listCohortDiseases = async () => {
+    const { allCohorts } = await import('./diseaseRegistry.js');
+    return allCohorts().map((c: any) => ({
+      key: c.key, name: c.disease_name, mondo: c.mondo,
+      tables: { expression: !!(c.expression?.ref_file && loadRef(c.expression.ref_file)), dependency: !!(c.dependency?.ref_file && loadRef(c.dependency.ref_file)), proteomics: !!(c.proteomics?.ref_file && loadRef(c.proteomics.ref_file)) },
+    }));
+  };
+  // ── Harvest queue — an admin asks for a harvest; the RC cloud VM runs it ─────────────────
+  // The app cannot run a 3-hour job (serverless) and cannot reach the VM (no inbound ports),
+  // so the request is a row in Supabase that the VM's queue worker (scripts/harvestQueue.ts)
+  // polls over outbound HTTPS. Everything the worker learns comes back into the same row.
+  // Table: docs/sql/harvest_jobs.sql. Guardrails: admin only; one queued-or-running job per
+  // disease; cancel only while queued. A finished harvest becomes that disease's newest
+  // snapshot, which the app selects by default — the panel says so.
+  const HARVEST_JOB_COLS = 'id, created_at, requested_email, disease, gene_count, options, status, claimed_by, started_at, finished_at, snapshot_id, commit, progress, log_tail, summary, audit_status, error';
+  app.get('/api/admin/harvest', requireAdmin, async (_req, res) => {
+    try {
+      const [{ data: jobs, error: e1 }, { data: workers, error: e2 }] = await Promise.all([
+        supabaseAdmin!.from('harvest_jobs').select(HARVEST_JOB_COLS).order('created_at', { ascending: false }).limit(40),
+        supabaseAdmin!.from('harvest_workers').select('host, last_seen, commit, running_job, note').order('last_seen', { ascending: false }),
+      ]);
+      if (e1) throw e1; if (e2) throw e2;
+      const now = Date.now();
+      res.json({
+        jobs: jobs || [],
+        workers: (workers || []).map((w: any) => ({ ...w, alive: now - new Date(w.last_seen).getTime() < 3 * 60_000 })),
+        diseases: await listCohortDiseases(),
+      });
+    } catch (e: any) {
+      const msg = String(e?.message || e);
+      const missing = /does not exist|could not find the table/i.test(msg);
+      res.status(missing ? 503 : 500).json({ error: missing ? 'The harvest_jobs table is not created yet — run docs/sql/harvest_jobs.sql in the Supabase SQL editor.' : msg });
+    }
+  });
+
+  app.post('/api/admin/harvest', requireAdmin, async (req, res) => {
+    const disease = String(req.body?.disease || '').trim();
+    const geneCount = Number(req.body?.gene_count ?? 6000);
+    const options = req.body?.options && typeof req.body.options === 'object' ? req.body.options : {};
+    if (disease.length < 2 || disease.length > 200) { res.status(400).json({ error: 'disease is required' }); return; }
+    if (!Number.isInteger(geneCount) || geneCount < 100 || geneCount > 20000) { res.status(400).json({ error: 'gene_count must be 100–20000' }); return; }
+    try {
+      const token = req.headers.authorization!.replace(/^Bearer\s+/i, '');
+      const { data: { user } } = await supabaseAdmin!.auth.getUser(token);
+      const { data: open } = await supabaseAdmin!.from('harvest_jobs').select('id, status').eq('disease', disease).in('status', ['queued', 'running']).limit(1);
+      if (open?.length) { res.status(409).json({ error: `a harvest for "${disease}" is already ${open[0].status}` }); return; }
+      const { data, error } = await supabaseAdmin!.from('harvest_jobs')
+        .insert({ disease, gene_count: geneCount, options, requested_by: user?.id ?? null, requested_email: user?.email ?? null })
+        .select(HARVEST_JOB_COLS).single();
+      if (error) throw error;
+      res.status(201).json({ job: data });
+    } catch (e: any) { res.status(500).json({ error: String(e?.message || e) }); }
+  });
+
+  app.post('/api/admin/harvest/:id/cancel', requireAdmin, async (req, res) => {
+    try {
+      const { data, error } = await supabaseAdmin!.from('harvest_jobs')
+        .update({ status: 'cancelled', finished_at: new Date().toISOString() })
+        .eq('id', String(req.params.id)).eq('status', 'queued')
+        .select(HARVEST_JOB_COLS).maybeSingle();
+      if (error) throw error;
+      if (!data) { res.status(409).json({ error: 'only a queued job can be cancelled' }); return; }
+      res.json({ job: data });
+    } catch (e: any) { res.status(500).json({ error: String(e?.message || e) }); }
+  });
+
   app.get('/api/admin/invite-code', requireAdmin, async (_req, res) => {
     const code = await getActiveInviteCode();
     res.json({ code: code || '', enabled: !!code });

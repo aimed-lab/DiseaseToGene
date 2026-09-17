@@ -120,6 +120,7 @@ import ModalityFitView from './ModalityFitView';
 import { navigate, isMethodologyPath, isModalityPath, isResetPasswordPath, isWikiPath, parseWikiPath, catchRecoveryHash, ROUTES } from './nav';
 import WikiApp from './wiki-app/WikiApp';
 import { FeedbackDialog, FeedbackInbox, type FeedbackContext } from './Feedback';
+import { HarvestPanel } from './HarvestPanel';
 
 // Root catch (runs once at module load, BEFORE React mounts and before Supabase consumes the
 // URL hash): if a password-recovery link landed on any path with a #...type=recovery hash,
@@ -1382,6 +1383,14 @@ When you cite a value from here, record the **source, the date you retrieved it,
                       ))}
                     </div>
                   )}
+                </section>
+              )}
+
+              {/* Harvest queue — admin only: ask the RC cloud VM for a new snapshot */}
+              {isAdmin && (
+                <section>
+                  <h2 className={`text-[11px] font-black uppercase tracking-widest mb-4 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Harvest</h2>
+                  <HarvestPanel isDark={isDark} />
                 </section>
               )}
 

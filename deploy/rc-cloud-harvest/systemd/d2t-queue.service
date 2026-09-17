@@ -1,0 +1,25 @@
+# deploy/rc-cloud-harvest/systemd/d2t-queue.service
+# The queue worker: polls Supabase harvest_jobs (outbound HTTPS only) and runs harvest.sh for
+# each job an admin queued in the app. Install:
+#   sed -e "s|@ROOT@|/home/<user>/DiseaseToGene|g" -e "s|@USER@|<user>|g" d2t-queue.service | sudo tee /etc/systemd/system/d2t-queue.service
+#   sudo systemctl daemon-reload && sudo systemctl enable --now d2t-queue
+#   journalctl -u d2t-queue -f
+# Without sudo: run it under nohup instead (README §4b).
+
+[Unit]
+Description=Disease2Target harvest queue worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@USER@
+WorkingDirectory=@ROOT@
+Environment=HOME=/home/@USER@
+ExecStart=/usr/bin/env bash -lc 'source .venv/bin/activate 2>/dev/null; npx tsx --env-file=.env scripts/harvestQueue.ts'
+Restart=always
+RestartSec=30
+Nice=10
+
+[Install]
+WantedBy=multi-user.target
