@@ -73,9 +73,11 @@ function runJob(job: any): Promise<{ code: number; logFile: string | null }> {
     };
     child.stdout.on('data', onData); child.stderr.on('data', onData);
     const tick = setInterval(async () => {
+      // Heartbeat every tick even when the child is silent (an Oracle save of 6,000 rows prints
+      // nothing for a minute or two); the log tail only when something new was printed.
+      await heartbeat(job.id, progress);
       if (!dirty) return; dirty = false;
       await sb.from('harvest_jobs').update({ progress, log_tail: lines.slice(-40).join('\n') }).eq('id', job.id);
-      await heartbeat(job.id, progress);
     }, 15_000);
     child.on('close', code => { clearInterval(tick); sb.from('harvest_jobs').update({ log_tail: lines.slice(-40).join('\n') }).eq('id', job.id).then(() => resolve({ code: code ?? 1, logFile })); });
     child.on('error', e => { clearInterval(tick); lines.push(`spawn error: ${e.message}`); resolve({ code: 1, logFile }); });
@@ -105,8 +107,22 @@ async function finish(job: any, code: number) {
   log(`job ${job.id}: ${failed ? 'FAILED' : 'done'} · snapshot ${snapshotId ?? '?'} · audit ${audit}`);
 }
 
+process.on('unhandledRejection', e => log(`unhandled rejection: ${(e as any)?.message || e}`));
+process.on('uncaughtException', e => { log(`uncaught exception: ${e?.message || e}`); });
+
+// A job left 'running' by this host is orphaned: the worker died (or was restarted) mid-run
+// and the child went with it. Say so on the row rather than leaving it "running" forever.
+async function reapOrphans() {
+  const { data } = await sb.from('harvest_jobs').select('id, progress').eq('status', 'running').eq('claimed_by', HOST);
+  for (const j of data || []) {
+    await sb.from('harvest_jobs').update({ status: 'failed', finished_at: new Date().toISOString(), error: `worker on ${HOST} restarted while this job was running (last step: ${j.progress || '?'}) — re-queue it` }).eq('id', j.id);
+    log(`reaped orphaned job ${j.id}`);
+  }
+}
+
 (async () => {
   log(`queue worker on ${HOST} · commit ${commit()} · polling every ${POLL_MS / 1000}s${ONCE ? ' · once' : ''}`);
+  await reapOrphans();
   for (;;) {
     await heartbeat(null);
     const job = await claim();
