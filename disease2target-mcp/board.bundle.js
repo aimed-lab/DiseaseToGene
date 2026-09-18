@@ -433,7 +433,7 @@ function clinicalAttrition(clin) {
   if (!clin || !Array.isArray(clin.trials)) {
     return { n_stopped_trials: null, n_stopped_against: null, stopped_fraction: null, stop_reasons_seen: null };
   }
-  const trials = clin.trials;
+  const trials = clin.trials.filter((t) => t?.source !== "supplement");
   const n = trials.length;
   let stopped = 0, against = 0;
   const seen = /* @__PURE__ */ new Set();

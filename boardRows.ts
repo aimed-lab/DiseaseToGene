@@ -19,7 +19,11 @@ export function clinicalAttrition(clin: any) {
   if (!clin || !Array.isArray(clin.trials)) {
     return { n_stopped_trials: null as number | null, n_stopped_against: null as number | null, stopped_fraction: null as number | null, stop_reasons_seen: null as string[] | null };
   }
-  const trials = clin.trials as any[];
+  // Only Open Targets trials count: a drug DGIdb maps to the gene that OT does not list yet
+  // is appended to the list labelled source 'supplement' for the reader, and must not move
+  // the score — but it did, through this denominator (KRAS: 3 stopped of 7 became 3 of 21,
+  // the discount weakened, and KRAS overtook TOP2A). Scoring reads OT rows only.
+  const trials = (clin.trials as any[]).filter(t => t?.source !== 'supplement');
   const n = trials.length;
   let stopped = 0, against = 0;
   const seen = new Set<string>();
