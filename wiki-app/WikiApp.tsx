@@ -40,7 +40,9 @@ class PageBoundary extends React.Component<{ children: React.ReactNode; isDark: 
 function useAsync<T>(fn: () => Promise<T>, deps: React.DependencyList): { data: T | null; error: string | null; loading: boolean } {
   const [s, set] = useState<{ data: T | null; error: string | null; loading: boolean }>({ data: null, error: null, loading: true });
   useEffect(() => {
-    let alive = true; set(x => ({ ...x, loading: true, error: null }));
+    // Clear the previous result: keeping it while the next one loads showed the LAST disease's
+    // page under the NEW disease's name for the 20-40 s a cold snapshot takes to arrive.
+    let alive = true; set({ data: null, loading: true, error: null });
     fn().then(d => alive && set({ data: d, error: null, loading: false })).catch(e => alive && set({ data: null, error: String(e?.message || e), loading: false }));
     return () => { alive = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
