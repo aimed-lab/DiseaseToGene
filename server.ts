@@ -704,7 +704,7 @@ export interface ScreenContext {
   topGenes?: string[];
   litWindow?: string;
 }
-const VIEW_LABEL: Record<string, string> = { board: 'Target Ranking Board', dashboard: 'Evidence explorer', list: 'Target List', funnel: 'Prioritisation Funnel', rankings: 'Rankings / Gene × Source matrix', graph: 'Knowledge Graph', modality: 'Modality fit', jobs: 'Jobs', enrichment: 'Enrichment' };
+const VIEW_LABEL: Record<string, string> = { wiki: 'Provenance Wiki (a read-only view of one stored snapshot)', board: 'Target Ranking Board', dashboard: 'Evidence explorer', list: 'Target List', funnel: 'Prioritisation Funnel', rankings: 'Rankings / Gene × Source matrix', graph: 'Knowledge Graph', modality: 'Modality fit', jobs: 'Jobs', enrichment: 'Enrichment' };
 export function renderScreenBlock(s?: ScreenContext | null): string {
   if (!s || (!s.disease?.name && !s.view && !s.snapshot?.id)) return '';
   const L: string[] = ['WHAT THE USER IS LOOKING AT RIGHT NOW — answer in this context; do not switch disease unless the user names another one:'];

@@ -22,7 +22,7 @@ export const NARRATIVE_COMMIT: string = typeof __GIT_COMMIT__ === 'string' ? __G
 
 const RAW = import.meta.glob('../wiki/**/*.md', { query: '?raw', import: 'default', eager: true }) as Record<string, string>;
 
-export type WikiDocKind = 'doc' | 'disease' | 'lineage' | 'other';
+export type WikiDocKind = 'doc' | 'disease' | 'gene' | 'lineage' | 'other';
 export interface WikiDoc {
   path: string;                 // repo path, e.g. wiki/docs/methodology.md
   kind: WikiDocKind;
@@ -43,6 +43,7 @@ function parseFrontMatter(raw: string): { front: Record<string, any>; body: stri
 function kindOf(path: string): WikiDocKind {
   if (/^wiki\/docs\//.test(path)) return 'doc';
   if (/^wiki\/diseases\//.test(path)) return 'disease';
+  if (/^wiki\/genes\//.test(path)) return 'gene';
   if (/^wiki\/lineage\//.test(path)) return 'lineage';
   return 'other';
 }
@@ -69,6 +70,22 @@ export function diseaseNarrative(diseaseName: string | null | undefined, disease
   const slug = wikiSlug(diseaseName || '');
   return DOCS.find(d => d.kind === 'disease' && (id && String(d.front.mondo || '').toUpperCase() === id))
       ?? DOCS.find(d => d.kind === 'disease' && (d.slug === slug || wikiSlug(String(d.front.disease_name || '')) === slug))
+      ?? null;
+}
+
+// A gene narrative lives at wiki/genes/<disease-slug>/<SYMBOL>.md and is matched by the
+// front-matter `gene` plus the disease (`mondo` first, then the folder / `disease_name` slug).
+// It is the page a person — or, labelled, an agent — writes on top of the gene's stored rows:
+// front-matter `generated_by: human | agent`, `audit_status: not_audited | human_verified`.
+// The same file is the exemplar the narrator and PLEASER are given to write the others.
+export function geneNarrative(symbol: string, diseaseName: string | null | undefined, diseaseId?: string | null): WikiDoc | null {
+  const g = String(symbol || '').toUpperCase();
+  const id = String(diseaseId || '').toUpperCase();
+  const slug = wikiSlug(diseaseName || '');
+  const folderOf = (d: WikiDoc) => d.path.split('/').slice(-2, -1)[0] || '';
+  const mine = DOCS.filter(d => d.kind === 'gene' && String(d.front.gene || d.slug).toUpperCase() === g);
+  return mine.find(d => id && String(d.front.mondo || '').toUpperCase() === id)
+      ?? mine.find(d => folderOf(d) === slug || wikiSlug(String(d.front.disease_name || '')) === slug)
       ?? null;
 }
 

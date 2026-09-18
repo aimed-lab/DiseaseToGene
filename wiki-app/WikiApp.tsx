@@ -18,9 +18,10 @@ import type { Theme } from '../types';
 import { WLink } from './WLink';
 import { ProvenanceBadge } from './ProvenanceBadge';
 import { wikiApi, graphIndex, type WikiSummary, type WikiGene, type WikiEvidenceRow, type WikiScoreRow, type GraphIndex, type KgNode, type WikiSnapshotMeta } from './wikiApi';
-import { resolveLineage, runForEvidenceType, runById, diseaseNarrative, authoredDocs, docBySlug, NARRATIVE_COMMIT, type LineageRecord, type LineageRun, type WikiDoc } from './content';
+import { resolveLineage, runForEvidenceType, runById, diseaseNarrative, geneNarrative, authoredDocs, docBySlug, NARRATIVE_COMMIT, type LineageRecord, type LineageRun, type WikiDoc } from './content';
 import { sourceInfo, trialUrl, pmidUrl, commitUrl, scriptUrl } from './sources';
 import { ScopedGraph } from './ScopedGraph';
+import { WikiCoScientist } from './WikiCoScientist';
 
 // ── small utilities ─────────────────────────────────────────────────────────
 // Markdown with GitHub tables (remark-gfm). Raw HTML is deliberately NOT enabled — the
@@ -145,6 +146,7 @@ export default function WikiApp({ theme, route, onToggleTheme }: { theme: Theme;
         </div>
       </div>
       <Aside ctx={ctx} />
+      <WikiCoScientist route={route} disease={disease} snapshot={snapshot} summary={summary.data} isDark={isDark} />
     </div>
   );
 }
@@ -595,6 +597,7 @@ function GenePage({ ctx, symbol }: { ctx: PageCtx; symbol: string }) {
   const ann = gene.evidence.find(r => r.evidence_type === 'annotation')?.value_json;
   const rows = [...gene.evidence].sort((a, b) => axisRank(a.evidence_type) - axisRank(b.evidence_type));
   const neighbours = gi.data ? gi.data.neighbours(`gene:${symbol}`) : [];
+  const narrative = geneNarrative(symbol, disease, ctx.summary?.snapshot.disease_id);
   const byType = new Map<string, typeof neighbours>(); for (const n of neighbours) (byType.get(n.node.type) ?? byType.set(n.node.type, []).get(n.node.type)!).push(n);
   return (
     <>
@@ -603,6 +606,20 @@ function GenePage({ ctx, symbol }: { ctx: PageCtx; symbol: string }) {
         {gene.score ? <>rank <span className="font-mono">{gene.score.rank}</span> of {num(gene.gene_count)} · overall <span className="font-mono">{fmt(gene.score.overall_score)}</span> · OT association <span className="font-mono">{fmt(gene.score.get_score)}</span></> : 'no score row in this snapshot'}
         {ann?.biotype ? <> · {ann.biotype}</> : null}{ann?.display ? <> · {ann.display}</> : null}
       </p>
+
+      {narrative && (() => {
+        // the narrative layer for one gene: a person's reading of the rows below, or an agent's —
+        // the front-matter says which, and an agent's page is amber until a person verifies it
+        const agent = String(narrative.front.generated_by || '').toLowerCase() === 'agent';
+        const verified = String(narrative.front.audit_status || '').toLowerCase() === 'human_verified';
+        const forSnap = narrative.front.snapshot != null ? Number(narrative.front.snapshot) : null;
+        return (
+          <Section t={t} title={`About ${symbol} in ${disease}`} tag={<LayerTag t={t} kind="narrative" detail={`${narrative.path} · commit ${NARRATIVE_COMMIT.slice(0, 7)}`} />}
+            right={<span className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] ${verified ? (isDark ? 'border-emerald-500/40 text-emerald-300' : 'border-emerald-300 text-emerald-700') : (isDark ? 'border-amber-500/40 text-amber-300' : 'border-amber-300 text-amber-700')}`} title={agent ? 'Written by an agent from stored rows; not yet checked by a person' : 'Written by a person'}>
+              {agent ? 'agent-written' : `by ${narrative.front.author || 'a person'}`} · {verified ? 'verified' : 'not audited'}{forSnap && forSnap !== snapshot ? ` · written on snapshot ${forSnap}` : ''}</span>}>
+            <article className={t.prose}><Md>{narrative.body}</Md></article>
+          </Section>);
+      })()}
 
       <Section t={t} title={`Stored evidence · ${rows.length} rows`} tag={<LayerTag t={t} kind="data" detail={`EVIDENCE where gene_symbol = ${symbol} and snapshot_id = ${snapshot}`} />}>
         <div className="space-y-2">{rows.map(r => <EvidenceCard key={r.id ?? r.evidence_type + r.source} ctx={ctx} row={r} />)}</div>
