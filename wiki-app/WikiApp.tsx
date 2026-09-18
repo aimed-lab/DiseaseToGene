@@ -130,10 +130,10 @@ export default function WikiApp({ theme, route, onToggleTheme }: { theme: Theme;
             <Crumbs ctx={ctx} />
           </div>
           <PageBoundary isDark={isDark} routeKey={JSON.stringify(route)}>
-          {summary.error && snapshot ? <Notice t={t} tone="error">Could not load snapshot #{snapshot}: {summary.error}</Notice>
+          {summary.error && snapshot ? <Notice t={t} tone="error">Could not load {disease} (snapshot {snapshot}): {summary.error}</Notice>
             : route.page === 'index' ? <IndexPage ctx={ctx} />
             : route.page === 'doc' ? <DocPage ctx={ctx} slug={route.slug} />
-            : !summary.data ? <Loading t={t} what={`snapshot #${snapshot}`} />
+            : !summary.data ? <Loading t={t} what={disease || 'this harvest'} />
             : route.page === 'disease' ? <DiseasePage ctx={ctx} section={route.section} />
             : <EntityPage ctx={ctx} kind={route.kind} id={route.id} />}
           </PageBoundary>
@@ -177,16 +177,26 @@ function Tree({ ctx, onToggleTheme }: { ctx: PageCtx; onToggleTheme: () => void 
       )}
       <div className="flex-1 overflow-y-auto px-2 pb-3 space-y-3">
         <div>
-          <div className={`px-2 pb-1 text-[10px] uppercase tracking-wider ${t.faint}`}>Snapshots</div>
-          {snaps.data ? groupSnapshots(snaps.data).map(g => (
-            <div key={g.disease_id}>
-              {g.items.map(s => item(wikiUrl.disease(s.disease_name, s.id), <>{s.disease_name} <span className={`font-mono ${t.faint}`}>#{s.id}</span></>, snapshot === s.id, Database))}
-            </div>
-          )) : <div className={`px-2 text-xs ${t.faint}`}>{snaps.error || 'loading…'}</div>}
+          <div className={`px-2 pb-1 text-[10px] uppercase tracking-wider ${t.faint}`}>Diseases</div>
+          {snaps.data ? groupSnapshots(snaps.data).map(g => {
+            // the page is the disease; its latest snapshot is what the name opens. Earlier
+            // harvests stay reachable by date, only under the disease being read.
+            const [latest, ...older] = g.items;
+            const here = g.items.some(s => s.id === snapshot);
+            return (
+              <div key={g.disease_id}>
+                {item(wikiUrl.disease(latest.disease_name, latest.id), latest.disease_name, snapshot === latest.id, Database)}
+                {here && older.length > 0 && (
+                  <div className="pl-5">
+                    <div className={`px-2 pt-1 pb-0.5 text-[10px] ${t.faint}`}>earlier harvests</div>
+                    {older.map(s => item(wikiUrl.disease(s.disease_name, s.id), <span title={`snapshot ${s.id}`}>{fmtDate(s.created_at)} · v{s.version}</span>, snapshot === s.id, Database))}
+                  </div>)}
+              </div>);
+          }) : <div className={`px-2 text-xs ${t.faint}`}>{snaps.error || 'loading…'}</div>}
         </div>
         {snapshot && summary && (
           <div>
-            <div className={`px-2 pb-1 text-[10px] uppercase tracking-wider ${t.faint}`}>{disease} · #{snapshot}</div>
+            <div className={`px-2 pb-1 text-[10px] uppercase tracking-wider ${t.faint}`} title={`snapshot ${snapshot}`}>{disease} · {fmtDate(summary.snapshot.created_at)}</div>
             {item(wikiUrl.disease(disease, snapshot), 'Overview', section === 'overview', Info)}
             {item(wikiUrl.disease(disease, snapshot, 'genes'), 'Genes', section === 'genes' || section === 'gene', Dna)}
             {item(wikiUrl.disease(disease, snapshot, 'runs'), 'Runs (lineage)', section === 'runs' || section === 'run', GitCommit)}
@@ -221,7 +231,7 @@ function Crumbs({ ctx }: { ctx: PageCtx }) {
   const parts: Array<{ to?: string; label: string }> = [{ to: wikiUrl.index(), label: 'wiki' }];
   if (route.page === 'doc') parts.push({ label: 'docs' }, { label: route.slug });
   if ((route.page === 'disease' || route.page === 'entity') && snapshot) {
-    parts.push({ to: wikiUrl.disease(disease, snapshot), label: `${wikiSlug(disease)} / #${snapshot}` });
+    parts.push({ to: wikiUrl.disease(disease, snapshot), label: disease });
     if (route.page === 'disease' && route.section) parts.push({ label: route.section });
     if (route.page === 'entity') parts.push({ to: wikiUrl.disease(disease, snapshot, route.kind + 's'), label: route.kind }, { label: route.kind === 'trial' || route.kind === 'paper' ? route.id.toUpperCase() : route.id });
   }
@@ -246,7 +256,7 @@ function Aside({ ctx }: { ctx: PageCtx }) {
           <div>
             <div className={`uppercase tracking-wider text-[10px] mb-1 ${t.faint}`}>This snapshot</div>
             <KV t={t} rows={[
-              ['id', <span className="font-mono">#{snapshot}</span>],
+              ['snapshot id', <span className="font-mono">{snapshot}</span>],
               ['harvested', fmtDate(summary.snapshot.created_at)],
               ['genes', num(summary.snapshot.gene_count)],
               ['evidence rows', num(summary.evidence_rows)],
@@ -313,15 +323,20 @@ function IndexPage({ ctx }: { ctx: PageCtx }) {
     <>
       <h1 className="text-2xl font-semibold mb-1">Provenance Wiki</h1>
       <p className={`text-sm mb-6 ${t.muted}`}>Every number on the Disease2Target board, traceable to the study, the statistic, the script and the commit. Read-only; one snapshot per page tree; nothing here is re-fetched at view time.</p>
-      <Section t={t} title="Snapshots" tag={<LayerTag t={t} kind="data" detail="TARGET_RANKING_SNAPSHOTS" />}>
-        {snaps.loading ? <Loading t={t} what="snapshots" /> : snaps.error ? <Notice t={t} tone="error">{snaps.error}</Notice> : (
+      <Section t={t} title="Diseases" tag={<LayerTag t={t} kind="data" detail="TARGET_RANKING_SNAPSHOTS" />}>
+        {snaps.loading ? <Loading t={t} what="diseases" /> : snaps.error ? <Notice t={t} tone="error">{snaps.error}</Notice> : (
           <table className="w-full text-sm">
-            <thead><tr className={`text-left text-xs border-b ${t.th}`}><th className="py-1 pr-3">disease</th><th className="py-1 pr-3">snapshot</th><th className="py-1 pr-3">version</th><th className="py-1 pr-3">genes</th><th className="py-1 pr-3">harvested</th><th className="py-1">by</th></tr></thead>
-            <tbody>{groupSnapshots(snaps.data!).flatMap(g => g.items).map(s => (
-              <tr key={s.id} className={`border-b ${t.row}`}>
+            <thead><tr className={`text-left text-xs border-b ${t.th}`}><th className="py-1 pr-3">disease</th><th className="py-1 pr-3">latest harvest</th><th className="py-1 pr-3">genes</th><th className="py-1 pr-3">by</th><th className="py-1">earlier</th></tr></thead>
+            <tbody>{groupSnapshots(snaps.data!).map(g => { const [s, ...older] = g.items; return (
+              <tr key={g.disease_id} className={`border-b ${t.row}`}>
                 <td className="py-1.5 pr-3"><WLink to={wikiUrl.disease(s.disease_name, s.id)} className={t.link}>{s.disease_name}</WLink> <span className={`font-mono text-xs ${t.faint}`}>{s.disease_id}</span></td>
-                <td className="py-1.5 pr-3 font-mono">#{s.id}</td><td className="py-1.5 pr-3">{s.version}</td><td className="py-1.5 pr-3">{num(s.gene_count)}</td><td className="py-1.5 pr-3">{fmtDate(s.created_at)}</td><td className="py-1.5">{s.created_by || '—'}</td>
-              </tr>))}</tbody>
+                <td className="py-1.5 pr-3" title={`snapshot ${s.id}`}>{fmtDate(s.created_at)} <span className={t.faint}>· v{s.version}</span></td>
+                <td className="py-1.5 pr-3">{num(s.gene_count)}</td><td className="py-1.5 pr-3">{s.created_by || '—'}</td>
+                <td className="py-1.5">{older.length === 0 ? <span className={t.faint}>—</span> : (
+                  <details><summary className={`cursor-pointer select-none ${t.muted}`}>{older.length} earlier</summary>
+                    <ul className="mt-1 space-y-0.5">{older.map(o => <li key={o.id}><WLink to={wikiUrl.disease(o.disease_name, o.id)} className={t.link} title={`snapshot ${o.id}`}>{fmtDate(o.created_at)}</WLink> <span className={t.faint}>· v{o.version} · {num(o.gene_count)} genes</span></li>)}</ul>
+                  </details>)}</td>
+              </tr>); })}</tbody>
           </table>)}
       </Section>
       <Section t={t} title="How to read this" tag={<LayerTag t={t} kind="narrative" detail={`commit ${NARRATIVE_COMMIT.slice(0, 7)}`} />}>
@@ -358,7 +373,7 @@ function DiseasePage({ ctx, section }: { ctx: PageCtx; section?: string }) {
   return (
     <>
       <h1 className="text-2xl font-semibold mb-0.5">{s.disease_name}</h1>
-      <p className={`text-sm mb-5 ${t.muted}`}><span className="font-mono">{s.disease_id}</span> · snapshot <span className="font-mono">#{snapshot}</span> · v{s.version} · harvested {fmtDate(s.created_at)} by {s.created_by || '—'} · {num(s.gene_count)} genes · {num(summary.evidence_rows)} evidence rows</p>
+      <p className={`text-sm mb-5 ${t.muted}`}><span className="font-mono">{s.disease_id}</span> · v{s.version} · harvested {fmtDate(s.created_at)} by {s.created_by || '—'} · {num(s.gene_count)} genes · {num(summary.evidence_rows)} evidence rows</p>
 
       {narrative ? (
         <Section t={t} title="About this disease in Disease2Target" tag={<LayerTag t={t} kind="narrative" detail={`${narrative.path} · commit ${NARRATIVE_COMMIT.slice(0, 7)}`} />}>
@@ -453,7 +468,7 @@ function GenesSection({ ctx }: { ctx: PageCtx }) {
   const { t, summary } = ctx; const [q, setQ] = useState('');
   return (
     <>
-      <h1 className="text-xl font-semibold mb-1">Genes <span className={`text-sm font-normal ${t.muted}`}>{num(summary?.snapshot.gene_count)} in snapshot #{ctx.snapshot}</span></h1>
+      <h1 className="text-xl font-semibold mb-1">Genes <span className={`text-sm font-normal ${t.muted}`}>{num(summary?.snapshot.gene_count)} in this harvest</span></h1>
       <div className="mb-3"><LayerTag t={t} kind="data" detail="RANKING_SCORES · stored rank and scores" /></div>
       <div className={`flex items-center gap-1 rounded border px-2 mb-3 max-w-xs ${t.input}`}><Search className="w-3.5 h-3.5 opacity-50" /><input value={q} onChange={e => setQ(e.target.value)} placeholder="filter by symbol" className="bg-transparent text-sm py-1 w-full outline-none" /></div>
       <GenesTable ctx={ctx} filter={q} limit={q ? undefined : 300} />
@@ -464,7 +479,7 @@ function RunsSection({ ctx }: { ctx: PageCtx }) {
   const { t, lineage } = ctx;
   return (
     <>
-      <h1 className="text-xl font-semibold mb-1">Runs <span className={`text-sm font-normal ${t.muted}`}>the lineage of snapshot #{ctx.snapshot}</span></h1>
+      <h1 className="text-xl font-semibold mb-1">Runs <span className={`text-sm font-normal ${t.muted}`}>how this harvest was made</span></h1>
       <div className="mb-4"><LayerTag t={t} kind="data" detail={lineage?.kind === 'recorded' ? 'snapshot.provenance.runs (store)' : lineage ? `${lineage.path} (repo)` : 'none'} /></div>
       <LineageSummary ctx={ctx} />
       {lineage && (
@@ -491,7 +506,7 @@ function SourcesSection({ ctx }: { ctx: PageCtx }) {
   for (const a of summary?.axes || []) { const b = bySource.get(a.source) ?? bySource.set(a.source, { rows: 0, types: [] }).get(a.source)!; b.rows += a.rows; b.types.push(a.evidence_type); }
   return (
     <>
-      <h1 className="text-xl font-semibold mb-1">Sources <span className={`text-sm font-normal ${t.muted}`}>{bySource.size} in snapshot #{snapshot}</span></h1>
+      <h1 className="text-xl font-semibold mb-1">Sources <span className={`text-sm font-normal ${t.muted}`}>{bySource.size} in this harvest</span></h1>
       <div className="mb-4"><LayerTag t={t} kind="data" detail="distinct EVIDENCE.source" /></div>
       <div className="space-y-2">{[...bySource.entries()].map(([src, b]) => { const info = sourceInfo(src); return (
         <div key={src} className={`rounded border p-3 ${t.card}`}>
@@ -524,7 +539,7 @@ function NodeListSection({ ctx, type }: { ctx: PageCtx; type: string }) {
   const nodes = gi.data.byType(type).filter(n => !f || n.label.toLowerCase().includes(f) || n.key.toLowerCase().includes(f)).sort((a, b) => (b.degree ?? 0) - (a.degree ?? 0));
   return (
     <>
-      <h1 className="text-xl font-semibold mb-1 capitalize">{type}s <span className={`text-sm font-normal ${t.muted}`}>{num(gi.data.byType(type).length)} in the graph of #{snapshot}</span></h1>
+      <h1 className="text-xl font-semibold mb-1 capitalize">{type}s <span className={`text-sm font-normal ${t.muted}`}>{num(gi.data.byType(type).length)} in this harvest's graph</span></h1>
       <div className="mb-3"><LayerTag t={t} kind="data" detail={`KG_NODES where node_type = ${type}`} /></div>
       <div className={`flex items-center gap-1 rounded border px-2 mb-3 max-w-xs ${t.input}`}><Search className="w-3.5 h-3.5 opacity-50" /><input value={q} onChange={e => setQ(e.target.value)} placeholder="filter" className="bg-transparent text-sm py-1 w-full outline-none" /></div>
       <table className="w-full table-fixed text-sm">
@@ -589,7 +604,7 @@ function GenePage({ ctx, symbol }: { ctx: PageCtx; symbol: string }) {
 
       <Section t={t} title={`Stored evidence · ${rows.length} rows`} tag={<LayerTag t={t} kind="data" detail={`EVIDENCE where gene_symbol = ${symbol} and snapshot_id = ${snapshot}`} />}>
         <div className="space-y-2">{rows.map(r => <EvidenceCard key={r.id ?? r.evidence_type + r.source} ctx={ctx} row={r} />)}</div>
-        {rows.length === 0 && <Notice t={t}>No evidence rows for {symbol} in snapshot #{snapshot}.</Notice>}
+        {rows.length === 0 && <Notice t={t}>No evidence rows for {symbol} in this harvest.</Notice>}
       </Section>
 
       <Section t={t} title="In the knowledge graph" tag={<LayerTag t={t} kind="data" detail="KG_EDGES touching this gene, both directions" />}>
@@ -634,7 +649,7 @@ function RunPage({ ctx, id }: { ctx: PageCtx; id: string }) {
   const run = runById(lineage, id);
   const rows = useAsync(() => (run?.evidence_type && snapshot ? wikiApi.evidenceByType(snapshot, run.evidence_type) : Promise.resolve({ rows: [] as WikiEvidenceRow[] })), [snapshot, run?.evidence_type]);
   const [q, setQ] = useState('');
-  if (!run) return <Notice t={t} tone="warn">No run <span className="font-mono">{id}</span> in the lineage of snapshot #{snapshot}.</Notice>;
+  if (!run) return <Notice t={t} tone="warn">No run <span className="font-mono">{id}</span> in this harvest's lineage.</Notice>;
   const tone = lineage?.kind === 'recorded' ? 'text-emerald-400' : 'text-amber-400';
   const list = sortByAxis((rows.data?.rows || []).filter(r => !q || r.gene_symbol.toUpperCase().includes(q.toUpperCase())));
   return (
@@ -682,7 +697,7 @@ function SourcePage({ ctx, slug }: { ctx: PageCtx; slug: string }) {
   const info = sourceInfo(label);
   const rows = useAsync(() => (label && snapshot ? wikiApi.evidenceBySource(snapshot, label) : Promise.resolve({ rows: [] as WikiEvidenceRow[] })), [snapshot, label]);
   const [q, setQ] = useState('');
-  if (!label) return <Notice t={t} tone="warn">No source <span className="font-mono">{slug}</span> in snapshot #{snapshot}.</Notice>;
+  if (!label) return <Notice t={t} tone="warn">No source <span className="font-mono">{slug}</span> in this harvest.</Notice>;
   const runs = (lineage?.runs || []).filter(r => r.source === label || (info && sourceInfo(r.source)?.key === info.key));
   const types = [...new Set((rows.data?.rows || []).map(r => r.evidence_type))];
   const list = sortByAxis((rows.data?.rows || []).filter(r => !q || r.gene_symbol.toUpperCase().includes(q.toUpperCase())));
@@ -726,7 +741,7 @@ function GraphEntityPage({ ctx, kind, id }: { ctx: PageCtx; kind: WikiEntityKind
   const gi = useAsync(() => graphIndex(snapshot!), [snapshot]);
   if (gi.loading) return <Loading t={t} what={kind} />; if (gi.error) return <Notice t={t} tone="error">{gi.error}</Notice>;
   const node = gi.data!.node(key);
-  if (!node) return <Notice t={t} tone="warn">No {kind} <span className="font-mono">{id}</span> in the graph of snapshot #{snapshot}.</Notice>;
+  if (!node) return <Notice t={t} tone="warn">No {kind} <span className="font-mono">{id}</span> in this harvest's graph.</Notice>;
   const neighbours = gi.data!.neighbours(key);
   const groups = new Map<string, typeof neighbours>();
   for (const n of neighbours) { const g = `${n.direction === 'out' ? '→' : '←'} ${n.edge.rel.replace(/_/g, ' ')} · ${n.node.type}`; (groups.get(g) ?? groups.set(g, []).get(g)!).push(n); }

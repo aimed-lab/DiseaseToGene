@@ -91,7 +91,7 @@ Three facts about the store shaped this:
   and the browser may keep it for a year. Nothing fetched under a snapshot id can go stale.
 
 **One graph loader.** `loadWikiGraph(svc, id)` is the *only* function that builds a
-snapshot's graph object, and it is shared with the co-pilot's `query_graph` tool. There used
+snapshot's graph object, and it is shared with the co-scientist's `query_graph` tool. There used
 to be two writers with two shapes; the second one omitted `stats`, and the first page to read
 the cache after it had run crashed on `stats.nodes`. The rule since is: one loader, one shape,
 one cache — do not add a second.
@@ -196,7 +196,7 @@ evidence row, not in a page like this one. Only `wiki/` is bundled; the reposito
   gene's page for the snapshot the board is showing.
 - **From the gene drawer** (the detail panel opened from a target row), when it knows the
   snapshot it was opened for.
-- **From the co-pilot:** every stored-data tool returns a `wiki_url` with its result, and the
+- **From the co-scientist:** every stored-data tool returns a `wiki_url` with its result, and the
   co-pilot is instructed to cite it, once, as a link, wherever it cites stored evidence. The
   link is the app's own provenance page, not an external source.
 - **From the Target Assessment:** each assessed gene links to its page.

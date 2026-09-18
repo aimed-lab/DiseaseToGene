@@ -1068,7 +1068,7 @@ const ProfileDropdown = ({
       content: `**DiseaseToTarget (DTT)** is a therapeutic-target discovery and evidence-ranking platform. For a chosen disease it retrieves associated genes from **Open Targets**, scores them with a multi-factor **GET** formula, and enriches each with literature, clinical-trial, tissue-specificity, and **ChEMBL** druggability evidence.\n\nEvery metric below is computed from a **named public source** — this page documents exactly what each number means, where it comes from, and how it is calculated, so any value can be traced and audited.` },
 
     { key: 'get',     title: 'GET Score — the master rank', icon: '⚖️',
-      content: `The **GET Score (OT)** stored per snapshot is Open Targets' **overall association score** — a multi-evidence aggregate (genetic, somatic mutation, known drug, literature, pathways) computed by Open Targets on a 0–1 scale. Higher = stronger overall disease→target evidence. This is the number the rankings and the co-pilot report.\n\nSeparately, the **G / E / T re-ranking lens** lets you re-prioritise by hypothesis over the component axes:\n\n**GET = G × 0.50 + E × 0.25 + T × 0.25**\n\n• **G — Genetic** — OT genetic_association (germline) datatype. Correctly ~0 for pure somatic drivers like KRAS — honest, not missing data.\n• **E — Expression** — tissue expression strength + selectivity\n• **T — Target** — druggability / tractability\n\nWeights in Settings (currently G ${globalWeights.genetic} / E ${globalWeights.expression} / T ${globalWeights.target}) let you re-weight these axes for your own hypothesis. Note the OT datatype components are sparse and do NOT linearly sum to the OT overall score above — they are separate signals.` },
+      content: `The **GET Score (OT)** stored per snapshot is Open Targets' **overall association score** — a multi-evidence aggregate (genetic, somatic mutation, known drug, literature, pathways) computed by Open Targets on a 0–1 scale. Higher = stronger overall disease→target evidence. This is the number the rankings and the co-scientist report.\n\nSeparately, the **G / E / T re-ranking lens** lets you re-prioritise by hypothesis over the component axes:\n\n**GET = G × 0.50 + E × 0.25 + T × 0.25**\n\n• **G — Genetic** — OT genetic_association (germline) datatype. Correctly ~0 for pure somatic drivers like KRAS — honest, not missing data.\n• **E — Expression** — tissue expression strength + selectivity\n• **T — Target** — druggability / tractability\n\nWeights in Settings (currently G ${globalWeights.genetic} / E ${globalWeights.expression} / T ${globalWeights.target}) let you re-weight these axes for your own hypothesis. Note the OT datatype components are sparse and do NOT linearly sum to the OT overall score above — they are separate signals.` },
 
     { key: 'genetic', title: 'G — Genetic Score',           icon: '🧬',
       content: `**Range 0–1 · Source: Open Targets**\n\nThe maximum of three Open Targets *datatype* association scores for the gene–disease pair:\n\n• \`genetic_association\` (GWAS, ClinVar, etc.)\n• \`somatic_mutation\` (cancer somatic variants)\n• \`genetic_literature\`\n\n\`G = max(genetic_association, somatic_mutation, genetic_literature)\`\n\nHigh G means strong human-genetics evidence that the gene is causally involved in the disease.` },
@@ -4808,7 +4808,7 @@ ${modalityPromptBlock()}`;
       // browser's loaded page and reported genes ranked below it as absent.
       const boardBlock = boardSnapshotBlock();
 
-      const systemInstruction = `You are the DiseaseToTarget AI Assistant, an intelligent terminal for Target List exploration and literature discovery.
+      const systemInstruction = `You are the Disease2Target co-scientist: a teammate for target-list exploration and literature discovery, working from the evidence on screen.
 
       Core Capabilities:
       - You operate on a Target List of genes associated with a disease.
@@ -5117,7 +5117,7 @@ ${modalityResultBlock(getLastModalityResult()) || '      (No modality analysis h
              <div
                onPointerDown={startCopilotDrag} onPointerMove={onCopilotDrag} onPointerUp={endCopilotDrag} onPointerCancel={endCopilotDrag}
                onDoubleClick={() => setCopilotWidth(COPILOT_DEFAULT)}
-               role="separator" aria-orientation="vertical" aria-label="Resize the co-pilot panel"
+               role="separator" aria-orientation="vertical" aria-label="Resize the co-scientist panel"
                title="Drag to resize · double-click to reset"
                className="absolute left-0 top-0 bottom-0 w-2 z-30 cursor-col-resize group flex items-center justify-center">
                <div className={`h-10 w-1 rounded-full transition-colors ${copilotDragging ? 'bg-blue-500' : (theme === 'dark' ? 'bg-slate-700 group-hover:bg-blue-500' : 'bg-slate-300 group-hover:bg-blue-500')}`} />
@@ -5129,7 +5129,7 @@ ${modalityResultBlock(getLastModalityResult()) || '      (No modality analysis h
                  <MessageSquare className="w-4 h-4" />
                </div>
                <div>
-                 <div className={`text-[10px] font-black uppercase tracking-widest ${theme === 'dark' ? 'text-slate-400' : 'text-slate-700'}`}>Co-pilot</div>
+                 <div className={`text-[10px] font-black uppercase tracking-widest ${theme === 'dark' ? 'text-slate-400' : 'text-slate-700'}`}>Co-scientist</div>
                  <div className={`text-[12px] font-bold ${theme === 'dark' ? 'text-slate-100' : 'text-slate-950'}`}>Targets context</div>
                </div>
              </div>
@@ -5143,7 +5143,7 @@ ${modalityResultBlock(getLastModalityResult()) || '      (No modality analysis h
                    : <Maximize className={`w-3.5 h-3.5 ${theme === 'dark' ? 'text-slate-200' : 'text-slate-900'}`} />}
                </button>
                <button onClick={() => { setCopilotFull(false); setIsLeftSidebarOpen(false); }}
-                 title="Close the co-pilot"
+                 title="Close the co-scientist"
                  className={`p-1.5 rounded-lg ${theme === 'dark' ? 'hover:bg-slate-800' : 'hover:bg-slate-100'}`}>
                  <PanelRight className={`w-3.5 h-3.5 ${theme === 'dark' ? 'text-slate-200' : 'text-slate-900'}`} />
                </button>

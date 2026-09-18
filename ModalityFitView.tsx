@@ -110,11 +110,11 @@ export default function ModalityFitView({ isDark, onClose, chatOpen, onToggleCha
           ))}
         </div>
         {onToggleChat && (
-          <button onClick={onToggleChat} title={chatOpen ? 'Hide the co-pilot' : 'Ask the co-pilot about this analysis'}
+          <button onClick={onToggleChat} title={chatOpen ? 'Hide the co-scientist' : 'Ask the co-scientist about this analysis'}
             style={{ display: 'flex', alignItems: 'center', gap: 7, border: `1px solid ${chatOpen ? '#2563eb' : border}`,
                      background: chatOpen ? '#2563eb' : 'transparent', color: chatOpen ? '#fff' : ink,
                      borderRadius: 8, padding: '7px 12px', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
-            <MessageSquare className="w-4 h-4" />{chatOpen ? 'Co-pilot' : 'Ask co-pilot'}
+            <MessageSquare className="w-4 h-4" />{chatOpen ? 'Co-scientist' : 'Ask co-scientist'}
           </button>
         )}
         <button onClick={onClose} title="Back to the app" style={{ marginLeft: onToggleChat ? 0 : 'auto', border: `1px solid ${border}`, background: 'transparent', color: muted, borderRadius: 8, width: 34, height: 34, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><X className="w-4 h-4" /></button>

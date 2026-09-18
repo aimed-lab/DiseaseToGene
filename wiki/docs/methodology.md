@@ -35,7 +35,7 @@ authority for what actually ran on it.
 - `literature` — PubMed paper counts and recency
 - `patents` — EPO patents naming the gene (Europe PMC)
 
-They feed the dossier and the co-pilot; the board never ranks on them.
+They feed the dossier and the co-scientist; the board never ranks on them.
 
 ## Two things worth knowing
 

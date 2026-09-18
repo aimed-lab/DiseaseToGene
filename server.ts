@@ -1007,7 +1007,7 @@ function setupRoutes() {
             systemInstruction || '',
             toolsOn ? HERMES_TOOL_PROTOCOL + renderToolSpec([...(tools || []), ...dataTools]) : '',
           ].filter(Boolean).join('\n');
-          const chatId = await hermes.createChat('Disease2Target co-pilot');
+          const chatId = await hermes.createChat('Disease2Target co-scientist');
           const primed = preamble
             ? `${preamble}\n\n--- The user's question follows. Answer it under the instructions above. ---\n\n${turnText}`
             : turnText;

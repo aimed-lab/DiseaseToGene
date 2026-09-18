@@ -57,4 +57,4 @@ One run per axis per snapshot. It answers "how did the source become the number"
 
 - The narrative pages (this one included). They explain; they do not attest.
 - The live links. They show what the source says today, not what the harvest read.
-- The co-pilot's answers. They cite rows; they are not rows.
+- The co-scientist's answers. They cite rows; they are not rows.

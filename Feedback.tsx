@@ -14,11 +14,12 @@ export type FeedbackCategory = 'bug' | 'data' | 'feature' | 'other';
 export interface FeedbackContext { url?: string; view?: string; disease?: string | null; snapshot_id?: number | null; model?: string | null; user_agent?: string }
 export interface FeedbackRow { id: string; created_at: string; category: FeedbackCategory; message: string; status: 'new' | 'seen' | 'done'; context: FeedbackContext; email?: string | null; admin_note?: string | null; reviewed_at?: string | null }
 
+// One word each: the form has to be readable in a second. The hint is a tooltip, not a card.
 const CATEGORIES: Array<{ id: FeedbackCategory; label: string; hint: string; icon: React.ComponentType<any> }> = [
-  { id: 'bug', label: 'Something is broken', hint: 'an error, a blank panel, a button that does nothing', icon: Bug },
-  { id: 'data', label: 'A number looks wrong', hint: 'a score, a count, a source that does not match', icon: Database },
-  { id: 'feature', label: 'I wish it could…', hint: 'a view, a filter, an export you need', icon: Lightbulb },
-  { id: 'other', label: 'Something else', hint: 'anything at all', icon: HelpCircle },
+  { id: 'bug', label: 'Bug', hint: 'an error, a blank panel, a button that does nothing', icon: Bug },
+  { id: 'data', label: 'Wrong number', hint: 'a score, a count, a source that does not match', icon: Database },
+  { id: 'feature', label: 'Idea', hint: 'a view, a filter, an export you need', icon: Lightbulb },
+  { id: 'other', label: 'Other', hint: 'anything at all', icon: HelpCircle },
 ];
 const catOf = (id: string) => CATEGORIES.find(c => c.id === id) ?? CATEGORIES[3];
 const fmt = (s: string) => new Date(s).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
@@ -29,7 +30,8 @@ async function sendJson<T>(url: string, method: string, body: any): Promise<T> {
 
 // ── the user's form ──────────────────────────────────────────────────────────
 export function FeedbackDialog({ isDark, context, onClose }: { isDark: boolean; context: FeedbackContext; onClose: () => void }) {
-  const [category, setCategory] = useState<FeedbackCategory>('bug');
+  const [category, setCategory] = useState<FeedbackCategory>('other');   // optional; most people just type
+  const [showCtx, setShowCtx] = useState(false);
   const [message, setMessage] = useState('');
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState(false);
@@ -70,31 +72,32 @@ export function FeedbackDialog({ isDark, context, onClose }: { isDark: boolean; 
             </div>
           </div>
         ) : (
-          <form onSubmit={submit} className="px-5 py-4 space-y-4">
-            <div className="grid grid-cols-2 gap-2">
-              {CATEGORIES.map(c => (
-                <button type="button" key={c.id} onClick={() => setCategory(c.id)}
-                  className={`text-left rounded-xl border px-3 py-2 transition-colors ${category === c.id ? 'border-blue-500 bg-blue-500/10' : (isDark ? 'border-slate-800 hover:bg-slate-800/60' : 'border-slate-200 hover:bg-slate-50')}`}>
-                  <div className="flex items-center gap-1.5 text-[12px] font-semibold"><c.icon className="w-3.5 h-3.5" />{c.label}</div>
-                  <div className={`text-[10.5px] mt-0.5 ${muted}`}>{c.hint}</div>
-                </button>))}
-            </div>
-            <textarea value={message} onChange={e => setMessage(e.target.value)} rows={5} maxLength={4000} autoFocus
-              placeholder={category === 'data' ? 'Which gene, which number, and what you expected instead…' : category === 'bug' ? 'What you did, what happened, what you expected…' : 'Tell us…'}
+          <form onSubmit={submit} className="px-5 py-4 space-y-3">
+            <textarea value={message} onChange={e => setMessage(e.target.value)} rows={4} maxLength={4000} autoFocus
+              onKeyDown={e => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') submit(e as any); }}
+              placeholder="What's wrong, or what would help?"
               className={`w-full rounded-xl border px-3 py-2 text-[13px] outline-none focus:border-blue-500 ${field}`} />
-            <details className={`text-[11px] ${muted}`}>
-              <summary className="cursor-pointer select-none">Attached automatically: where you are in the app</summary>
-              <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-0.5 mt-2 font-mono text-[10.5px]">
-                {Object.entries(ctx).filter(([, v]) => v != null && v !== '').map(([k, v]) => <React.Fragment key={k}><dt className="opacity-70">{k}</dt><dd className="break-all">{String(v)}</dd></React.Fragment>)}
-              </dl>
-            </details>
-            {error && <p className="text-[12px] text-red-500">{error}</p>}
-            <div className="flex items-center justify-between gap-2">
-              <button type="button" onClick={() => setShowMine(s => !s)} className={`text-[11px] ${muted} underline decoration-dotted`}>{showMine ? 'Hide' : 'Show'} my previous feedback{mine ? ` (${mine.length})` : ''}</button>
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <div className="flex items-center gap-1.5">
+                {CATEGORIES.filter(c => c.id !== 'other').map(c => (
+                  <button type="button" key={c.id} title={c.hint} onClick={() => setCategory(category === c.id ? 'other' : c.id)}
+                    className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-semibold transition-colors ${category === c.id ? 'border-blue-500 bg-blue-500/10 text-blue-500' : (isDark ? 'border-slate-700 text-slate-300 hover:bg-slate-800/60' : 'border-slate-300 text-slate-600 hover:bg-slate-50')}`}>
+                    <c.icon className="w-3 h-3" />{c.label}
+                  </button>))}
+              </div>
               <button type="submit" disabled={!message.trim() || sending} className="flex items-center gap-2 px-4 py-2 rounded-xl bg-blue-600 text-white text-[12px] font-bold disabled:opacity-50">
                 {sending ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Sending…</> : 'Send'}
               </button>
             </div>
+            {error && <p className="text-[12px] text-red-500">{error}</p>}
+            <div className={`flex items-center gap-3 text-[11px] ${muted}`}>
+              <button type="button" onClick={() => setShowCtx(s => !s)} className="underline decoration-dotted">{showCtx ? 'Hide' : 'See'} what we attach</button>
+              <button type="button" onClick={() => setShowMine(s => !s)} className="underline decoration-dotted">{showMine ? 'Hide' : 'My'} previous feedback{mine ? ` (${mine.length})` : ''}</button>
+            </div>
+            {showCtx && (
+              <dl className={`grid grid-cols-[max-content_1fr] gap-x-3 gap-y-0.5 font-mono text-[10.5px] ${muted}`}>
+                {Object.entries(ctx).filter(([, v]) => v != null && v !== '').map(([k, v]) => <React.Fragment key={k}><dt className="opacity-70">{k}</dt><dd className="break-all">{String(v)}</dd></React.Fragment>)}
+              </dl>)}
             {showMine && (
               <div className={`rounded-xl border divide-y max-h-56 overflow-y-auto ${isDark ? 'border-slate-800 divide-slate-800' : 'border-slate-200 divide-slate-100'}`}>
                 {mine === null ? <p className={`p-3 text-[11px] ${muted}`}>Loading…</p> : mine.length === 0 ? <p className={`p-3 text-[11px] ${muted}`}>Nothing yet.</p> : mine.map(r => (

@@ -158,7 +158,7 @@ export const GlobalSearch = forwardRef<GlobalSearchHandle, Props>(function Globa
           <div className="max-h-[340px] overflow-y-auto py-1">
             {rows.length === 0 ? (
               <div className={`px-3 py-4 text-[12px] ${muted}`}>
-                {q.trim() ? <>Nothing matches “{q.trim()}”. Targets and pathways come from the loaded list — a gene ranked below it may still be in the snapshot; ask the co-pilot.</> : 'No diseases loaded yet.'}
+                {q.trim() ? <>Nothing matches “{q.trim()}”. Targets and pathways come from the loaded list — a gene ranked below it may still be in the snapshot; ask the co-scientist.</> : 'No diseases loaded yet.'}
               </div>
             ) : rows.map((r, i) => {
               const Icon = GROUP_ICON[r.kind];

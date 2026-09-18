@@ -93,7 +93,7 @@ async function buildDocx(a: Assessment, goal: MechanisticGoal, narrative: string
   ] }));
   if (narrative) {
     children.push(new Paragraph({ heading: HeadingLevel.HEADING_2, children: [new TextRun({ text: 'AI trade-off narrative', bold: true, size: 26 })] }));
-    children.push(para('Written by the co-pilot model from the evidence above only. A summary to argue with, not a source.', { size: 16, italics: true }));
+    children.push(para('Written by the co-scientist model from the evidence above only. A summary to argue with, not a source.', { size: 16, italics: true }));
     for (const line of narrative.split('\n').filter(l => l.trim())) children.push(para(line.replace(/\*\*/g, '').replace(/^#+\s*/, '')));
   }
   return new Document({ sections: [{ children }] });

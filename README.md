@@ -42,7 +42,7 @@ Disease2Target makes the whole chain inspectable:
 | **Funnel** | Hard filters plus a soft composite over registry-driven axes, for narrowing a field to a shortlist. |
 | **Modality Fit** | For one target, ranks 12 therapeutic modalities as anchored tiers under a chosen mechanistic goal. Deterministic — see [below](#modality-fit). |
 | **Knowledge graph** | Node/edge graph over a snapshot (genes, drugs, trials, pathways). |
-| **Co-pilot** | Gemini assistant with the current research state in context. |
+| **Co-scientist** | AI teammate (Gemini, OpenAI or PLEASER upstream) with the current research state in context. |
 | **Exports** | CSV, DOCX, printable HTML reports. |
 
 ## The ranking algorithm
@@ -187,7 +187,7 @@ All configuration is environment variables. Copy [`.env.example`](.env.example) 
 |---|---|
 | `SUPABASE_URL` · `SUPABASE_ANON_KEY` | Authentication (login, sessions) |
 | `SUPABASE_SERVICE_ROLE_KEY` | Server-side JWT verification |
-| `GEMINI_API_KEY` | Co-pilot and modality rationales |
+| `GEMINI_API_KEY` | Co-scientist and modality rationales |
 
 **Data layer** — set *one* of these paths:
 
