@@ -5,7 +5,7 @@ import { authenticatedFetch } from '../supabase';
 
 export interface WikiSnapshotMeta { id: number; disease_id: string; disease_name: string; version: string | number; created_at: string; created_by: string | null; label: string | null; gene_count: number | null }
 export interface WikiAxisSummary { evidence_type: string; source: string; rows: number; scored: number }
-export interface WikiSummary { snapshot: WikiSnapshotMeta & { weights?: any; provenance?: any }; evidence_rows: number; axes: WikiAxisSummary[] }
+export interface WikiSummary { version?: string; snapshot: WikiSnapshotMeta & { weights?: any; provenance?: any }; evidence_rows: number; axes: WikiAxisSummary[] }
 export interface WikiEvidenceRow {
   id?: number; snapshot_id?: number; disease_id?: string; gene_symbol: string; evidence_type: string; source: string;
   source_url?: string | null; value_text: string | null; value_json: any; retrieved_at?: string | null; generated_by?: string | null; audit_status?: string | null;
@@ -29,13 +29,25 @@ async function get<T>(path: string): Promise<T> {
   return p as Promise<T>;
 }
 
+// A snapshot's data can change after harvest (an axis re-run, a graph rebuild), so every
+// read except the summary carries the snapshot's VERSION — its latest recorded run, which
+// the never-cached summary reports. A rebuild is then a new URL: the browser's year-long
+// cache of the old one is never wrong, and a plain reload is enough to see new data.
+const versionMemo = new Map<number, Promise<string>>();
+export function wikiVersion(id: number): Promise<string> {
+  let p = versionMemo.get(id);
+  if (!p) { p = wikiApi.summary(id).then(s => s.version || '').catch(() => ''); versionMemo.set(id, p); }
+  return p;
+}
+const versioned = async (id: number, path: string) => { const v = await wikiVersion(id); return v ? `${path}${path.includes('?') ? '&' : '?'}v=${encodeURIComponent(v)}` : path; };
+
 export const wikiApi = {
   snapshots: () => get<WikiSnapshotMeta[]>('/api/wiki/snapshots'),
   summary: (id: number) => get<WikiSummary>(`/api/wiki/${id}/summary`),
-  gene: (id: number, symbol: string) => get<WikiGene>(`/api/wiki/${id}/gene/${encodeURIComponent(symbol.toUpperCase())}`),
-  evidenceByType: (id: number, type: string) => get<{ rows: WikiEvidenceRow[] }>(`/api/wiki/${id}/evidence?type=${encodeURIComponent(type)}`),
-  evidenceBySource: (id: number, source: string) => get<{ rows: WikiEvidenceRow[] }>(`/api/wiki/${id}/evidence?source=${encodeURIComponent(source)}`),
-  graph: (id: number) => get<WikiGraph>(`/api/wiki/${id}/graph`),
+  gene: async (id: number, symbol: string) => get<WikiGene>(await versioned(id, `/api/wiki/${id}/gene/${encodeURIComponent(symbol.toUpperCase())}`)),
+  evidenceByType: async (id: number, type: string) => get<{ rows: WikiEvidenceRow[] }>(await versioned(id, `/api/wiki/${id}/evidence?type=${encodeURIComponent(type)}`)),
+  evidenceBySource: async (id: number, source: string) => get<{ rows: WikiEvidenceRow[] }>(await versioned(id, `/api/wiki/${id}/evidence?source=${encodeURIComponent(source)}`)),
+  graph: async (id: number) => get<WikiGraph>(await versioned(id, `/api/wiki/${id}/graph`)),
   scores: (id: number) => get<WikiScoreRow[]>(`/api/snapshots/${id}/scores`),
 };
 

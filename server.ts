@@ -1759,23 +1759,38 @@ function setupRoutes() {
   // pull (~50k rows over ORDS, ~25s cold) is fetched once and then sliced per axis, so the
   // run/source pages don't re-pull it. See docs/PLAN_Provenance_Wiki_and_Autonomous_Agent.md §0.5.
   const WIKI_CACHE_HEADERS = { 'Cache-Control': 'private, max-age=31536000, immutable' };
-  const wikiEvidenceCache = new Map<number, Promise<any[]>>();
-  const wikiGraphCache = new Map<number, Promise<any>>();
+  const WIKI_NO_CACHE = { 'Cache-Control': 'private, no-cache' };
+  // A snapshot is no longer frozen at harvest: an axis can be re-run and the graph rebuilt on
+  // it (the harvest queue does both). So a snapshot's VERSION is its latest recorded run.
+  // The summary — never cached — tells the client the version; the client puts it on every
+  // other wiki URL (?v=…), so a rebuild is a new URL, the old one stays immutable, and nobody
+  // needs a hard refresh. Server caches are keyed the same way. A request without ?v= is
+  // answered fresh and told not to cache.
+  const wikiVersionOf = (snap: any): string => {
+    const runs = Array.isArray(snap?.provenance?.runs) ? snap.provenance.runs : [];
+    const last = runs.map((r: any) => String(r?.finished_at || r?.ran_at || '')).sort().pop() || String(snap?.created_at || '');
+    return `${runs.length}-${last.replace(/[^0-9A-Za-z]/g, '').slice(0, 20)}`;
+  };
+  const wikiVersionParam = (req: express.Request): string => String(req.query.v || '').replace(/[^0-9A-Za-z-]/g, '').slice(0, 40);
+  const wikiEvidenceCache = new Map<string, Promise<any[]>>();
+  const wikiGraphCache = new Map<string, Promise<any>>();
   // The one loader for a snapshot's graph — the wiki route and the co-pilot's query_graph both
   // use it, so the cache holds ONE shape ({snapshot_id, stats, nodes, edges}). A second writer
   // that omitted stats once left the wiki's overview crashing on `stats.nodes`.
-  const loadWikiGraph = (svc: any, id: number): Promise<{ snapshot_id: number; stats: any; nodes: any[]; edges: any[] }> => {
-    let p = wikiGraphCache.get(id);
+  const loadWikiGraph = (svc: any, id: number, version = ''): Promise<{ snapshot_id: number; stats: any; nodes: any[]; edges: any[] }> => {
+    const key = `${id}|${version}`;
+    let p = wikiGraphCache.get(key);
     if (!p) {
       p = Promise.all([svc.kgGraph(id), svc.kgStats(id)]).then(([g, stats]) => ({ snapshot_id: id, stats, nodes: g.nodes, edges: g.edges }))
-        .catch((e: any) => { wikiGraphCache.delete(id); throw e; });
-      wikiGraphCache.set(id, p);
+        .catch((e: any) => { wikiGraphCache.delete(key); throw e; });
+      wikiGraphCache.set(key, p);
     }
     return p;
   };
-  const wikiSnapshotEvidence = (svc: any, id: number): Promise<any[]> => {
-    let p = wikiEvidenceCache.get(id);
-    if (!p) { p = svc.snapshotEvidence(id).catch((e: any) => { wikiEvidenceCache.delete(id); throw e; }); wikiEvidenceCache.set(id, p!); }
+  const wikiSnapshotEvidence = (svc: any, id: number, version = ''): Promise<any[]> => {
+    const key = `${id}|${version}`;
+    let p = wikiEvidenceCache.get(key);
+    if (!p) { p = svc.snapshotEvidence(id).catch((e: any) => { wikiEvidenceCache.delete(key); throw e; }); wikiEvidenceCache.set(key, p!); }
     return p!;
   };
   const wikiSnapshotId = (req: express.Request): number | null => { const n = Number(req.params.id); return Number.isInteger(n) && n > 0 ? n : null; };
@@ -1798,7 +1813,8 @@ function setupRoutes() {
       const svc = await readSvc();
       const snap = await svc.getSnapshot(id);
       if (!snap) return res.status(404).json({ error: `snapshot #${id} not found` });
-      const rows = await wikiSnapshotEvidence(svc, id);
+      const version = wikiVersionOf(snap);
+      const rows = await wikiSnapshotEvidence(svc, id, version);
       const axes = new Map<string, { evidence_type: string; source: string; rows: number; scored: number }>();
       for (const r of rows) {
         const k = `${r.evidence_type}\u0000${r.source}`;
@@ -1810,7 +1826,7 @@ function setupRoutes() {
       // Not immutable: the harvest appends to provenance.runs[] after the fact (a re-run of an
       // axis, a lineage file loaded later), and the browser must see it without a hard refresh.
       // The evidence and graph routes stay immutable — their rows are what the snapshot IS.
-      res.set({ 'Cache-Control': 'private, no-cache' }).json({ snapshot: { ...meta, id }, evidence_rows: rows.length, axes: [...axes.values()].sort((a, b) => a.evidence_type.localeCompare(b.evidence_type)) });
+      res.set(WIKI_NO_CACHE).json({ version, snapshot: { ...meta, id }, evidence_rows: rows.length, axes: [...axes.values()].sort((a, b) => a.evidence_type.localeCompare(b.evidence_type)) });
     } catch (e: any) { res.status(502).json({ error: e?.message || 'wiki summary failed' }); }
   });
 
@@ -1827,7 +1843,7 @@ function setupRoutes() {
       const evidence = (all as any[]).filter(r => Number(r.snapshot_id) === id).map(r => ({ ...r, value_json: wikiJson(r.value_json) }));
       const score = (scores as any[]).find(s => String(s.gene_symbol).toUpperCase() === symbol) || null;
       if (!evidence.length && !score) return res.status(404).json({ error: `${symbol} is not in snapshot #${id}` });
-      res.set(WIKI_CACHE_HEADERS).json({ snapshot_id: id, symbol, score, evidence, gene_count: (scores as any[]).length });
+      res.set(wikiVersionParam(req) ? WIKI_CACHE_HEADERS : WIKI_NO_CACHE).json({ snapshot_id: id, symbol, score, evidence, gene_count: (scores as any[]).length });
     } catch (e: any) { res.status(502).json({ error: e?.message || 'wiki gene failed' }); }
   });
 
@@ -1840,10 +1856,11 @@ function setupRoutes() {
     if (!type && !source) return res.status(400).json({ error: "type or source required" });
     try {
       const svc = await readSvc();
-      const rows = (await wikiSnapshotEvidence(svc, id))
+      const version = wikiVersionParam(req);
+      const rows = (await wikiSnapshotEvidence(svc, id, version))
         .filter(r => (!type || r.evidence_type === type) && (!source || r.source === source))
         .map(r => ({ gene_symbol: r.gene_symbol, evidence_type: r.evidence_type, source: r.source, value_text: r.value_text, value_json: wikiJson(r.value_json) }));
-      res.set(WIKI_CACHE_HEADERS).json({ snapshot_id: id, type: type || null, source: source || null, rows });
+      res.set(version ? WIKI_CACHE_HEADERS : WIKI_NO_CACHE).json({ snapshot_id: id, type: type || null, source: source || null, rows });
     } catch (e: any) { res.status(502).json({ error: e?.message || 'wiki evidence failed' }); }
   });
 
@@ -1853,7 +1870,8 @@ function setupRoutes() {
     const id = wikiSnapshotId(req); if (!id) return res.status(400).json({ error: "snapshot id required" });
     try {
       const svc = await readSvc();
-      res.set(WIKI_CACHE_HEADERS).json(await loadWikiGraph(svc, id));
+      const version = wikiVersionParam(req);
+      res.set(version ? WIKI_CACHE_HEADERS : WIKI_NO_CACHE).json(await loadWikiGraph(svc, id, version));
     } catch (e: any) { res.status(502).json({ error: e?.message || 'wiki graph failed' }); }
   });
 
@@ -2663,14 +2681,18 @@ Rules: fill every field only from what the pages actually say. Where the page do
   // edges {source,target,rel}. Keys are gene:SYMBOL, drug:<slug>, trial:nct…, pathway:<slug>.
   type GNode = { key: string; type: string; label: string; degree: number | null; props: any };
   type GEdge = { source: string; target: string; rel: string; src?: string | null; props?: any };
-  const agentGraphCache = new Map<number, Promise<any>>();
+  const agentGraphCache = new Map<string, Promise<any>>();
   const slugOf = (s: string) => String(s ?? '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
   async function agentGraph(snapId: number) {
-    let p = agentGraphCache.get(snapId);
+    // keyed by the snapshot's version (its latest recorded run), so a rebuilt graph is seen
+    // on the next question without a restart — one small snapshot read per call
+    const svc = await readSvc();
+    const version = wikiVersionOf(await svc.getSnapshot(snapId));
+    const key = `${snapId}|${version}`;
+    let p = agentGraphCache.get(key);
     if (!p) {
       p = (async () => {
-        const svc = await readSvc();
-        const { nodes, edges } = (await loadWikiGraph(svc, snapId)) as { nodes: GNode[]; edges: GEdge[] };
+        const { nodes, edges } = (await loadWikiGraph(svc, snapId, version)) as { nodes: GNode[]; edges: GEdge[] };
         const byKey = new Map<string, GNode>(nodes.map(n => [n.key, n]));
         const outE = new Map<string, GEdge[]>(), inE = new Map<string, GEdge[]>(), byType = new Map<string, GNode[]>();
         for (const e of edges) { (outE.get(e.source) ?? outE.set(e.source, []).get(e.source)!).push(e); (inE.get(e.target) ?? inE.set(e.target, []).get(e.target)!).push(e); }
@@ -2689,8 +2711,8 @@ Rules: fill every field only from what the pages actually say. Where the page do
           findDrug: (n: string) => find('drug', n), findPathway: (n: string) => find('pathway', n),
           suggestDrugs: (n: string, k: number) => suggest('drug', n, k), suggestPathways: (n: string, k: number) => suggest('pathway', n, k),
         };
-      })().catch(e => { agentGraphCache.delete(snapId); throw e; });
-      agentGraphCache.set(snapId, p);
+      })().catch(e => { agentGraphCache.delete(key); throw e; });
+      agentGraphCache.set(key, p);
     }
     return p;
   }

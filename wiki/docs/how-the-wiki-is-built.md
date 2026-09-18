@@ -87,8 +87,12 @@ Three facts about the store shaped this:
   per-gene feed projects all twelve, including `retrieved_at`, `generated_by`, `audit_status`
   and `source_url`. So the gene page — where the fact badge needs those columns — reads the
   per-gene feed, and the bulk pages read the cheaper one.
-- **A snapshot is immutable**, so every response carries `Cache-Control: private, immutable`
-  and the browser may keep it for a year. Nothing fetched under a snapshot id can go stale.
+- **A snapshot has a version.** It used to be treated as immutable, and every response was
+  cached for a year — until the harvest queue made it normal to re-run one axis or rebuild
+  the graph on an existing snapshot, and readers saw last week's graph until a hard refresh.
+  Now the snapshot's version is its **latest recorded run** (`provenance.runs[]`). The
+  summary is never cached and reports it; the client puts it on every other wiki URL as
+  `?v=`, and those responses stay `immutable`. A rebuild is a new URL; a plain reload shows it.
 
 **One graph loader.** `loadWikiGraph(svc, id)` is the *only* function that builds a
 snapshot's graph object, and it is shared with the co-scientist's `query_graph` tool. There used
@@ -221,6 +225,7 @@ evidence row, not in a page like this one. Only `wiki/` is bundled; the reposito
 | 12 Sep 2026 | The scoped graph: one entity's neighbourhood drawn on its page. |
 | 15 Sep 2026 | Seven review fixes: the overview crash that forced the one-loader rule; GFM tables; a literal tag in a doc page; upper-cased and mis-encoded paper titles; the role flash on cold load; the clipped trial properties column; the overview gene badge now opens the graph's gene list. Opened to researchers, not only admins. |
 | 16 Sep 2026 | This page. |
+| 18 Sep 2026 | Snapshot versioning: every wiki read except the summary carries `?v=<latest run>`, so a re-run axis or rebuilt graph is seen on a plain reload. |
 | 18 Sep 2026 | The graph's gene set explained and widened. The graph is projected from the top 300 genes by Open Targets rank; STRING edges were kept only *between* those 300, so a gene's page showed the top-300 genes it touches, not its partners (SRC: ATM and BRCA1, but not PTK2). Now each core gene also brings its top 25 STRING partners (by STRING confidence, ties by the partner's disease-network percentile) as smaller *peripheral* gene nodes, the way paralogs were already added — every one of them in the snapshot, with its own page. The legend under a scoped graph became a set of toggles (hide drugs, *genes only*). Clinical rows gained a second, unscored drug→target source (DGIdb) for drugs Open Targets has not curated yet; those trials carry their own badge. |
 
 The design was planned before it was built; the plan's first section is the one rule above,
