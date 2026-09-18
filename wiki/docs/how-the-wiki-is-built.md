@@ -221,6 +221,7 @@ evidence row, not in a page like this one. Only `wiki/` is bundled; the reposito
 | 12 Sep 2026 | The scoped graph: one entity's neighbourhood drawn on its page. |
 | 15 Sep 2026 | Seven review fixes: the overview crash that forced the one-loader rule; GFM tables; a literal tag in a doc page; upper-cased and mis-encoded paper titles; the role flash on cold load; the clipped trial properties column; the overview gene badge now opens the graph's gene list. Opened to researchers, not only admins. |
 | 16 Sep 2026 | This page. |
+| 18 Sep 2026 | The graph's gene set explained and widened. The graph is projected from the top 300 genes by Open Targets rank; STRING edges were kept only *between* those 300, so a gene's page showed the top-300 genes it touches, not its partners (SRC: ATM and BRCA1, but not PTK2). Now each core gene also brings its top 25 STRING partners (by STRING confidence, ties by the partner's disease-network percentile) as smaller *peripheral* gene nodes, the way paralogs were already added — every one of them in the snapshot, with its own page. The legend under a scoped graph became a set of toggles (hide drugs, *genes only*). Clinical rows gained a second, unscored drug→target source (DGIdb) for drugs Open Targets has not curated yet; those trials carry their own badge. |
 
 The design was planned before it was built; the plan's first section is the one rule above,
 and every later choice — immutable URLs, stored rows only, two badges, agents append never
@@ -235,6 +236,7 @@ edit — follows from it.
 | Paper titles carry charset damage from ingestion | repaired at render by `cleanTitle` | fix the character set at harvest |
 | The snapshot's own provenance is `{source, via}` only for #102 | release and cutoff inferred, marked as such | recorded by the harvest for every new snapshot |
 | A cold snapshot takes tens of seconds to open | first visit only; cached after | a warm-up on deploy, or the store precomputing the per-axis slices |
+| A gene's graph neighbourhood is STRING's top partners in the snapshot, not the neighbourhood a paper drew | a partner far down STRING's list for a hub gene (FN1 for SRC, ~113th) is absent | raise `KG_PARTNER_N`, or a per-page "expand from STRING" that the snapshot rule currently forbids |
 
 ## Where to look
 

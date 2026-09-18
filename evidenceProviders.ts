@@ -216,7 +216,10 @@ async function otGql(query: string, variables: Record<string, unknown>): Promise
 //    gave hint "exocrin", which missed BOSUTINIB whose only trial is tagged "pancreatic
 //    adenocarcinoma" — a real Phase-1 PDAC trial, dropped. We therefore keep a hint per
 //    SIGNIFICANT token and drop generic oncology words that would match any cancer.
-export interface DiseaseScope { ids: Set<string>; nameHints: string[] }
+// `condQuery` is the disease's specific words in full ("pancreatic", "triple negative breast") for
+// ClinicalTrials.gov's condition search, which matches whole words — the 7-char prefix hints
+// are for OUR substring checks and would find almost nothing there.
+export interface DiseaseScope { ids: Set<string>; nameHints: string[]; condQuery?: string }
 
 // Words too generic to scope on — "carcinoma" alone would match breast carcinoma etc.
 const GENERIC_DISEASE_WORDS = new Set([
@@ -251,7 +254,8 @@ export async function resolveDiseaseScope(diseaseId: string, diseaseName: string
       for (const x of (dis?.descendants || [])) if (x) ids.add(String(x));
     } catch { /* fall back to id + name hints */ }
   }
-  return { ids, nameHints: diseaseNameHints(diseaseName) };
+  const condQuery = (diseaseName || '').toLowerCase().replace(/[^a-z ]/g, ' ').split(/\s+/).filter(t => t.length >= 4 && !GENERIC_DISEASE_WORDS.has(t)).join(' ');
+  return { ids, nameHints: diseaseNameHints(diseaseName), condQuery };
 }
 
 export interface ClinicalStat {
@@ -275,8 +279,157 @@ export interface ClinicalStat {
     start_date?: string | null; completion_date?: string | null; enrollment?: number | null;
     n_locations?: number; countries?: string[];
     locations?: { facility: string | null; city: string | null; state: string | null; country: string | null }[];
+    // 'ot' (default when absent) = Open Targets drugAndClinicalCandidates; 'supplement' = a drug
+    // DGIdb maps to this gene that Open Targets does not list yet, found on ClinicalTrials.gov
+    // by name. Never scored.
+    source?: 'ot' | 'supplement';
+    mechanism?: string | null;          // DGIdb interaction type (inhibitor, antibody, ...)
+    drug_sources?: string[];            // DGIdb's own sources for the drug-gene link (GuideToPharmacology, TTD, ...)
   }[];
   n_stopped_trials: number;
+  // Trials of DGIdb-mapped drugs that Open Targets does not carry. Kept apart from every scored
+  // number above so the axis is Open-Targets-only until a human says otherwise.
+  supplement?: { source: string; drugs: string[]; n_trials: number; max_phase: number } | null;
+}
+
+// ─── Second drug→target source: DGIdb ────────────────────────────────────────
+// ChEMBL curates a new drug's mechanism months after its Phase 3 starts, and Open Targets
+// inherits the gap: daraxonrasib was in Phase 3 for PDAC and not a KRAS drug in OT 26.06.
+// DGIdb (dgidb.org, free GraphQL, no key) aggregates other expert-curated drug-gene
+// sources — Guide to Pharmacology had daraxonrasib → KRAS (inhibitor) — so fetchClinical
+// asks it for the gene's drugs, takes the ones Open Targets did not list, finds THEIR
+// ClinicalTrials.gov studies in the disease, and appends them labelled and unscored.
+//
+// Only target-mechanism sources count. CIViC / OncoKB / CGI / PharmGKB / Clearity list a
+// drug against a gene when the gene's MUTATION predicts response (gemcitabine, nivolumab
+// for KRAS) — a biomarker, not a target. DGIdb's own ChEMBL feed is excluded too: it maps
+// every HCV NS3 protease inhibitor (glecaprevir…) to KRAS, and Open Targets already reads
+// ChEMBL properly. TALC / TdgClinicalTrial are trial-list scrapes, not mechanism claims.
+const DGIDB_URL = process.env.DGIDB_URL || 'https://dgidb.org/api/graphql';
+const DGIDB_MECHANISM_SOURCES = new Set(['GuideToPharmacology', 'TTD', 'DrugBank']);
+export const SUPPLEMENT_SOURCE = 'ClinicalTrials.gov, drug→target from DGIdb (Guide to Pharmacology, TTD, DrugBank)';
+interface DgidbDrug { name: string; type: string | null; sources: string[]; codes?: string[] }
+
+// A trial registers a new drug under its development code (RMC-6236) long before the INN
+// (daraxonrasib) appears in the record, so the INN alone misses the pivotal studies. PubChem
+// (free, no key) lists both; keep the code-shaped synonyms — letters, dash, digits — and drop
+// catalogue ids (CHEMBL…, NSC…, GTPL…) that never name an intervention.
+const CODE_RE = /^[A-Z]{2,5}-\d{3,7}[A-Z]?$/;
+const CATALOGUE_PREFIX = /^(CHEMBL|GTPL|NSC|GLXC|HY|CS|EX|BCP|MFCD|DTXSID|DTXCID|SCHEMBL|ORB|DA|AC|AT|SR|CAS|UNII|EN|FT|AKOS|MLS|SMR|ZINC|HMS|BDBM|SB|NCGC|TOX|CCG|Q|DB|D)\b/i;
+const codeCache = new Map<string, Promise<string[]>>();
+function drugCodes(name: string): Promise<string[]> {
+  const key = name.toUpperCase();
+  let p = codeCache.get(key);
+  if (!p) {
+    p = (async () => {
+      try {
+        const r = await fetch(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/${encodeURIComponent(name)}/synonyms/JSON`, { headers: { Accept: 'application/json' } });
+        if (!r.ok) return [];
+        const j: any = await r.json();
+        const syn: string[] = j?.InformationList?.Information?.[0]?.Synonym ?? [];
+        const out = new Set<string>();
+        for (const x of syn) { const u = String(x).toUpperCase().replace(/\s+/g, '-'); if (CODE_RE.test(u) && !CATALOGUE_PREFIX.test(u)) out.add(u); }
+        return [...out].slice(0, 4);
+      } catch { return []; }
+    })();
+    codeCache.set(key, p);
+  }
+  return p;
+}
+// "RMC-6236", "RMC 6236" and "RMC6236" are one name
+const squash = (x: string) => x.toUpperCase().replace(/[^A-Z0-9]/g, '');
+const dgidbCache = new Map<string, Promise<DgidbDrug[]>>();
+function dgidbDrugsFor(symbol: string): Promise<DgidbDrug[]> {
+  const key = symbol.toUpperCase();
+  let p = dgidbCache.get(key);
+  if (!p) {
+    p = (async () => {
+      try {
+        const query = `query($g:[String!]!){ genes(names:$g){ nodes{ name interactions{ drug{ name } interactionTypes{ type } sources{ sourceDbName } } } } }`;
+        const r = await fetch(DGIDB_URL, { method: 'POST', headers: { 'content-type': 'application/json', Accept: 'application/json', 'User-Agent': 'Disease2Target/1.0 (academic research; contact via app)' }, body: JSON.stringify({ query, variables: { g: [key] } }) });
+        if (!r.ok) return [];
+        const j: any = await r.json();
+        const node = (j?.data?.genes?.nodes ?? []).find((n: any) => String(n?.name ?? '').toUpperCase() === key);
+        const out: DgidbDrug[] = [];
+        const seen = new Set<string>();
+        for (const it of (node?.interactions ?? [])) {
+          const name = String(it?.drug?.name ?? '').trim();
+          const sources = (it?.sources ?? []).map((x: any) => String(x?.sourceDbName ?? '')).filter((x: string) => DGIDB_MECHANISM_SOURCES.has(x));
+          if (!name || !sources.length) continue;
+          // tool compounds ("COMPOUND 25 [PMID: …]") and IUPAC strings never name a trial intervention
+          if (/^COMPOUND\s|\[PMID|\(|\d-[A-Z]{2,}/i.test(name) || name.length > 40) continue;
+          const k = name.toUpperCase(); if (seen.has(k)) continue; seen.add(k);
+          out.push({ name: k, type: it?.interactionTypes?.[0]?.type ? String(it.interactionTypes[0].type) : null, sources });
+        }
+        return out;
+      } catch { return []; }                     // DGIdb down → no supplement, never an error
+    })();
+    dgidbCache.set(key, p);
+  }
+  return p;
+}
+
+// ClinicalTrials.gov interventional studies of the supplement drugs in the disease — ONE call
+// per gene, every drug name OR-ed into query.intr. A study is kept only when one of its own
+// conditions matches a disease hint AND one of the drugs is one of its interventions, so the
+// fuzzy search cannot pull in another cancer or a mere mention. Best-effort: any failure
+// returns [] and the OT-only record stands.
+async function fetchSupplementTrials(drugs: DgidbDrug[], scope: DiseaseScope): Promise<ClinicalStat['trials']> {
+  if (!drugs.length || !scope.nameHints.length) return [];
+  for (const d of drugs) if (!d.codes) d.codes = await drugCodes(d.name);
+  const names = drugs.flatMap(d => [d.name, ...(d.codes || [])]);
+  const url = 'https://clinicaltrials.gov/api/v2/studies'
+    + `?query.intr=${encodeURIComponent(names.map(n => `"${n}"`).join(' OR '))}`
+    + `&query.cond=${encodeURIComponent(scope.condQuery || scope.nameHints.join(' '))}`
+    + '&filter.advanced=' + encodeURIComponent('AREA[StudyType]INTERVENTIONAL')
+    + '&fields=protocolSection.identificationModule,protocolSection.statusModule,protocolSection.designModule,'
+    + 'protocolSection.conditionsModule,protocolSection.armsInterventionsModule,protocolSection.sponsorCollaboratorsModule'
+    + '&pageSize=100';
+  try {
+    // a gene with many mapped drugs (lonafarnib alone has dozens of studies) overflows one page — follow up to 3
+    const studies: any[] = [];
+    let pageToken: string | null = null;
+    for (let page = 0; page < 3; page++) {
+      const r = await fetch(url + (pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : ''), { headers: { Accept: 'application/json' } });
+      if (!r.ok) break;
+      const j: any = await r.json();
+      studies.push(...(j?.studies ?? []));
+      pageToken = j?.nextPageToken ? String(j.nextPageToken) : null;
+      if (!pageToken) break;
+    }
+    const out: ClinicalStat['trials'] = [];
+    for (const st of studies) {
+      const ps = st?.protocolSection ?? {};
+      const nct = String(ps?.identificationModule?.nctId ?? '').toUpperCase();
+      if (!/^NCT[0-9]+$/.test(nct)) continue;
+      const conds: string[] = (ps?.conditionsModule?.conditions ?? []).map((c: any) => String(c).toLowerCase());
+      if (!conds.some(c => scope.nameHints.some(h => c.includes(h)))) continue;
+      // an intervention is often registered under its code (RMC-6236) with the INN in otherNames — check both
+      const ivs: string[] = (ps?.armsInterventionsModule?.interventions ?? []).flatMap((i: any) => [String(i?.name ?? ''), ...((i?.otherNames ?? []) as any[]).map(String)]).map(squash);
+      const matched = drugs.filter(d => { const keys = [d.name, ...(d.codes || [])].map(squash); return ivs.some(i => keys.some(k => i.includes(k))); });
+      if (!matched.length) continue;
+      const phases: string[] = ps?.designModule?.phases ?? [];
+      const p = phases.length ? Math.max(0, ...phases.map(x => TRIAL_PHASE_NUM[String(x)] ?? 0)) : 0;
+      const stm = ps?.statusModule ?? {};
+      const start = stm?.startDateStruct?.date ?? null;
+      const yr = start ? Number(String(start).slice(0, 4)) : null;
+      const why = stm?.whyStopped ? String(stm.whyStopped).slice(0, 400) : null;
+      const idm = ps?.identificationModule ?? {};
+      out.push({
+        id: nct, url: `https://clinicaltrials.gov/study/${nct}`, phase: p,
+        status: stm?.overallStatus ? String(stm.overallStatus) : null,
+        title: idm?.officialTitle ? String(idm.officialTitle).slice(0, 300) : (idm?.briefTitle ? String(idm.briefTitle).slice(0, 300) : null),
+        year: yr && yr > 1900 ? yr : null,
+        drug: matched.map(d => d.name).join(' + '),
+        why_stopped: why, stop_reasons: [],
+        sponsor: ps?.sponsorCollaboratorsModule?.leadSponsor?.name ?? null,
+        source: 'supplement',
+        mechanism: matched[0].type,
+        drug_sources: [...new Set(matched.flatMap(d => d.sources))],
+      });
+    }
+    return out;
+  } catch { return []; }
 }
 
 // Axis: maturity dominates (a Phase-3 PDAC drug beats five Phase-1s). Phase4→1.00,
@@ -410,6 +563,23 @@ export async function fetchClinical(symbol: string, scope: DiseaseScope): Promis
     const finalTrials = trials.sort((a, b) => b.phase - a.phase || (b.year ?? 0) - (a.year ?? 0)).slice(0, 60);
     await enrichTrialsWithCtgov(finalTrials);   // fill year / sponsor / sites from ClinicalTrials.gov
     const nDrugs = drugs.size;
+    // DGIdb supplement: appended AFTER the scored numbers are fixed. Only drugs Open Targets
+    // did not list are looked up (one DGIdb call + at most one ClinicalTrials.gov call per gene).
+    let supplement: ClinicalStat['supplement'] = null;
+    const otDrugs = new Set(rows.map(r => String(r?.drug?.name ?? '').toUpperCase()).filter(Boolean));
+    const extra = (await dgidbDrugsFor(symbol)).filter(d => !otDrugs.has(d.name)).slice(0, 40);
+    if (extra.length) {
+      const have = new Set(finalTrials.map(t => String(t.id || '').toUpperCase()));
+      const added: ClinicalStat['trials'] = [];
+      for (const t of await fetchSupplementTrials(extra, scope)) {
+        const k = String(t.id).toUpperCase(); if (have.has(k)) continue; have.add(k); added.push(t);
+      }
+      if (added.length) {
+        added.sort((a, b) => b.phase - a.phase || (b.year ?? 0) - (a.year ?? 0));
+        finalTrials.push(...added.slice(0, 40));
+        supplement = { source: SUPPLEMENT_SOURCE, drugs: [...new Set(added.map(t => String(t.drug)))], n_trials: added.length, max_phase: Math.max(0, ...added.map(t => t.phase)) };
+      }
+    }
     return {
       trial_count: nDrugs, max_phase: maxPhase,
       n_drugs_in_disease_trials: nDrugs, max_disease_trial_phase: maxPhase,
@@ -418,6 +588,7 @@ export async function fetchClinical(symbol: string, scope: DiseaseScope): Promis
       n_disease_trials: nTrials, trials_by_phase: byPhase,
       trials: finalTrials,
       n_stopped_trials: nStopped,
+      supplement,
     };
   } catch { return null; }                         // fetch failed → not-fetched (3-state)
 }

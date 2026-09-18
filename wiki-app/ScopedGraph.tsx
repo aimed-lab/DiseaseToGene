@@ -7,6 +7,9 @@
 // costs no extra fetch and can never disagree with the chips beside it.
 //
 // Click a node → its wiki page. Same colours as KnowledgeGraphView so the two read as one.
+// The legend chips toggle a node type off and on (hide drugs, keep only gene–gene…); the
+// neighbour limit is applied AFTER the filter, so "genes only" shows up to `limit` genes
+// rather than whatever was left after the backbone took its share.
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import * as d3 from 'd3';
 import { navigate, wikiUrl } from '../nav';
@@ -25,22 +28,26 @@ const TYPE_PRIORITY: Record<string, number> = { disease: 0, drug: 1, trial: 2, p
 interface SimNode { key: string; type: string; label: string; degree: number; focus: boolean; hop: 1 | 2; x?: number; y?: number; vx?: number; vy?: number; fx?: number | null; fy?: number | null }
 interface SimLink { source: string | SimNode; target: string | SimNode; rel: string }
 
-export function scopeNeighbourhood(gi: GraphIndex, focusKey: string, limit: number): { nodes: SimNode[]; links: SimLink[]; total: number } {
+export function scopeNeighbourhood(gi: GraphIndex, focusKey: string, limit: number, hidden: ReadonlySet<string> = new Set()): { nodes: SimNode[]; links: SimLink[]; total: number; types: string[] } {
   const focus = gi.node(focusKey);
-  if (!focus) return { nodes: [], links: [], total: 0 };
+  if (!focus) return { nodes: [], links: [], total: 0, types: [] };
   const seen = new Map<string, SimNode>();
   const add = (n: KgNode, hop: 1 | 2, isFocus = false) => { if (!seen.has(n.key)) seen.set(n.key, { key: n.key, type: n.type, label: n.label, degree: n.degree ?? 0, focus: isFocus, hop }); };
   add(focus, 1, true);
   // one hop, ordered so the backbone comes first and PPI fills what is left
   const one = gi.neighbours(focusKey).map(x => x.node);
-  const uniq = [...new Map(one.map(n => [n.key, n])).values()]
+  const all = [...new Map(one.map(n => [n.key, n])).values()];
+  // every type present in the one-hop neighbourhood, before filtering — so a hidden type still has a chip to turn back on
+  const types = [...new Set(all.map(n => n.type))].sort((a, b) => (TYPE_PRIORITY[a] ?? 9) - (TYPE_PRIORITY[b] ?? 9));
+  const uniq = all.filter(n => !hidden.has(n.type))
     .sort((a, b) => (TYPE_PRIORITY[a.type] ?? 9) - (TYPE_PRIORITY[b.type] ?? 9) || (b.degree ?? 0) - (a.degree ?? 0));
   const total = uniq.length;
   for (const n of uniq.slice(0, limit)) add(n, 1);
   // second hop only along the therapeutic backbone: drug → trial for a gene; gene → drug for a trial
   if (focus.type === 'gene' || focus.type === 'trial') {
-    for (const n of [...seen.values()].filter(n => n.hop === 1 && (n.type === 'drug'))) {
-      for (const x of gi.neighbours(n.key)) if (x.node.type === (focus.type === 'gene' ? 'trial' : 'gene') && seen.size < limit + 24) add(x.node, 2);
+    const second = focus.type === 'gene' ? 'trial' : 'gene';
+    if (!hidden.has(second)) for (const n of [...seen.values()].filter(n => n.hop === 1 && (n.type === 'drug'))) {
+      for (const x of gi.neighbours(n.key)) if (x.node.type === second && seen.size < limit + 24) add(x.node, 2);
     }
   }
   const links: SimLink[] = [];
@@ -50,15 +57,20 @@ export function scopeNeighbourhood(gi: GraphIndex, focusKey: string, limit: numb
     const id = `${e.source}→${e.target}:${e.rel}`; if (linkSeen.has(id)) continue; linkSeen.add(id);
     links.push({ source: e.source, target: e.target, rel: e.rel });
   }
-  return { nodes: [...seen.values()], links, total };
+  return { nodes: [...seen.values()], links, total, types };
 }
 
 export function ScopedGraph({ gi, focusKey, disease, snapshot, isDark, height = 340 }: { gi: GraphIndex; focusKey: string; disease: string; snapshot: number; isDark: boolean; height?: number }) {
   const ref = useRef<SVGSVGElement>(null);
   const [limit, setLimit] = useState(40);
   const [hover, setHover] = useState<SimNode | null>(null);
-  const scoped = useMemo(() => scopeNeighbourhood(gi, focusKey, limit), [gi, focusKey, limit]);
-  const types = useMemo(() => [...new Set(scoped.nodes.map(n => n.type))].sort((a, b) => (TYPE_PRIORITY[a] ?? 9) - (TYPE_PRIORITY[b] ?? 9)), [scoped]);
+  const [hidden, setHidden] = useState<Set<string>>(() => new Set());
+  const scoped = useMemo(() => scopeNeighbourhood(gi, focusKey, limit, hidden), [gi, focusKey, limit, hidden]);
+  const types = scoped.types;
+  const toggle = (t: string) => setHidden(h => { const n = new Set(h); if (n.has(t)) n.delete(t); else n.add(t); return n; });
+  // "only genes": hide every other type in one click; clicking it again shows everything
+  const onlyGenes = types.length > 1 && types.every(t => t === 'gene' || hidden.has(t)) && !hidden.has('gene');
+  const setOnlyGenes = () => setHidden(onlyGenes ? new Set() : new Set(types.filter(t => t !== 'gene')));
 
   useEffect(() => {
     const svg = d3.select(ref.current!); svg.selectAll('*').remove();
@@ -96,14 +108,17 @@ export function ScopedGraph({ gi, focusKey, disease, snapshot, isDark, height = 
     return () => { sim.stop(); };
   }, [scoped, isDark, disease, snapshot, height]);
 
-  if (!scoped.nodes.length) return null;
+  if (!scoped.nodes.length && !hidden.size) return null;
   return (
     <div className={`rounded border overflow-hidden ${isDark ? 'border-white/10 bg-black/20' : 'border-black/10 bg-white'}`}>
       <svg ref={ref} width="100%" height={height} style={{ display: 'block' }} />
       <div className={`flex items-center justify-between gap-3 flex-wrap px-3 py-1.5 text-[11px] border-t ${isDark ? 'border-white/10 text-neutral-400' : 'border-black/10 text-neutral-500'}`}>
         <div className="flex items-center gap-2 flex-wrap">
-          {types.map(t => <span key={t} className="inline-flex items-center gap-1"><span className="w-2 h-2 rounded-full" style={{ background: TYPE_COLOR[t] }} />{t}</span>)}
-          <span className="opacity-60">· {scoped.nodes.length - 1} of {scoped.total} neighbours{scoped.total > limit ? ' (backbone first, then PPI by degree)' : ''}</span>
+          {types.map(t => <button key={t} type="button" onClick={() => toggle(t)} title={hidden.has(t) ? `show ${t} nodes` : `hide ${t} nodes`}
+            className={`inline-flex items-center gap-1 rounded px-1 -mx-1 ${hidden.has(t) ? 'opacity-40 line-through' : ''} hover:bg-black/5 dark:hover:bg-white/10`}>
+            <span className="w-2 h-2 rounded-full" style={{ background: TYPE_COLOR[t] }} />{t}</button>)}
+          {types.includes('gene') && types.length > 1 && <button type="button" onClick={setOnlyGenes} className={`rounded border px-1.5 ${onlyGenes ? (isDark ? 'border-white/40' : 'border-black/40') : (isDark ? 'border-white/10' : 'border-black/10')}`}>{onlyGenes ? 'show all' : 'genes only'}</button>}
+          <span className="opacity-60">· {Math.max(0, scoped.nodes.length - 1)} of {scoped.total} neighbours{scoped.total > limit ? ' (backbone first, then PPI by degree)' : ''}{hidden.size ? ` · ${[...hidden].join(', ')} hidden` : ''}</span>
         </div>
         <div className="flex items-center gap-2">
           {hover && !hover.focus && <span className="truncate max-w-[280px]">{hover.type} · {hover.label}</span>}

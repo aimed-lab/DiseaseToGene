@@ -210,7 +210,7 @@ Both may be set at once — reads then use ORDS and writes use Oracle, which is 
 | `SIGNUP_INVITE_CODE` | — | Gates self-service signup |
 | `ALLOWED_ORIGIN` | — | CORS origin allowlist |
 | `API_CACHE_TTL_SECONDS` · `DISABLE_API_CACHE` | — | Upstream API response cache |
-| `STRING_MIN_SCORE` · `WINNER_SEEDS` · `WINNER_NETWORK_N` · `KG_GENE_N` · `KG_NETWORK_N` | — | Network/KG tuning |
+| `STRING_MIN_SCORE` · `WINNER_SEEDS` · `WINNER_NETWORK_N` · `KG_GENE_N` · `KG_NETWORK_N` · `KG_PARTNER_N` · `KG_PARTNER_POOL` | — | Network/KG tuning (partners: STRING neighbours kept per core gene as peripheral nodes, default 25 of a pool of 100) |
 | `USE_DOGSITE3` · `DOGSITE3_BIN` | — | Local DoGSite3 binary instead of the web service |
 
 ## Data layer: Oracle vs ORDS

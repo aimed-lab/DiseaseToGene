@@ -92,4 +92,5 @@ github.com                       the repo; the winner package (install time only
 | `ORACLE_SCHEMA` | table prefix when the run user is not the schema owner | unset |
 | `STRING_MIN_SCORE` | network: STRING combined-score threshold | 400 |
 | `STRING_DIR` | network: where the STRING files are | `WINNER/data` |
-| `KG_GENE_N`, `KG_NETWORK_N` | kg: how many genes / network rows to project | script defaults |
+| `KG_GENE_N`, `KG_NETWORK_N` | kg: how many genes / network rows to project | 300 / = KG_GENE_N |
+| `KG_PARTNER_N`, `KG_PARTNER_POOL` | kg: STRING partners kept per core gene as peripheral nodes (0 = off) / candidates fetched per gene before the cut | 25 / 100 |

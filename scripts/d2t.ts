@@ -204,6 +204,32 @@ async function fetchStringEdges(symbols: string[]): Promise<any[]> {
   } catch { return []; }
 }
 
+// Each gene's top-N STRING partners, whoever they are — the `network` endpoint above only
+// returns edges AMONG the identifiers given, so a gene's real neighbourhood (SRC → FN1,
+// PTK2, GRB2) is invisible when the partner is not in the set. POSTed in chunks; `limit`
+// applies per identifier. Rows carry preferredName_A (the query gene) and preferredName_B.
+async function fetchStringPartners(symbols: string[], limit: number): Promise<any[]> {
+  const out: any[] = [];
+  const CHUNK = 50;
+  for (let i = 0; i < symbols.length; i += CHUNK) {
+    const batch = symbols.slice(i, i + CHUNK);
+    try {
+      const body = new URLSearchParams({
+        identifiers: batch.join('\r'), species: '9606', limit: String(limit),
+        required_score: String(STRING_MIN_SCORE), caller_identity: 'diseasetotarget_app',
+      });
+      const r = await fetch('https://string-db.org/api/json/interaction_partners', {
+        method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body,
+      });
+      if (!r.ok) { log(`  STRING partners: chunk ${i / CHUNK + 1} failed (${r.status}) — skipped`); continue; }
+      const rows = await r.json();
+      if (Array.isArray(rows)) out.push(...rows);
+    } catch (e: any) { log(`  STRING partners: chunk ${i / CHUNK + 1} failed (${String(e?.message || e).slice(0, 80)}) — skipped`); }
+    if (i + CHUNK < symbols.length) await sleep(400);   // be polite to STRING
+  }
+  return out;
+}
+
 // ════════════════════════════ HARVEST ════════════════════════════
 const DT_MAP: Record<string, string> = { genetic_association: 'geneticScore', rna_expression: 'expressionScore', literature: 'literatureScore', known_drug: 'targetScore' };
 
@@ -341,7 +367,7 @@ async function buildAxis(axis: string, genes: string[], diseaseName: string, dis
     let n = 0;
     await pooled(genes, 5, async g => { const c = await fetchClinical(g, scope).catch(() => null); if (!c || c.n_drugs_in_disease_trials === 0) return;   // 0 = no clinical precedent (neutral, not stored)
       const phaseTxt = c.max_disease_trial_phase ? ` · max Phase ${c.max_disease_trial_phase}` : '';
-      rows.push({ gene_symbol: g, evidence_type: 'clinical', source: 'Open Targets (target drug trials, disease-scoped)', value_text: `${c.n_drugs_in_disease_trials} drug${c.n_drugs_in_disease_trials === 1 ? '' : 's'} in trials${phaseTxt}`, value_json: { axis: c.axis, direction: 'pro', display: `${c.n_drugs_in_disease_trials} drug${c.n_drugs_in_disease_trials === 1 ? '' : 's'} in ${diseaseName} trials${phaseTxt}`, trial_count: c.trial_count, max_phase: c.max_phase, n_drugs_in_disease_trials: c.n_drugs_in_disease_trials, max_disease_trial_phase: c.max_disease_trial_phase, drug_names: c.drug_names, n_disease_trials: c.n_disease_trials, trials_by_phase: c.trials_by_phase, trials: c.trials, n_stopped_trials: c.n_stopped_trials } });
+      rows.push({ gene_symbol: g, evidence_type: 'clinical', source: 'Open Targets (target drug trials, disease-scoped)', value_text: `${c.n_drugs_in_disease_trials} drug${c.n_drugs_in_disease_trials === 1 ? '' : 's'} in trials${phaseTxt}`, value_json: { axis: c.axis, direction: 'pro', display: `${c.n_drugs_in_disease_trials} drug${c.n_drugs_in_disease_trials === 1 ? '' : 's'} in ${diseaseName} trials${phaseTxt}${c.supplement ? ` · +${c.supplement.n_trials} trial${c.supplement.n_trials === 1 ? '' : 's'} of ${c.supplement.drugs.join(', ')} via DGIdb, not yet in Open Targets (unscored)` : ''}`, trial_count: c.trial_count, max_phase: c.max_phase, n_drugs_in_disease_trials: c.n_drugs_in_disease_trials, max_disease_trial_phase: c.max_disease_trial_phase, drug_names: c.drug_names, n_disease_trials: c.n_disease_trials, trials_by_phase: c.trials_by_phase, trials: c.trials, n_stopped_trials: c.n_stopped_trials, supplement: c.supplement ?? null } });
       if (++n % 500 === 0) log(`  clinical ${n}/${genes.length}…`); });
   } else if (axis === 'literature') {
     let n = 0;
@@ -721,6 +747,8 @@ async function buildGraph(snapshotId: number) {
   const diseaseName: string = snap.disease_name;
   const GENE_N = Number(process.env.KG_GENE_N) || 300;     // graph = top-N ranked genes + their relationships
   const NET_N = Number(process.env.KG_NETWORK_N) || GENE_N; // STRING PPI over the top-N genes
+  const PARTNER_N = Number(process.env.KG_PARTNER_N ?? 25);        // partners kept per core gene, added as peripheral nodes (0 = off)
+  const PARTNER_POOL = Number(process.env.KG_PARTNER_POOL ?? 100);  // STRING candidates fetched per gene before the cut
 
   const scores = await svc.listRankingScores(snapshotId);
   const ev = await svc.snapshotEvidence(snapshotId);
@@ -732,6 +760,7 @@ async function buildGraph(snapshotId: number) {
   for (const s of scores as any[]) { const g = String(s.gene_symbol).toUpperCase(); if (seenGene.has(g)) continue; seenGene.add(g); ranked.push({ ...s, gene_symbol: g }); }
   const topRows = ranked.slice(0, GENE_N);
   const geneSet = new Set(topRows.map(r => r.gene_symbol));
+  const snapRank = new Map(ranked.map(r => [r.gene_symbol, toNum(r.rank)]));   // every gene in the snapshot, with its OT rank
   log(`  node set: top ${geneSet.size} genes by rank (of ${ranked.length})`);
 
   const nodes = new Map<string, any>();
@@ -786,7 +815,9 @@ async function buildGraph(snapshotId: number) {
         if (!t?.id) continue;
         const tk = nk.trial(String(t.id));
         addNode(tk, 'trial', String(t.id), { phase: t.phase ?? null, status: t.status ?? null, title: t.title ?? null, year: t.year ?? null, sponsor: t.sponsor ?? null, url: t.url ?? null });
-        if (t.drug) { const dk = nk.drug(t.drug); addNode(dk, 'drug', t.drug); edges.push({ src_key: dk, dst_key: tk, rel_type: 'tested_in', confidence: 'fact', source: 'ClinicalTrials.gov', props: { phase: t.phase ?? null } }); edges.push({ src_key: gk, dst_key: dk, rel_type: 'targeted_by', confidence: 'fact', source: 'Open Targets', props: {} }); }
+        // a supplement drug's target link comes from DGIdb (Guide to Pharmacology / TTD / DrugBank), not Open Targets — say so on the edge
+        const drugSrc = t.source === 'supplement' ? `DGIdb (${(t.drug_sources || []).join(', ') || 'mechanism sources'})` : 'Open Targets';
+        if (t.drug) { const dk = nk.drug(t.drug); addNode(dk, 'drug', t.drug, t.source === 'supplement' ? { supplement: true, mechanism: t.mechanism ?? null } : undefined); edges.push({ src_key: dk, dst_key: tk, rel_type: 'tested_in', confidence: 'fact', source: 'ClinicalTrials.gov', props: { phase: t.phase ?? null } }); edges.push({ src_key: gk, dst_key: dk, rel_type: 'targeted_by', confidence: 'fact', source: drugSrc, props: t.source === 'supplement' ? { supplement: true } : {} }); }
         edges.push({ src_key: tk, dst_key: dKey, rel_type: 'for', confidence: 'fact', source: 'ClinicalTrials.gov', props: { phase: t.phase ?? null } });
       }
     } else if (et === 'tissue') {
@@ -815,6 +846,45 @@ async function buildGraph(snapshotId: number) {
     ppi++;
   }
   log(`  ${ppi} STRING PPI edges kept (both endpoints in the graph)`);
+
+  // A gene's REAL neighbourhood. The edges above only join core genes to each other, so SRC's
+  // page showed the top-300 genes it touches (ATM, BRCA1) and not its partners (FN1, PTK2).
+  // For each core gene, take a pool of STRING partners and keep the top-N by STRING
+  // confidence, breaking the (very common) 0.999 ties by the partner's WINNER percentile in
+  // THIS snapshot — the disease-network centrality the network axis already computed.
+  // Tried and rejected: ranking by WINNER first hands every gene the same global hubs (AKT1,
+  // TP53, JUN, HSP90) and drops the specific partners (SRC lost PTK2). A kept partner that
+  // is not core but IS in the snapshot becomes a peripheral gene node — exactly how
+  // paralogs are added — with its own wiki page (it has evidence rows; it just was not a
+  // core node). Partners outside the snapshot (never an Open Targets candidate here) are
+  // counted and skipped: the app has no page and no evidence for them.
+  let partnerEdges = 0, peripheralAdded = 0, outsideSnapshot = 0;
+  if (PARTNER_N > 0 && netGenes.length) {
+    const winnerPct = new Map<string, number>();
+    for (const row of ev as any[]) if (row.evidence_type === 'network') { const vj = parseJson(row.value_json); const p = Number(vj?.winner_pct ?? (vj?.axis != null ? vj.axis * 100 : NaN)); if (Number.isFinite(p)) winnerPct.set(String(row.gene_symbol).toUpperCase(), p); }
+    log(`  fetching up to ${PARTNER_POOL} STRING partners for each of ${netGenes.length} core genes, keeping the top ${PARTNER_N} by STRING score (ties by WINNER percentile)…`);
+    const partnerRows = await fetchStringPartners(netGenes, PARTNER_POOL);
+    log(`  STRING returned ${partnerRows.length} partner rows · WINNER percentiles known for ${winnerPct.size} genes`);
+    const byGene = new Map<string, { b: string; score: number }[]>();
+    for (const e of partnerRows) {
+      const a = String(e.preferredName_A || '').toUpperCase();
+      const b = String(e.preferredName_B || '').toUpperCase();
+      if (!a || !b || a === b || !geneSet.has(a)) continue;
+      if (!geneSet.has(b) && !snapRank.has(b)) { outsideSnapshot++; continue; }
+      (byGene.get(a) ?? byGene.set(a, []).get(a)!).push({ b, score: Number(e.score) || 0 });
+    }
+    for (const [a, cands] of byGene) {
+      cands.sort((x, y) => y.score - x.score || (winnerPct.get(y.b) ?? -1) - (winnerPct.get(x.b) ?? -1));
+      for (const { b, score } of cands.slice(0, PARTNER_N)) {
+        if (!geneSet.has(b) && !nodes.has(nk.gene(b))) { addNode(nk.gene(b), 'gene', b, { peripheral: true, rank: snapRank.get(b) ?? null, winner_pct: winnerPct.get(b) ?? null }); peripheralAdded++; }
+        const key = a < b ? `${a}|${b}` : `${b}|${a}`;
+        if (seenPpi.has(key)) continue; seenPpi.add(key);
+        edges.push({ src_key: nk.gene(a), dst_key: nk.gene(b), rel_type: 'interacts_with', weight: score > 1 ? +(score / 1000).toFixed(3) : score, confidence: 'fact', source: `STRING v12 (score≥${STRING_MIN_SCORE})`, props: { string_score: score, partner_of: a, partner_winner_pct: winnerPct.get(b) ?? null } });
+        partnerEdges++;
+      }
+    }
+    log(`  ${partnerEdges} partner edges added · ${peripheralAdded} peripheral gene nodes added · ${outsideSnapshot} partner rows outside the snapshot skipped`);
+  }
 
   // Degree + drop any edge whose endpoint didn't materialise as a node (safety),
   // and dedupe by (src, dst, rel) — multiple drug/trial records can emit the same
@@ -850,7 +920,7 @@ async function buildGraph(snapshotId: number) {
   }
   const stats = await svc.kgStats(snapshotId);
   log(`✔ KG built for #${snapshotId}`);
-  await recordRun(snapshotId, { id: `r${snapshotId}-kg-${kgStarted.slice(0, 16).replace(/[-:T]/g, '')}`, axis: 'kg', evidence_type: null, script: `scripts/d2t.ts kg ${snapshotId}`, ran_at: kgStarted, source: `EVIDENCE rows of snapshot ${snapshotId}`, source_version: `${stats.nodeTotal} nodes · ${stats.edgeTotal} edges`, params: { projection: 'genes, drugs, trials, pathways, papers, tissues and variants from the axes\' value_json' } });
+  await recordRun(snapshotId, { id: `r${snapshotId}-kg-${kgStarted.slice(0, 16).replace(/[-:T]/g, '')}`, axis: 'kg', evidence_type: null, script: `scripts/d2t.ts kg ${snapshotId}`, ran_at: kgStarted, source: `EVIDENCE rows of snapshot ${snapshotId}`, source_version: `${stats.nodeTotal} nodes · ${stats.edgeTotal} edges`, params: { projection: 'genes, drugs, trials, pathways, papers, tissues and variants from the axes\' value_json', core_genes: GENE_N, string_partners_per_gene: PARTNER_N, string_partner_pool: PARTNER_POOL, partner_ranking: 'STRING combined score, ties broken by WINNER percentile in this snapshot', peripheral_partner_nodes: peripheralAdded, partner_edges: partnerEdges, partners_outside_snapshot: outsideSnapshot } });
   log(`  nodes: ${Object.entries(stats.nodes).map(([k, v]) => `${k} ${v}`).join(' · ')}`);
   log(`  edges: ${Object.entries(stats.edges).map(([k, v]) => `${k} ${v}`).join(' · ')}`);
   log(`  Next: open the Knowledge Graph page (needs the server restarted) or export with \`kg-export ${snapshotId}\`.`);

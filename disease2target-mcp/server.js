@@ -265,6 +265,7 @@ async function toolGetDossier(args) {
   if (cl) {
     o += `\n## Clinical trials (facts)\n`;
     o += `- ${cl.n_drugs_in_disease_trials ?? 0} drug(s) in ${snap.disease_name} trials · max Phase ${cl.max_disease_trial_phase ?? '—'} · ${cl.n_disease_trials ?? 0} disease trials total\n`;
+    if (cl.supplement?.n_trials) o += `- plus ${cl.supplement.n_trials} trial(s) of ${(cl.supplement.drugs || []).join(', ')} up to Phase ${cl.supplement.max_phase} via DGIdb (Guide to Pharmacology / TTD / DrugBank) — not yet in Open Targets; listed, not scored\n`;
     const trials = Array.isArray(cl.trials) ? cl.trials.slice(0, 8) : [];
     for (const t of trials) {
       const nct = String(t.id || '').toUpperCase();
@@ -307,6 +308,7 @@ async function toolGetClinicalTrials(args) {
   let o = `# ${gene} — clinical trials in ${snap.disease_name}\n\n`;
   o += `**${cl.n_drugs_in_disease_trials ?? 0} drug(s) in disease trials · max Phase ${cl.max_disease_trial_phase ?? '—'}** · ${cl.n_disease_trials ?? 0} disease trials total`;
   if (cl.trials_by_phase) o += ` (P1 ${cl.trials_by_phase.phase1 || 0} · P2 ${cl.trials_by_phase.phase2 || 0} · P3 ${cl.trials_by_phase.phase3 || 0} · P4 ${cl.trials_by_phase.phase4 || 0})`;
+  if (cl.supplement?.n_trials) o += `\n\nPlus **${cl.supplement.n_trials} trial(s) of ${(cl.supplement.drugs || []).join(', ')}** up to Phase ${cl.supplement.max_phase} mapped to the gene by DGIdb (Guide to Pharmacology / TTD / DrugBank) but not yet in Open Targets/ChEMBL. Listed below with the others; **not scored**.`;
   o += `\n\n| NCT | Phase | Status | Year | Drug | Sponsor | Sites | Why stopped |\n|---|---|---|---|---|---|---|---|\n`;
   const trials = Array.isArray(cl.trials) ? cl.trials : [];
   for (const t of trials.slice(0, 40)) {
